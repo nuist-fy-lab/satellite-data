@@ -17,6 +17,16 @@ func TestParseCycleFromObject(t *testing.T) {
 	}
 }
 
+func TestSameUTCDay(t *testing.T) {
+	a := time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
+	if !sameUTCDay(a, a.Add(23*time.Hour)) {
+		t.Fatal("times on the same UTC day did not match")
+	}
+	if sameUTCDay(a, a.Add(24*time.Hour)) {
+		t.Fatal("times on different UTC days matched")
+	}
+}
+
 func TestHimawariCadence(t *testing.T) {
 	if got := himawariCadence("AHI-L1b-FLDK"); got != "10m" {
 		t.Fatalf("cadence=%q", got)

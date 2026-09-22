@@ -52,6 +52,18 @@ type s3ListResult struct {
 }
 
 func (c *Client) ListS3(ctx context.Context, bucket, prefix, delimiter, token string) (Page, error) {
+	return c.listS3(ctx, bucket, prefix, delimiter, token, "")
+}
+
+// ListS3After is equivalent to ListS3 but starts lexicographically after the
+// supplied key on the first page. This maps to S3 ListObjectsV2 StartAfter and
+// is useful for time-ordered archives where scanning an entire day would be
+// unnecessarily expensive.
+func (c *Client) ListS3After(ctx context.Context, bucket, prefix, delimiter, token, startAfter string) (Page, error) {
+	return c.listS3(ctx, bucket, prefix, delimiter, token, startAfter)
+}
+
+func (c *Client) listS3(ctx context.Context, bucket, prefix, delimiter, token, startAfter string) (Page, error) {
 	u, _ := url.Parse("https://" + bucket + ".s3.amazonaws.com/")
 	q := u.Query()
 	q.Set("list-type", "2")
@@ -63,6 +75,8 @@ func (c *Client) ListS3(ctx context.Context, bucket, prefix, delimiter, token st
 	}
 	if token != "" {
 		q.Set("continuation-token", token)
+	} else if startAfter != "" {
+		q.Set("start-after", startAfter)
 	}
 	u.RawQuery = q.Encode()
 

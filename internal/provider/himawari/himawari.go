@@ -108,15 +108,31 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	startDay := time.Date(q.Start.UTC().Year(), q.Start.UTC().Month(), q.Start.UTC().Day(), 0, 0, 0, 0, time.UTC)
 	for day := startDay; day.Before(q.End); day = day.AddDate(0, 0, 1) {
 		prefix := fmt.Sprintf("%s/%04d/%02d/%02d/", product, day.Year(), day.Month(), day.Day())
+		// Himawari full-disk days contain tens of thousands of band/segment
+		// objects. ListObjectsV2 is lexicographically ordered by key, so start
+		// at the requested clock time instead of enumerating the whole day.
+		// Once the first object at/after q.End is seen, no later page can match.
+		startAfter := prefix
+		if sameUTCDay(day, q.Start) {
+			startAfter = prefix + q.Start.UTC().Format("1504") + "/"
+		}
 		token := ""
+		finishedDay := false
 		for {
-			page, err := p.objects.ListS3(ctx, p.bucket, prefix, "", token)
+			page, err := p.objects.ListS3After(ctx, p.bucket, prefix, "", token, startAfter)
 			if err != nil {
 				return nil, err
 			}
 			for _, object := range page.Objects {
 				cycle, ok := parseCycleFromObject(product, object.Name)
-				if !ok || cycle.Before(q.Start) || !cycle.Before(q.End) {
+				if !ok {
+					continue
+				}
+				if !cycle.Before(q.End) {
+					finishedDay = true
+					break
+				}
+				if cycle.Before(q.Start) {
 					continue
 				}
 				key := cycle.Format("20060102T1504Z")
@@ -134,7 +150,7 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 					MediaType: "application/octet-stream",
 				})
 			}
-			if page.NextToken == "" {
+			if finishedDay || page.NextToken == "" {
 				break
 			}
 			token = page.NextToken
@@ -162,6 +178,12 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
 	return out, nil
+}
+
+func sameUTCDay(a, b time.Time) bool {
+	a = a.UTC()
+	b = b.UTC()
+	return a.Year() == b.Year() && a.YearDay() == b.YearDay()
 }
 
 func parseCycleFromObject(product, name string) (time.Time, bool) {
