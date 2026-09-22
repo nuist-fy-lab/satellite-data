@@ -140,6 +140,39 @@ func TestCompleteWithOfficialGap(t *testing.T) {
 	}
 }
 
+func TestRecoverOfficialWork(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	product := model.Product{
+		ProductKey: "goes18:ABI-L2-CMIPF", SourceID: "goes18", OfficialID: "ABI-L2-CMIPF",
+		Satellite: "GOES-18", Instrument: "ABI", Level: "L2", DataType: "ABI-L2-CMIPF",
+		AreaType: "DISK", DisplayName: "Cloud and Moisture Imagery Full Disk", Cadence: "10m",
+		AccessTier: model.TierAnonymous,
+	}
+	if err := store.UpsertProducts(ctx, "goes18", []model.Product{product}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	if err := store.EnqueueRange(ctx, product.ProductKey, start, start.AddDate(0, 0, 1), 10); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.ClaimBatch(ctx, 7)
+	if err != nil || len(first.Days) != 1 {
+		t.Fatalf("first claim=%+v err=%v", first, err)
+	}
+	if err := store.RecoverOfficialWork(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.ClaimBatch(ctx, 7)
+	if err != nil || len(second.Days) != 1 || second.Days[0] != "2026-09-20" {
+		t.Fatalf("recovered claim=%+v err=%v", second, err)
+	}
+}
+
 func findYearDay(t *testing.T, response YearResponse, day string) YearDay {
 	t.Helper()
 	for _, item := range response.Days {

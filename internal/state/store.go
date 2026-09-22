@@ -255,6 +255,15 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+func (s *Store) RecoverOfficialWork(ctx context.Context) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE official_work
+		SET state='pending',started_at='',next_attempt_ns=0,updated_at=?
+		WHERE state='running'`, now)
+	return err
+}
+
 func (s *Store) ProductCount(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM products`).Scan(&count)

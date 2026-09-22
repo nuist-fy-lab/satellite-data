@@ -67,7 +67,7 @@ func (s *Server) year(w http.ResponseWriter, r *http.Request) {
 	if end.After(todayEnd) {
 		end = todayEnd
 	}
-	if start.Before(end) && r.URL.Query().Get("enqueue") != "0" {
+	if start.Before(end) && r.URL.Query().Get("enqueue") == "1" {
 		if err := s.store.EnqueueRange(r.Context(), product, start, end, 10); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

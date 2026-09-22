@@ -42,6 +42,10 @@ func main() {
 	// requests are unwinding. The state database runs in WAL mode and the OS
 	// closes its file descriptors when the daemon exits; SQLite recovers any
 	// interrupted transaction on the next open.
+	if err := store.RecoverOfficialWork(context.Background()); err != nil {
+		slog.Error("recover official index queue", "error", err)
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	indexer.New(registry, store, *archiveRoot).Run(ctx)

@@ -224,7 +224,7 @@ function dayTip(day) {
   return lines.join('\n');
 }
 
-async function loadYear(schedulePoll = true, enqueue = true) {
+async function loadYear(schedulePoll = true, enqueue = false) {
   clearTimeout(state.yearPoll);
   if (!state.selected) return;
   const product = state.selected.id;
@@ -259,7 +259,7 @@ async function queryMonth() {
     end: end.toISOString().slice(0, 10),
   });
   await json('/api/index?' + params, {method: 'POST'});
-  loadYear(true);
+  loadYear(true, false);
 }
 
 function displayDay(timestamp) {
