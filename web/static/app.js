@@ -15,15 +15,31 @@ const state = {
   collections: [],
   selected: null,
   dayState: new Map(),
+  yearPoll: 0,
+  dayPoll: 0,
   displayZone: localStorage.getItem('satellite-data-zone') === 'BJT' ? 'BJT' : 'UTC',
 };
 
 const SIDEBAR_KEY = 'satellite-data-sidebar-expanded';
 const FILTER_KEY = 'satellite-data-filters-v1';
 const tierLabels = {anonymous: '匿名直连', token: '登录 / Token', special: '特殊访问'};
+const statusLabels = {
+  complete: '全部时次完整',
+  complete_official_gap: '全部时次完整 · 官方有缺时次',
+  hourly_complete: '整点完整',
+  hourly_complete_official_gap: '整点完整 · 官方有缺时次',
+  missing: '本地缺失',
+  error: '错误',
+  processing: '处理中',
+  official_missing: '官方缺失',
+  unknown: '待索引',
+};
 
-async function json(url) {
-  const response = await fetch(url, {headers: {'Accept': 'application/json'}});
+async function json(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {'Accept': 'application/json', ...(options.headers || {})},
+  });
   let payload = {};
   try { payload = await response.json(); } catch {}
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
@@ -83,7 +99,7 @@ function filteredCollections(stage = 4) {
   });
 }
 
-function rebuildFilters(changed = 'source') {
+function rebuildFilters(changed = 'source', update = true) {
   if (changed === 'source') {
     fillSelect(satelliteEl, uniqueSorted(state.collections.map(item => item.satellite)), '全部卫星');
   }
@@ -104,7 +120,7 @@ function rebuildFilters(changed = 'source') {
   }
   if ([...productEl.options].some(option => option.value === previous)) productEl.value = previous;
   else if (productEl.options.length) productEl.selectedIndex = 0;
-  updateSelectedProduct();
+  if (update) updateSelectedProduct();
 }
 
 function defaultYear() {
@@ -147,8 +163,10 @@ function updateSelectedProduct() {
   if (product.metadata?.spatial_resolution) metadata.push(product.metadata.spatial_resolution);
   if (product.metadata?.version) metadata.push(`版本 ${product.metadata.version}`);
   if (source) metadata.push(tierLabels[source.tier] || source.tier);
+  metadata.push(product.metadata?.local_covered ? '本地已覆盖' : '本地未覆盖');
   $('#product-meta').textContent = metadata.join(' · ');
   persistFilters();
+  loadYear();
 }
 
 function renderCalendar() {
@@ -193,95 +211,55 @@ function updateCell(day) {
 
 function dayTip(day) {
   const item = state.dayState.get(day);
-  if (!item) return `${day}\n待查询 · 点击读取官方目录`;
-  if (item.status === 'processing') return `${day}\n查询中…`;
-  if (item.status === 'error') return `${day}\n查询错误\n${item.error || ''}`;
-  if (item.status === 'official-missing') return `${day}\n上游无数据`;
-  if (item.status === 'available') {
-    const files = item.granules.reduce((sum, granule) => sum + (granule.assets?.length || 0), 0);
-    return `${day}\n上游有数据\n${item.granules.length} 个 Granule · ${files} 个资产`;
-  }
-  return day;
+  if (!item) return `${day}\n待索引`;
+  const lines = [`${day} · ${statusLabels[item.status] || item.status} · ${state.displayZone}`];
+  if (item.indexing) lines.push('官方索引中');
+  lines.push(`全部官方时次 ${item.local_ok_count || 0} / ${item.official_count || 0}`);
+  if (item.hourly_official_count) lines.push(`整点官方时次 ${item.hourly_local_ok_count || 0} / ${item.hourly_official_count}`);
+  if (item.missing_count) lines.push(`本地缺失 ${item.missing_count}`);
+  if (item.processing_count) lines.push(`处理中 ${item.processing_count}`);
+  if (item.error_count) lines.push(`错误 ${item.error_count}`);
+  if (item.official_gap_count) lines.push(`固定时序官方缺时次 ${item.official_gap_count}`);
+  if (item.updated_at) lines.push(`索引更新 ${String(item.updated_at).replace('T',' ').slice(0,19)} UTC`);
+  return lines.join('\n');
 }
 
-function dayBounds(day) {
-  const base = Date.parse(`${day}T00:00:00Z`);
-  const offset = state.displayZone === 'BJT' ? 8 * 3600 * 1000 : 0;
-  const start = new Date(base - offset);
-  const end = new Date(base + 24 * 3600 * 1000 - offset);
-  return [start.toISOString(), end.toISOString()];
-}
-
-async function queryRange(startDay, endDayExclusive, showDetailDay = '') {
-  const collection = state.selected;
-  if (!collection) return [];
-  const [start] = dayBounds(startDay);
-  const [, end] = dayBounds(new Date(Date.parse(`${endDayExclusive}T00:00:00Z`) - 24 * 3600 * 1000).toISOString().slice(0, 10));
-  const params = new URLSearchParams({
-    source: sourceEl.value,
-    collection: collection.id,
-    start,
-    end,
-  });
-  const payload = await json('/api/v1/search?' + params);
-  const buckets = new Map();
-  for (const granule of payload.granules || []) {
-    const day = displayDay(granule.start);
-    if (!buckets.has(day)) buckets.set(day, []);
-    buckets.get(day).push(granule);
+async function loadYear(schedulePoll = true, enqueue = true) {
+  clearTimeout(state.yearPoll);
+  if (!state.selected) return;
+  const product = state.selected.id;
+  const year = Number(yearEl.value || defaultYear());
+  try {
+    const payload = await json(`/api/year?product=${encodeURIComponent(product)}&year=${year}&enqueue=${enqueue ? '1' : '0'}`);
+    if (state.selected?.id !== product || Number(yearEl.value) !== year) return;
+    state.dayState.clear();
+    for (const day of payload.days || []) state.dayState.set(day.day, day);
+    renderCalendar();
+    if (schedulePoll && (payload.days || []).some(day => day.indexing)) {
+      state.yearPoll = setTimeout(() => loadYear(true, false), 6000);
+    }
+  } catch (error) {
+    $('#product-meta').textContent = `年历索引读取失败 · ${error.message}`;
   }
-  for (let cursor = new Date(`${startDay}T00:00:00Z`); cursor < new Date(`${endDayExclusive}T00:00:00Z`); cursor.setUTCDate(cursor.getUTCDate() + 1)) {
-    const day = cursor.toISOString().slice(0, 10);
-    const granules = buckets.get(day) || [];
-    state.dayState.set(day, {status: granules.length ? 'available' : 'official-missing', granules});
-    updateCell(day);
-  }
-  if (showDetailDay) openDetail(showDetailDay);
-  return payload.granules || [];
 }
 
 async function queryDay(day) {
-  if (!state.selected) return;
-  state.dayState.set(day, {status: 'processing', granules: []});
-  updateCell(day);
-  const endDate = new Date(`${day}T00:00:00Z`);
-  endDate.setUTCDate(endDate.getUTCDate() + 1);
-  const endDay = endDate.toISOString().slice(0, 10);
-  try {
-    await queryRange(day, endDay, day);
-  } catch (error) {
-    state.dayState.set(day, {status: 'error', error: error.message, granules: []});
-    updateCell(day);
-    openDetail(day);
-  }
+  await openDay(day, true);
 }
 
 async function queryMonth() {
   if (!state.selected) return;
   const year = Number(yearEl.value);
   const month = Number(monthEl.value || 0);
-  const monthStart = new Date(Date.UTC(year, month, 1));
-  const monthEnd = new Date(Date.UTC(year, month + 1, 1));
-  for (let cursor = new Date(monthStart); cursor < monthEnd; cursor.setUTCDate(cursor.getUTCDate() + 7)) {
-    const chunkEnd = new Date(Math.min(monthEnd.getTime(), cursor.getTime() + 7 * 86400000));
-    const startDay = cursor.toISOString().slice(0, 10);
-    const endDay = chunkEnd.toISOString().slice(0, 10);
-    for (let day = new Date(cursor); day < chunkEnd; day.setUTCDate(day.getUTCDate() + 1)) {
-      const key = day.toISOString().slice(0, 10);
-      state.dayState.set(key, {status: 'processing', granules: []});
-      updateCell(key);
-    }
-    try {
-      await queryRange(startDay, endDay);
-    } catch (error) {
-      for (let day = new Date(cursor); day < chunkEnd; day.setUTCDate(day.getUTCDate() + 1)) {
-        const key = day.toISOString().slice(0, 10);
-        state.dayState.set(key, {status: 'error', error: error.message, granules: []});
-        updateCell(key);
-      }
-      break;
-    }
-  }
+  const start = new Date(Date.UTC(year, month, 1));
+  const end = new Date(Date.UTC(year, month + 1, 1));
+  const params = new URLSearchParams({
+    product: state.selected.id,
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+  });
+  await json('/api/index?' + params, {method: 'POST'});
+  loadYear(true);
 }
 
 function displayDay(timestamp) {
@@ -296,62 +274,97 @@ function displayTime(timestamp) {
   return value.toISOString().slice(11, 19);
 }
 
-function openDetail(day) {
-  const item = state.dayState.get(day);
+async function openDay(day, schedulePoll = false) {
+  clearTimeout(state.dayPoll);
+  if (!state.selected) return;
+  const product = state.selected.id;
+  let item;
+  try {
+    item = await json(`/api/day?product=${encodeURIComponent(product)}&day=${day}`);
+  } catch (error) {
+    detailEl.classList.remove('hidden');
+    $('#detail-day').textContent = `${day} · ${state.displayZone}`;
+    $('#detail-summary').textContent = `读取失败 · ${error.message}`;
+    $('#timeline').replaceChildren();
+    $('#granule-list').replaceChildren();
+    return;
+  }
+  if (state.selected?.id !== product) return;
   detailEl.classList.remove('hidden');
   $('#detail-day').textContent = `${day} · ${state.displayZone}`;
-  if (!item) {
-    $('#detail-summary').textContent = '待查询';
-    $('#timeline').replaceChildren();
-    $('#granule-list').replaceChildren();
-    return;
-  }
-  if (item.status === 'error') {
-    $('#detail-summary').textContent = `查询错误 · ${item.error || ''}`;
-    $('#timeline').replaceChildren();
-    $('#granule-list').replaceChildren();
-    return;
-  }
-  const granules = item.granules || [];
-  const files = granules.reduce((sum, granule) => sum + (granule.assets?.length || 0), 0);
-  $('#detail-summary').textContent = granules.length ? `${granules.length} 个 Granule · ${files} 个资产` : '上游无数据';
-  renderTimeline(granules);
-  renderGranules(granules);
+  const official = item.official_day;
+  const localFiles = (item.slots || []).reduce((sum, slot) => sum + (slot.local?.length || 0), 0);
+  $('#detail-summary').textContent = official
+    ? `${item.slots.length} 个时次 · 官方资产 ${official.asset_count} · 本地文件 ${localFiles}${item.official_gap_count ? ` · 官方缺时次 ${item.official_gap_count}` : ''}`
+    : (item.indexing ? '官方索引中…' : '尚未生成官方索引');
+  renderTimeline(item);
+  renderGranules(item.slots || []);
+  if (schedulePoll && item.indexing && !official) state.dayPoll = setTimeout(() => openDay(day, true), 3000);
 }
 
-function renderTimeline(granules) {
+function renderTimeline(day) {
   const timeline = $('#timeline');
   timeline.replaceChildren();
-  for (const granule of granules) {
-    const [hour, minute, second] = displayTime(granule.start).split(':').map(Number);
+  const interval = Number(day.cadence_minutes || 0);
+  const slots = day.slots || [];
+  if (day.timeline_mode === 'grid' && interval > 0 && 1440 % interval === 0) {
+    const total = 1440 / interval;
+    const by = new Map();
+    for (const slot of slots) {
+      const date = new Date(slot.slot);
+      const minute = date.getUTCHours() * 60 + date.getUTCMinutes();
+      by.set(Math.round(minute / interval) % total, slot);
+    }
+    const grid = document.createElement('div');
+    grid.className = 'slots';
+    grid.style.gridTemplateColumns = `repeat(${total},minmax(4px,1fr))`;
+    for (let i = 0; i < total; i++) {
+      const slot = by.get(i);
+      const cell = document.createElement('i');
+      const hourly = i % (60 / interval) === 0;
+      const status = slot?.status || (day.official_day?.state === 'present' ? 'official_missing' : 'unknown');
+      cell.className = `slot c ${status}${hourly ? ' hourly' : ''}`;
+      const minute = i * interval;
+      cell.title = `${String(Math.floor(minute / 60)).padStart(2,'0')}:${String(minute % 60).padStart(2,'0')} · ${statusLabels[status] || status}`;
+      grid.append(cell);
+    }
+    timeline.append(grid);
+    return;
+  }
+  for (const slot of slots) {
+    const [hour, minute, second] = displayTime(slot.slot).split(':').map(Number);
     const pos = (hour * 3600 + minute * 60 + second) / 86400 * 100;
     const marker = document.createElement('i');
-    marker.className = 'event-slot';
+    const hourly = Math.min(minute, 60 - minute) <= 3;
+    marker.className = `event-slot c ${slot.status}${hourly ? ' hourly' : ''}`;
     marker.style.left = `${Math.max(0, Math.min(100, pos)).toFixed(4)}%`;
-    marker.title = `${displayTime(granule.start)} · ${granule.assets?.length || 0} assets`;
+    marker.title = `${displayTime(slot.slot)} · ${statusLabels[slot.status] || slot.status}`;
     timeline.append(marker);
   }
 }
 
-function renderGranules(granules) {
+function renderGranules(slots) {
   const list = $('#granule-list');
   list.replaceChildren();
-  for (const granule of granules.slice(0, 80)) {
-    const first = granule.assets?.[0];
+  for (const slot of slots.slice(0, 80)) {
+    const first = slot.official?.[0];
+    const local = slot.local?.length || 0;
+    const officialAssets = (slot.official || []).reduce((sum, row) => sum + (row.asset_count || 0), 0);
     const row = document.createElement('div');
     row.className = 'granule-row';
-    row.innerHTML = `<time>${esc(displayTime(granule.start))}</time><span>${granule.assets?.length || 0} 文件</span><code title="${esc(first?.name || granule.id)}">${esc(first?.name || granule.id)}</code>`;
+    row.innerHTML = `<time>${esc(displayTime(slot.slot))}</time><span>${local} / ${officialAssets} 文件</span><code title="${esc(first?.filename || '')}">${esc(first?.filename || statusLabels[slot.status] || slot.status)}</code>`;
     list.append(row);
   }
-  if (granules.length > 80) {
+  if (slots.length > 80) {
     const row = document.createElement('div');
     row.className = 'granule-row';
-    row.textContent = `另有 ${granules.length - 80} 个 Granule 未展开显示`;
+    row.textContent = `另有 ${slots.length - 80} 个时次未展开显示`;
     list.append(row);
   }
 }
 
 function closeDetail() {
+  clearTimeout(state.dayPoll);
   detailEl.classList.add('hidden');
 }
 
@@ -433,20 +446,21 @@ async function loadCatalog() {
         area_type: product.area_type || '',
         catalog_source: product.catalog_source || '',
         product_count: product.product_count ? String(product.product_count) : '',
+        local_covered: Boolean(product.local_covered),
       },
     }));
     const saved = readFilters();
-    rebuildFilters('source');
+    rebuildFilters('source', false);
     if (saved.source === source) {
       restoreSelect(satelliteEl, saved.satellite);
-      rebuildFilters('satellite');
+      rebuildFilters('satellite', false);
       restoreSelect(instrumentEl, saved.instrument);
-      rebuildFilters('instrument');
+      rebuildFilters('instrument', false);
       restoreSelect(levelEl, saved.level);
-      rebuildFilters('level');
+      rebuildFilters('level', false);
       restoreSelect(productEl, saved.product);
-      updateSelectedProduct();
     }
+    updateSelectedProduct();
   } catch (error) {
     gridEl.classList.remove('placeholder-grid');
     $('#product-title').textContent = '产品目录读取失败';
@@ -502,17 +516,16 @@ function bind() {
   instrumentEl.addEventListener('change', () => { rebuildFilters('instrument'); persistFilters(); });
   levelEl.addEventListener('change', () => { rebuildFilters('level'); persistFilters(); });
   productEl.addEventListener('change', updateSelectedProduct);
-  yearEl.addEventListener('change', () => { state.dayState.clear(); closeDetail(); renderCalendar(); persistFilters(); });
+  yearEl.addEventListener('change', () => { state.dayState.clear(); closeDetail(); renderCalendar(); persistFilters(); loadYear(true); });
   timezoneEl.addEventListener('change', () => {
     state.displayZone = timezoneEl.value;
     localStorage.setItem('satellite-data-zone', state.displayZone);
-    state.dayState.clear();
     closeDetail();
     renderCalendar();
   });
   $('#reset-filters').addEventListener('click', resetFilters);
   $('#query-month').addEventListener('click', queryMonth);
-  $('#clear-calendar').addEventListener('click', () => { state.dayState.clear(); closeDetail(); renderCalendar(); });
+  $('#clear-calendar').addEventListener('click', () => loadYear(true));
   $('#close-detail').addEventListener('click', closeDetail);
   $('#refresh-sources').addEventListener('click', loadSources);
 }

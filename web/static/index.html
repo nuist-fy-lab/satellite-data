@@ -51,12 +51,15 @@
             <button id="reset-filters" class="filter-reset" type="button">重置</button>
           </div>
           <div class="legend" aria-label="状态图例">
-            <span class="legend-item"><i class="c available"></i>上游有数据</span>
-            <span class="legend-item"><i class="c local"></i>本地已归档</span>
-            <span class="legend-item"><i class="c processing"></i>查询 / 处理中</span>
-            <span class="legend-item"><i class="c official-missing"></i>上游无数据</span>
-            <span class="legend-item"><i class="c error"></i>查询错误</span>
-            <span class="legend-item"><i class="c unknown"></i>待查询</span>
+            <span class="legend-item"><i class="c complete"></i>全部时次完整</span>
+            <span class="legend-item"><i class="c complete_official_gap"></i>全部完整·官方缺</span>
+            <span class="legend-item"><i class="c hourly_complete"></i>整点完整</span>
+            <span class="legend-item"><i class="c hourly_complete_official_gap"></i>整点完整·官方缺</span>
+            <span class="legend-item"><i class="c missing"></i>本地缺失</span>
+            <span class="legend-item"><i class="c processing"></i>索引 / 处理中</span>
+            <span class="legend-item"><i class="c official_missing"></i>官方缺失</span>
+            <span class="legend-item"><i class="c error"></i>错误</span>
+            <span class="legend-item"><i class="c unknown"></i>待索引</span>
           </div>
         </div>
       </header>
@@ -68,8 +71,8 @@
             <div id="product-meta" class="product-meta"></div>
           </div>
           <div class="calendar-actions">
-            <button id="query-month" type="button">查询本月</button>
-            <button id="clear-calendar" type="button">清除查询状态</button>
+            <button id="query-month" type="button">优先索引本月</button>
+            <button id="clear-calendar" type="button">刷新年历</button>
           </div>
         </div>
         <div class="calendar-axis" aria-hidden="true">
@@ -78,7 +81,7 @@
         <div class="calendar-wrap">
           <div id="year-grid" class="year-grid placeholder-grid" aria-label="年度数据日历"></div>
         </div>
-        <div class="calendar-help">点击日期查询该日上游数据；“查询本月”会按最多 7 天一段访问官方接口，避免对国外数据源产生过量请求。</div>
+        <div class="calendar-help">年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。</div>
 
         <section id="day-detail" class="detail hidden">
           <div class="detail-head">

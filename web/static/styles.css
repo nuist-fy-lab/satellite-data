@@ -10,6 +10,7 @@
   --empty:#ebedf0;
   --green:#40c463;
   --blue:#2f81f7;
+  --orange:#f59e0b;
   --yellow:#ffd33d;
   --red:#cf222e;
   --cell:12px;
@@ -56,10 +57,13 @@ main{max-width:1180px;margin:0 auto;padding:28px 24px 60px}
 .legend-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
 .c{width:var(--cell);height:var(--cell);border-radius:2px;background:var(--empty);display:block;outline:1px solid #1b1f2318;outline-offset:-1px}
 .legend .c{width:11px;height:11px;flex:0 0 11px}
-.c.available{background:var(--green)}
-.c.local{background:var(--blue)}
+.c.complete{background:var(--green)}
+.c.complete_official_gap{background:repeating-linear-gradient(135deg,var(--green) 0 4px,#b7ebc3 4px 7px)}
+.c.hourly_complete{background:var(--blue)}
+.c.hourly_complete_official_gap{background:repeating-linear-gradient(135deg,var(--blue) 0 4px,#b9d7ff 4px 7px)}
+.c.missing{background:var(--orange)}
 .c.processing{background:repeating-linear-gradient(135deg,var(--yellow) 0 4px,#fff4b8 4px 7px);animation:pulse 1.5s ease-in-out infinite}
-.c.official-missing{background:repeating-linear-gradient(135deg,#b7bec7 0 3px,#f6f8fa 3px 6px)}
+.c.official_missing{background:repeating-linear-gradient(135deg,#b7bec7 0 3px,#f6f8fa 3px 6px)}
 .c.error{background:var(--red)}
 .c.unknown{background:var(--empty)}
 .c.spacer{visibility:hidden}
@@ -87,6 +91,11 @@ main{max-width:1180px;margin:0 auto;padding:28px 24px 60px}
 .timeline-axis{display:flex;justify-content:space-between;min-width:720px;padding:0 0 4px;color:var(--muted);font-size:10px}
 .timeline-events{position:relative;min-width:720px;height:22px;border-radius:3px;background:var(--soft);outline:1px solid #d8dee4;outline-offset:-1px;overflow:hidden}
 .event-slot{position:absolute;top:2px;bottom:2px;width:4px;transform:translateX(-2px);border-radius:1px;background:var(--green)}
+.event-slot.hourly{box-shadow:0 0 0 1px #24292f55}
+.timeline-row{margin-top:7px}
+.slots{display:grid;gap:2px;min-width:720px}
+.slot{width:auto;height:17px;border-radius:2px}
+.slot.hourly{box-shadow:inset 2px 0 0 #24292f55}
 .granule-list{margin-top:8px;display:grid;gap:4px}
 .granule-row{display:grid;grid-template-columns:150px 60px minmax(0,1fr);gap:8px;align-items:baseline;font-size:11px;padding-top:4px;border-top:1px solid #eaeef2}
 .granule-row time,.granule-row span{color:var(--muted)}

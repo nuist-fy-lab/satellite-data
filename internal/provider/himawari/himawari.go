@@ -82,8 +82,9 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 			Product:    product,
 			Cadence:    himawariCadence(product),
 			Metadata: map[string]string{
-				"bucket": p.bucket,
-				"store":  "s3",
+				"bucket":    p.bucket,
+				"store":     "s3",
+				"area_type": himawariArea(product),
 			},
 		})
 	}
@@ -205,4 +206,11 @@ func himawariCadence(product string) string {
 		return "10m"
 	}
 	return "event"
+}
+
+func himawariArea(product string) string {
+	if strings.Contains(strings.ToUpper(product), "FLDK") {
+		return "DISK"
+	}
+	return ""
 }

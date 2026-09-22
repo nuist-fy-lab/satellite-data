@@ -59,6 +59,11 @@ type Product struct {
 	CatalogSource string            `json:"catalog_source"`
 	ProductCount  int64             `json:"product_count,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
+	LocalCovered  bool              `json:"local_covered"`
+	FirstDay      *string           `json:"first_day,omitempty"`
+	LastDay       *string           `json:"last_day,omitempty"`
+	FirstYear     *string           `json:"first_year,omitempty"`
+	LastYear      *string           `json:"last_year,omitempty"`
 }
 
 type Asset struct {

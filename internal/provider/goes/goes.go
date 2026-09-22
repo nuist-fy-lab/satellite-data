@@ -83,8 +83,9 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 			Product:    product,
 			Cadence:    goesCadence(product),
 			Metadata: map[string]string{
-				"bucket": p.bucket,
-				"store":  "gcs",
+				"bucket":    p.bucket,
+				"store":     "gcs",
+				"area_type": goesArea(product),
 			},
 		})
 	}
@@ -107,40 +108,58 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 		assets []model.Asset
 	}
 	groups := map[string]*grouped{}
-	for hour := q.Start.UTC().Truncate(time.Hour); hour.Before(q.End); hour = hour.Add(time.Hour) {
-		prefix := fmt.Sprintf("%s/%04d/%03d/%02d/", product, hour.Year(), hour.YearDay(), hour.Hour())
-		token := ""
-		for {
-			page, err := p.objects.ListGCS(ctx, p.bucket, prefix, "", token)
-			if err != nil {
-				return nil, err
+	consume := func(page objectstore.Page) {
+		for _, object := range page.Objects {
+			start, end, key, ok := parseGOESObjectTime(filepath.Base(object.Name))
+			if !ok || start.Before(q.Start) || !start.Before(q.End) {
+				continue
 			}
-			for _, object := range page.Objects {
-				start, end, key, ok := parseGOESObjectTime(filepath.Base(object.Name))
-				if !ok || start.Before(q.Start) || !start.Before(q.End) {
-					continue
-				}
-				g := groups[key]
-				if g == nil {
-					g = &grouped{start: start, end: end}
-					groups[key] = g
-				}
-				if end.After(g.end) {
-					g.end = end
-				}
-				g.assets = append(g.assets, model.Asset{
-					ID:        object.Name,
-					Name:      filepath.Base(object.Name),
-					URL:       objectstore.GCSObjectURL(p.bucket, object.Name),
-					Size:      object.Size,
-					ETag:      object.ETag,
-					MediaType: "application/x-netcdf",
-				})
+			g := groups[key]
+			if g == nil {
+				g = &grouped{start: start, end: end}
+				groups[key] = g
 			}
-			if page.NextToken == "" {
-				break
+			if end.After(g.end) {
+				g.end = end
 			}
-			token = page.NextToken
+			g.assets = append(g.assets, model.Asset{
+				ID: object.Name, Name: filepath.Base(object.Name), URL: objectstore.GCSObjectURL(p.bucket, object.Name),
+				Size: object.Size, ETag: object.ETag, MediaType: "application/x-netcdf",
+			})
+		}
+	}
+	if q.End.Sub(q.Start) <= 3*time.Hour {
+		for hour := q.Start.UTC().Truncate(time.Hour); hour.Before(q.End); hour = hour.Add(time.Hour) {
+			prefix := fmt.Sprintf("%s/%04d/%03d/%02d/", product, hour.Year(), hour.YearDay(), hour.Hour())
+			token := ""
+			for {
+				page, err := p.objects.ListGCS(ctx, p.bucket, prefix, "", token)
+				if err != nil {
+					return nil, err
+				}
+				consume(page)
+				if page.NextToken == "" {
+					break
+				}
+				token = page.NextToken
+			}
+		}
+	} else {
+		firstDay := time.Date(q.Start.UTC().Year(), q.Start.UTC().Month(), q.Start.UTC().Day(), 0, 0, 0, 0, time.UTC)
+		for day := firstDay; day.Before(q.End); day = day.AddDate(0, 0, 1) {
+			prefix := fmt.Sprintf("%s/%04d/%03d/", product, day.Year(), day.YearDay())
+			token := ""
+			for {
+				page, err := p.objects.ListGCS(ctx, p.bucket, prefix, "", token)
+				if err != nil {
+					return nil, err
+				}
+				consume(page)
+				if page.NextToken == "" {
+					break
+				}
+				token = page.NextToken
+			}
 		}
 	}
 
@@ -162,6 +181,20 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
 	return out, nil
+}
+
+func goesArea(product string) string {
+	upper := strings.ToUpper(product)
+	switch {
+	case strings.HasSuffix(upper, "F") || strings.Contains(upper, "RADF"):
+		return "DISK"
+	case strings.HasSuffix(upper, "C") || strings.Contains(upper, "RADC"):
+		return "CONUS"
+	case strings.HasSuffix(upper, "M") || strings.Contains(upper, "RADM"):
+		return "MESO"
+	default:
+		return ""
+	}
 }
 
 func parseGOESObjectTime(name string) (time.Time, time.Time, string, bool) {
