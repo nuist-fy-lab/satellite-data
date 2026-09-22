@@ -51,6 +51,14 @@ func main() {
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("graceful shutdown", "error", err)
+		}
+	}()
 	slog.Info("satellited listening", "addr", *addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server stopped", "error", err)
