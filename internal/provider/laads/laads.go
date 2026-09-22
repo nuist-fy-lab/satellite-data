@@ -74,14 +74,14 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 }
 
 type productInfo struct {
-	Name                string `json:"name"`
-	Title               string `json:"title"`
-	ProcessingLevel     string `json:"processingLevel"`
-	InstrumentPlatform  string `json:"instrument:platform"`
-	SpatialResolution   string `json:"spatialResolution"`
-	TemporalResolution  string `json:"temporalResolution"`
-	DefaultCollection   any    `json:"defaultCollection"`
-	DefaultArchiveSet   any    `json:"defaultArchiveSet"`
+	Name               string `json:"name"`
+	Title              string `json:"title"`
+	ProcessingLevel    string `json:"processingLevel"`
+	InstrumentPlatform string `json:"instrument:platform"`
+	SpatialResolution  string `json:"spatialResolution"`
+	TemporalResolution string `json:"temporalResolution"`
+	DefaultCollection  any    `json:"defaultCollection"`
+	DefaultArchiveSet  any    `json:"defaultArchiveSet"`
 }
 
 func (p *Provider) products(ctx context.Context) ([]model.Collection, error) {
@@ -129,12 +129,12 @@ func (p *Provider) products(ctx context.Context) ([]model.Collection, error) {
 			Product:    shortName,
 			Cadence:    "event",
 			Metadata: map[string]string{
-				"title":            title,
-				"spatial_resolution": item.SpatialResolution,
+				"title":               title,
+				"spatial_resolution":  item.SpatialResolution,
 				"temporal_resolution": item.TemporalResolution,
-				"default_collection": fmt.Sprint(item.DefaultCollection),
+				"default_collection":  fmt.Sprint(item.DefaultCollection),
 				"default_archive_set": fmt.Sprint(item.DefaultArchiveSet),
-				"version_strategy": "LAADS API v2 current archive metadata",
+				"version_strategy":    "LAADS API v2 current archive metadata",
 			},
 		})
 	}
