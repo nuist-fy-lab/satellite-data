@@ -14,9 +14,9 @@ The first working slice implements anonymous public-cloud discovery for:
 | Himawari-8/9 | NOAA NODD anonymous S3 | implemented |
 | MTG / Meteosat-12 FCI | EUMETSAT Data Store OpenSearch + OAuth2 download; MQTT publication subscription / EUMETCast Terrestrial for low latency | discovery implemented; authenticated transfer next |
 | MODIS Terra/Aqua | LAADS API v2 product catalog + `content/details`; LAADS Download Token + resumable HTTPS | implemented |
-| EarthCARE | ESA MAAP STAC + authenticated HTTPS/object assets | next |
-| CALIPSO | NASA CMR + Earthdata Login authenticated HTTPS | next |
-| CloudSat | CIRA DPC THREDDS catalog + HTTPServer/OPeNDAP with DPC credentials | next |
+| EarthCARE | ESA MAAP STAC + OIDC-protected HTTPS science assets | discovery implemented |
+| CALIPSO | NASA CMR + Earthdata Login protected ASDC HTTPS | discovery implemented |
+| CloudSat | CIRA DPC THREDDS catalog + authenticated HTTPServer; OPeNDAP for subsets | discovery implemented |
 
 The provider choices intentionally avoid retired FTP endpoints, HTML scraping, and legacy NASA APIs.
 
@@ -32,8 +32,13 @@ internal/
   model/                 Source / Collection / Granule / Asset
   objectstore/           anonymous GCS + S3 listing
   provider/
+    calipso/
+    cloudsat/
+    earthcare/
+    eumetsat/
     goes/
     himawari/
+    laads/
   transfer/              resumable HTTP transfer core
 web/                      embedded dependency-free UI
 ```
