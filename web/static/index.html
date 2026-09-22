@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Satellite Data</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">NUIST FY Lab</p>
+        <h1>Satellite Data</h1>
+        <p class="subtitle">多卫星科学数据归档与自动同步平台</p>
+      </div>
+      <div class="health" id="health">连接中…</div>
+    </header>
+
+    <section class="summary">
+      <article><span>匿名直连</span><strong id="tier-anonymous">—</strong></article>
+      <article><span>登录 / Token</span><strong id="tier-token">—</strong></article>
+      <article><span>特殊访问</span><strong id="tier-special">—</strong></article>
+    </section>
+
+    <section>
+      <div class="section-title">
+        <div><p class="eyebrow">Sources</p><h2>数据源</h2></div>
+        <button id="refresh" type="button">刷新</button>
+      </div>
+      <div class="grid" id="sources"></div>
+    </section>
+
+    <section class="explorer">
+      <div class="section-title"><div><p class="eyebrow">Catalog</p><h2>目录浏览</h2></div></div>
+      <div class="toolbar">
+        <select id="source-select" aria-label="数据源"></select>
+        <button id="load-catalog" type="button">加载产品</button>
+      </div>
+      <div id="catalog" class="catalog empty">选择数据源查看官方产品目录。</div>
+    </section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

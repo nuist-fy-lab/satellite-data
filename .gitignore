@@ -1,0 +1,6 @@
+/dist/
+/*.db
+/*.db-shm
+/*.db-wal
+*.part
+.DS_Store
