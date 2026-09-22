@@ -20,9 +20,10 @@ import (
 )
 
 type Indexer struct {
-	registry    *provider.Registry
-	store       *state.Store
-	archiveRoot string
+	registry     *provider.Registry
+	store        *state.Store
+	archiveRoot  string
+	catalogWrite sync.Mutex
 }
 
 func New(registry *provider.Registry, store *state.Store, archiveRoot string) *Indexer {
@@ -39,22 +40,27 @@ func (i *Indexer) Run(ctx context.Context) {
 }
 
 func (i *Indexer) catalogLoop(ctx context.Context) {
-	i.refreshCatalogs(ctx)
-	ticker := time.NewTicker(6 * time.Hour)
-	defer ticker.Stop()
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			i.refreshCatalogs(ctx)
+		case <-timer.C:
+			failures := i.refreshCatalogs(ctx)
+			delay := 6 * time.Hour
+			if failures > 0 {
+				delay = 30 * time.Second
+			}
+			timer.Reset(delay)
 		}
 	}
 }
 
-func (i *Indexer) refreshCatalogs(ctx context.Context) {
+func (i *Indexer) refreshCatalogs(ctx context.Context) int {
 	providers := i.registry.Providers()
 	sem := make(chan struct{}, 4)
+	results := make(chan bool, len(providers))
 	var wg sync.WaitGroup
 	for _, p := range providers {
 		p := p
@@ -64,15 +70,17 @@ func (i *Indexer) refreshCatalogs(ctx context.Context) {
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
+				results <- false
 				return
 			}
 			defer func() { <-sem }()
 			refreshCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-			defer cancel()
 			collections, err := p.Collections(refreshCtx)
+			cancel()
 			if err != nil {
 				slog.Warn("refresh official product catalog", "source", p.Source().ID, "error", err)
 				_ = i.store.CatalogError(context.Background(), p.Source().ID, err)
+				results <- false
 				return
 			}
 			source := p.Source()
@@ -80,14 +88,30 @@ func (i *Indexer) refreshCatalogs(ctx context.Context) {
 			for _, collection := range collections {
 				products = append(products, provider.ProductFromCollection(source, collection))
 			}
-			if err := i.store.UpsertProducts(refreshCtx, source.ID, products); err != nil {
+			i.catalogWrite.Lock()
+			persistCtx, persistCancel := context.WithTimeout(ctx, 30*time.Second)
+			err = i.store.UpsertProducts(persistCtx, source.ID, products)
+			persistCancel()
+			i.catalogWrite.Unlock()
+			if err != nil {
 				slog.Warn("persist official product catalog", "source", source.ID, "error", err)
+				_ = i.store.CatalogError(context.Background(), source.ID, err)
+				results <- false
 				return
 			}
 			slog.Info("official product catalog refreshed", "source", source.ID, "products", len(products))
+			results <- true
 		}()
 	}
 	wg.Wait()
+	close(results)
+	failures := 0
+	for ok := range results {
+		if !ok {
+			failures++
+		}
+	}
+	return failures
 }
 
 func (i *Indexer) officialLoop(ctx context.Context, worker int) {
