@@ -32,9 +32,9 @@ func TestScienceAssetsPrefersIndividualDataFiles(t *testing.T) {
 func TestEarthCAREProductTypesFromOfficialCategories(t *testing.T) {
 	properties := map[string]any{
 		"categories": []any{
-			map[string]any{"scheme": "http://www.opengis.net/eop/2.1/productType", "label": "ATL_CLA_2A"},
-			map[string]any{"scheme": "http://www.opengis.net/eop/2.1/productType", "label": "CPR_CLP_2A"},
-			map[string]any{"scheme": "https://earth.esa.int/concepts/concept_scheme/instruments", "label": "ATLID"},
+			map[string]any{"scheme": "http://www.opengis.net/eop/2.1/", "term": "http://www.opengis.net/eop/2.1/productType", "label": "ATL_CLA_2A"},
+			map[string]any{"scheme": "http://www.opengis.net/eop/2.1/", "term": "http://www.opengis.net/eop/2.1/productType", "label": "CPR_CLP_2A"},
+			map[string]any{"scheme": "https://earth.esa.int/concepts/concept_scheme/instruments", "term": "https://earth.esa.int/concept/example", "label": "ATLID"},
 		},
 	}
 	got := earthcareProductTypes(properties)

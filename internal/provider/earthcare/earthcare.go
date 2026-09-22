@@ -313,8 +313,8 @@ func earthcareProductTypes(properties map[string]any) []string {
 		if !ok {
 			continue
 		}
-		scheme := anyString(category["scheme"])
-		if !strings.HasSuffix(scheme, "/productType") {
+		term := anyString(category["term"])
+		if !strings.HasSuffix(term, "/productType") {
 			continue
 		}
 		label := anyString(category["label"])
