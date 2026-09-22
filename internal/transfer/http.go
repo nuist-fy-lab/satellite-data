@@ -35,6 +35,10 @@ type HTTP struct {
 	maxDelay    time.Duration
 }
 
+type Authorizer interface {
+	Authorize(context.Context, *http.Request) error
+}
+
 func NewHTTP(client *http.Client) *HTTP {
 	if client == nil {
 		transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -52,6 +56,10 @@ func NewHTTP(client *http.Client) *HTTP {
 }
 
 func (h *HTTP) Download(ctx context.Context, asset model.Asset, destinationDir string) (Result, error) {
+	return h.DownloadAuthorized(ctx, asset, destinationDir, nil)
+}
+
+func (h *HTTP) DownloadAuthorized(ctx context.Context, asset model.Asset, destinationDir string, authorizer Authorizer) (Result, error) {
 	if asset.URL == "" {
 		return Result{}, errors.New("asset URL is empty")
 	}
@@ -94,7 +102,7 @@ func (h *HTTP) Download(ctx context.Context, asset model.Asset, destinationDir s
 		return Result{Path: finalPath, Size: resumeFrom, ResumedFrom: resumeFrom, SHA256: digest}, err
 	}
 
-	resp, err := h.getWithRetry(ctx, asset.URL, resumeFrom)
+	resp, err := h.getWithRetry(ctx, asset.URL, resumeFrom, authorizer)
 	if err != nil {
 		return Result{}, err
 	}
@@ -160,7 +168,7 @@ func (h *HTTP) Download(ctx context.Context, asset model.Asset, destinationDir s
 	return Result{Path: finalPath, Size: info.Size(), ResumedFrom: resumeFrom, SHA256: digest}, nil
 }
 
-func (h *HTTP) getWithRetry(ctx context.Context, locator string, resumeFrom int64) (*http.Response, error) {
+func (h *HTTP) getWithRetry(ctx context.Context, locator string, resumeFrom int64, authorizer Authorizer) (*http.Response, error) {
 	for attempt := 0; attempt < h.maxAttempts; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, locator, nil)
 		if err != nil {
@@ -168,6 +176,11 @@ func (h *HTTP) getWithRetry(ctx context.Context, locator string, resumeFrom int6
 		}
 		if resumeFrom > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeFrom))
+		}
+		if authorizer != nil {
+			if err := authorizer.Authorize(ctx, req); err != nil {
+				return nil, err
+			}
 		}
 		resp, err := h.client.Do(req)
 		if err == nil && !retryable(resp.StatusCode) {

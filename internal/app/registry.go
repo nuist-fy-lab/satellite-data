@@ -5,13 +5,14 @@ import (
 
 	"github.com/nuist-fy-lab/satellite-data/internal/objectstore"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
+	"github.com/nuist-fy-lab/satellite-data/internal/provider/eumetsat"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/goes"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/himawari"
 )
 
 func NewRegistry() (*provider.Registry, error) {
 	objects := objectstore.NewClient(nil)
-	providers := make([]provider.Provider, 0, 6)
+	providers := make([]provider.Provider, 0, 7)
 	for _, satellite := range []int{16, 17, 18, 19} {
 		p, err := goes.New(satellite, objects)
 		if err != nil {
@@ -26,5 +27,6 @@ func NewRegistry() (*provider.Registry, error) {
 		}
 		providers = append(providers, p)
 	}
+	providers = append(providers, eumetsat.New(nil))
 	return provider.NewRegistry(providers...), nil
 }

@@ -43,6 +43,7 @@ type Asset struct {
 	ID        string            `json:"id"`
 	Name      string            `json:"name"`
 	URL       string            `json:"url"`
+	AuthRef   string            `json:"auth_ref,omitempty"`
 	Size      int64             `json:"size,omitempty"`
 	ETag      string            `json:"etag,omitempty"`
 	MediaType string            `json:"media_type,omitempty"`
