@@ -2,44 +2,136 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=2">
 </head>
-<body>
-  <main class="shell">
-    <header>
-      <div>
-        <p class="eyebrow">NUIST FY Lab</p>
-        <h1>Satellite Data</h1>
-        <p class="subtitle">多卫星科学数据归档与自动同步平台</p>
-      </div>
-      <div class="health" id="health">连接中…</div>
-    </header>
+<body class="with-sidebar sidebar-collapsed">
+  <aside class="sidebar" aria-label="功能导航">
+    <div class="sidebar-top">
+      <button class="sidebar-toggle" type="button" aria-label="展开功能导航" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
+      <div class="sidebar-title">Satellite Data</div>
+    </div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" type="button" data-view="calendar-view"><span class="nav-icon">▦</span><span class="nav-label">数据日历</span></button>
+      <button class="nav-item" type="button" data-view="sources-view"><span class="nav-icon">◎</span><span class="nav-label">数据源</span></button>
+      <button class="nav-item" type="button" data-view="downloads-view"><span class="nav-icon">⇩</span><span class="nav-label">下载任务</span></button>
+      <button class="nav-item" type="button" data-view="sync-view"><span class="nav-icon">↻</span><span class="nav-label">同步订阅</span></button>
+      <button class="nav-item" type="button" data-view="monitor-view"><span class="nav-icon">∿</span><span class="nav-label">运行监控</span></button>
+      <button class="nav-item" type="button" data-view="access-view"><span class="nav-icon">⌘</span><span class="nav-label">访问凭据</span></button>
+    </nav>
+    <div class="sidebar-status" title="Satellite Data 服务状态">
+      <i id="service-dot"></i><span class="nav-label" id="service-label">连接中</span>
+    </div>
+  </aside>
 
-    <section class="summary">
-      <article><span>匿名直连</span><strong id="tier-anonymous">—</strong></article>
-      <article><span>登录 / Token</span><strong id="tier-token">—</strong></article>
-      <article><span>特殊访问</span><strong id="tier-special">—</strong></article>
+  <main>
+    <section class="view active" id="calendar-view">
+      <header class="page-header">
+        <div class="brand-block">
+          <div class="brand">Satellite Data</div>
+          <div class="subbrand">NUIST FY Lab · 多卫星科学数据归档与同步</div>
+        </div>
+        <div class="header-right">
+          <div class="controls">
+            <select id="source" title="数据源"></select>
+            <select id="satellite" title="卫星"></select>
+            <select id="instrument" title="传感器"></select>
+            <select id="level" title="数据级别"></select>
+            <select id="product" title="产品"></select>
+            <select id="year" title="年份"></select>
+            <select id="month" title="批量查询月份"></select>
+            <select id="timezone" title="显示时区">
+              <option value="UTC">UTC</option>
+              <option value="BJT">BJT</option>
+            </select>
+            <button id="reset-filters" class="filter-reset" type="button">重置</button>
+          </div>
+          <div class="legend" aria-label="状态图例">
+            <span class="legend-item"><i class="c available"></i>上游有数据</span>
+            <span class="legend-item"><i class="c local"></i>本地已归档</span>
+            <span class="legend-item"><i class="c processing"></i>查询 / 处理中</span>
+            <span class="legend-item"><i class="c official-missing"></i>上游无数据</span>
+            <span class="legend-item"><i class="c error"></i>查询错误</span>
+            <span class="legend-item"><i class="c unknown"></i>待查询</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="calendar-card">
+        <div class="product-head">
+          <div class="product-heading">
+            <div id="product-title" class="product-title">读取产品目录…</div>
+            <div id="product-meta" class="product-meta"></div>
+          </div>
+          <div class="calendar-actions">
+            <button id="query-month" type="button">查询本月</button>
+            <button id="clear-calendar" type="button">清除查询状态</button>
+          </div>
+        </div>
+        <div class="calendar-axis" aria-hidden="true">
+          <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+        </div>
+        <div class="calendar-wrap">
+          <div id="year-grid" class="year-grid placeholder-grid" aria-label="年度数据日历"></div>
+        </div>
+        <div class="calendar-help">点击日期查询该日上游数据；“查询本月”会按最多 7 天一段访问官方接口，避免对国外数据源产生过量请求。</div>
+
+        <section id="day-detail" class="detail hidden">
+          <div class="detail-head">
+            <div>
+              <strong id="detail-day">—</strong>
+              <span id="detail-summary"></span>
+            </div>
+            <button id="close-detail" type="button" aria-label="关闭">×</button>
+          </div>
+          <div class="timeline-axis">
+            <span>00:00</span><span>04:00</span><span>08:00</span><span>12:00</span><span>16:00</span><span>20:00</span><span>24:00</span>
+          </div>
+          <div id="timeline" class="timeline-events"></div>
+          <div id="granule-list" class="granule-list"></div>
+        </section>
+      </section>
     </section>
 
-    <section>
-      <div class="section-title">
-        <div><p class="eyebrow">Sources</p><h2>数据源</h2></div>
-        <button id="refresh" type="button">刷新</button>
+    <section class="view" id="sources-view">
+      <header class="simple-header">
+        <div><div class="brand">数据源</div><div class="subbrand">当前 Provider、访问级别与官方获取方式</div></div>
+        <button id="refresh-sources" type="button">刷新</button>
+      </header>
+      <div class="source-summary">
+        <article><span>匿名直连</span><strong id="tier-anonymous">—</strong></article>
+        <article><span>登录 / Token</span><strong id="tier-token">—</strong></article>
+        <article><span>特殊访问</span><strong id="tier-special">—</strong></article>
       </div>
-      <div class="grid" id="sources"></div>
+      <div id="sources" class="source-list"></div>
     </section>
 
-    <section class="explorer">
-      <div class="section-title"><div><p class="eyebrow">Catalog</p><h2>目录浏览</h2></div></div>
-      <div class="toolbar">
-        <select id="source-select" aria-label="数据源"></select>
-        <button id="load-catalog" type="button">加载产品</button>
-      </div>
-      <div id="catalog" class="catalog empty">选择数据源查看官方产品目录。</div>
+    <section class="view" id="downloads-view">
+      <header class="simple-header"><div><div class="brand">下载任务</div><div class="subbrand">队列、速度、重试和归档状态</div></div></header>
+      <div class="empty-panel">下载任务队列将在调度器接入后显示在这里。</div>
+    </section>
+
+    <section class="view" id="sync-view">
+      <header class="simple-header"><div><div class="brand">同步订阅</div><div class="subbrand">近实时 Watch / Feed 与历史补档</div></div></header>
+      <div class="empty-panel">Provider 的订阅与增量同步策略将在这里统一管理。</div>
+    </section>
+
+    <section class="view" id="monitor-view">
+      <header class="simple-header"><div><div class="brand">运行监控</div><div class="subbrand">下载速度、任务吞吐、Provider 延迟与错误率</div></div></header>
+      <div class="empty-panel">监控模块会沿用 NSMC Data 的轻量折线图与时间窗布局。</div>
+    </section>
+
+    <section class="view" id="access-view">
+      <header class="simple-header"><div><div class="brand">访问凭据</div><div class="subbrand">Earthdata / EUMETSAT / ESA MAAP / CloudSat</div></div></header>
+      <div class="empty-panel">凭据只保存于部署节点的安全配置中；Web 页面不会显示 Secret 明文。</div>
     </section>
   </main>
-  <script type="module" src="/app.js"></script>
+
+  <div id="tip" class="tip hidden"></div>
+  <script type="module" src="/app.js?v=2"></script>
 </body>
 </html>
