@@ -38,7 +38,10 @@ func main() {
 		slog.Error("open persistent state", "path", *stateDB, "error", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	// Do not block process shutdown on sql.DB.Close while background provider
+	// requests are unwinding. The state database runs in WAL mode and the OS
+	// closes its file descriptors when the daemon exits; SQLite recovers any
+	// interrupted transaction on the next open.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	indexer.New(registry, store, *archiveRoot).Run(ctx)
