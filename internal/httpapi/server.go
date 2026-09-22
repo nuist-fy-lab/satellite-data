@@ -61,18 +61,6 @@ func (s *Server) year(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("unknown product"))
 		return
 	}
-	start := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
-	end := start.AddDate(1, 0, 0)
-	todayEnd := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 1)
-	if end.After(todayEnd) {
-		end = todayEnd
-	}
-	if start.Before(end) && r.URL.Query().Get("enqueue") == "1" {
-		if err := s.store.EnqueueRange(r.Context(), product, start, end, 10); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
 	payload, err := s.store.Year(r.Context(), product, year)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

@@ -224,19 +224,19 @@ function dayTip(day) {
   return lines.join('\n');
 }
 
-async function loadYear(schedulePoll = true, enqueue = false) {
+async function loadYear(schedulePoll = true) {
   clearTimeout(state.yearPoll);
   if (!state.selected) return;
   const product = state.selected.id;
   const year = Number(yearEl.value || defaultYear());
   try {
-    const payload = await json(`/api/year?product=${encodeURIComponent(product)}&year=${year}&enqueue=${enqueue ? '1' : '0'}`);
+    const payload = await json(`/api/year?product=${encodeURIComponent(product)}&year=${year}`);
     if (state.selected?.id !== product || Number(yearEl.value) !== year) return;
     state.dayState.clear();
     for (const day of payload.days || []) state.dayState.set(day.day, day);
     renderCalendar();
     if (schedulePoll && (payload.days || []).some(day => day.indexing)) {
-      state.yearPoll = setTimeout(() => loadYear(true, false), 6000);
+      state.yearPoll = setTimeout(() => loadYear(true), 6000);
     }
   } catch (error) {
     $('#product-meta').textContent = `年历索引读取失败 · ${error.message}`;
@@ -259,7 +259,7 @@ async function queryMonth() {
     end: end.toISOString().slice(0, 10),
   });
   await json('/api/index?' + params, {method: 'POST'});
-  loadYear(true, false);
+  loadYear(true);
 }
 
 function displayDay(timestamp) {
