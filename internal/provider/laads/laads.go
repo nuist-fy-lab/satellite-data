@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
@@ -19,6 +19,10 @@ const apiBase = "https://ladsweb.modaps.eosdis.nasa.gov/api/v2"
 
 type Provider struct {
 	client *http.Client
+
+	catalogMu   sync.Mutex
+	catalog     []model.Collection
+	catalogTime time.Time
 }
 
 func New(client *http.Client) *Provider {
@@ -45,28 +49,44 @@ func (p *Provider) Source() model.Source {
 }
 
 func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) {
-	terra, err := p.products(ctx, "Terra")
+	// LAADS' API v2 product catalogue is large (~MiB) and can take many
+	// seconds over the c2ln1 path. Fetch it once for both Terra and Aqua and
+	// retain it for six hours rather than issuing two heavyweight requests on
+	// every UI/API catalogue view.
+	p.catalogMu.Lock()
+	defer p.catalogMu.Unlock()
+	if len(p.catalog) > 0 && time.Since(p.catalogTime) < 6*time.Hour {
+		return append([]model.Collection(nil), p.catalog...), nil
+	}
+	collections, err := p.products(ctx)
 	if err != nil {
 		return nil, err
 	}
-	aqua, err := p.products(ctx, "Aqua")
-	if err != nil {
-		return nil, err
-	}
-	collections := append(terra, aqua...)
 	sort.Slice(collections, func(i, j int) bool {
 		if collections[i].Satellite == collections[j].Satellite {
 			return collections[i].Product < collections[j].Product
 		}
 		return collections[i].Satellite < collections[j].Satellite
 	})
-	return collections, nil
+	p.catalog = collections
+	p.catalogTime = time.Now()
+	return append([]model.Collection(nil), collections...), nil
 }
 
-func (p *Provider) products(ctx context.Context, platform string) ([]model.Collection, error) {
+type productInfo struct {
+	Name                string `json:"name"`
+	Title               string `json:"title"`
+	ProcessingLevel     string `json:"processingLevel"`
+	InstrumentPlatform  string `json:"instrument:platform"`
+	SpatialResolution   string `json:"spatialResolution"`
+	TemporalResolution  string `json:"temporalResolution"`
+	DefaultCollection   any    `json:"defaultCollection"`
+	DefaultArchiveSet   any    `json:"defaultArchiveSet"`
+}
+
+func (p *Provider) products(ctx context.Context) ([]model.Collection, error) {
 	values := url.Values{
 		"instruments": {"MODIS"},
-		"platforms":   {platform},
 		"formats":     {"json"},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/measurements/products?"+values.Encode(), nil)
@@ -82,24 +102,21 @@ func (p *Provider) products(ctx context.Context, platform string) ([]model.Colle
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("LAADS products returned HTTP %d", resp.StatusCode)
 	}
-	var raw any
+	var raw map[string]productInfo
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("decode LAADS products: %w", err)
 	}
-	items := objectList(raw)
-	out := make([]model.Collection, 0, len(items))
-	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		shortName := firstString(item, "product", "products", "productId", "shortName", "shortname", "name", "id")
-		if shortName == "" || !isMODISShortName(shortName, platform) {
+	out := make([]model.Collection, 0, len(raw))
+	for key, item := range raw {
+		shortName := strings.TrimSpace(item.Name)
+		if shortName == "" {
+			shortName = strings.TrimSpace(key)
+		}
+		platform := modisPlatform(item.InstrumentPlatform)
+		if shortName == "" || platform == "" {
 			continue
 		}
-		if _, exists := seen[shortName]; exists {
-			continue
-		}
-		seen[shortName] = struct{}{}
-		level := firstString(item, "processingLevel", "processing_level", "level")
-		title := firstString(item, "title", "description", "longName", "long_name")
+		title := strings.TrimSpace(item.Title)
 		if title == "" {
 			title = shortName
 		}
@@ -108,16 +125,36 @@ func (p *Provider) products(ctx context.Context, platform string) ([]model.Colle
 			SourceID:   "modis",
 			Satellite:  platform,
 			Instrument: "MODIS",
-			Level:      level,
+			Level:      item.ProcessingLevel,
 			Product:    shortName,
 			Cadence:    "event",
 			Metadata: map[string]string{
 				"title":            title,
+				"spatial_resolution": item.SpatialResolution,
+				"temporal_resolution": item.TemporalResolution,
+				"default_collection": fmt.Sprint(item.DefaultCollection),
+				"default_archive_set": fmt.Sprint(item.DefaultArchiveSet),
 				"version_strategy": "LAADS API v2 current archive metadata",
 			},
 		})
 	}
 	return out, nil
+}
+
+func modisPlatform(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(strings.ToUpper(value), "MODIS:") {
+		return ""
+	}
+	platform := strings.TrimSpace(strings.TrimPrefix(value, "MODIS:"))
+	switch strings.ToLower(platform) {
+	case "terra":
+		return "Terra"
+	case "aqua":
+		return "Aqua"
+	default:
+		return ""
+	}
 }
 
 type detailsPage struct {
@@ -233,46 +270,6 @@ func formatRange(start, end time.Time) string {
 	start = start.UTC()
 	end = end.UTC()
 	return start.Format("2006-01-02 15:04") + ".." + end.Add(time.Minute-1).Truncate(time.Minute).Format("2006-01-02 15:04")
-}
-
-func objectList(raw any) []map[string]any {
-	switch value := raw.(type) {
-	case []any:
-		return mapsFromSlice(value)
-	case map[string]any:
-		for _, key := range []string{"content", "products", "items", "data", "results"} {
-			if child, ok := value[key].([]any); ok {
-				return mapsFromSlice(child)
-			}
-		}
-	}
-	return nil
-}
-
-func mapsFromSlice(items []any) []map[string]any {
-	out := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		if object, ok := item.(map[string]any); ok {
-			out = append(out, object)
-		}
-	}
-	return out
-}
-
-func firstString(item map[string]any, keys ...string) string {
-	for _, key := range keys {
-		switch value := item[key].(type) {
-		case string:
-			if strings.TrimSpace(value) != "" {
-				return strings.TrimSpace(value)
-			}
-		case json.Number:
-			return value.String()
-		case float64:
-			return strconv.FormatFloat(value, 'f', -1, 64)
-		}
-	}
-	return ""
 }
 
 func isMODISShortName(name, platform string) bool {

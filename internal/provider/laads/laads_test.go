@@ -5,16 +5,15 @@ import (
 	"time"
 )
 
-func TestObjectList(t *testing.T) {
-	raw := map[string]any{
-		"content": []any{
-			map[string]any{"product": "MOD021KM"},
-			map[string]any{"product": "MOD02HKM"},
-		},
+func TestMODISPlatform(t *testing.T) {
+	if got := modisPlatform("MODIS:Terra"); got != "Terra" {
+		t.Fatalf("got=%q", got)
 	}
-	got := objectList(raw)
-	if len(got) != 2 {
-		t.Fatalf("len=%d", len(got))
+	if got := modisPlatform("MODIS:Aqua"); got != "Aqua" {
+		t.Fatalf("got=%q", got)
+	}
+	if got := modisPlatform("VIIRS:SNPP"); got != "" {
+		t.Fatalf("unexpected platform %q", got)
 	}
 }
 
