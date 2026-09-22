@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
@@ -24,6 +27,7 @@ func New(registry *provider.Registry) http.Handler {
 	mux.HandleFunc("GET /api/v1/sources", s.sources)
 	mux.HandleFunc("GET /api/v1/catalog", s.catalog)
 	mux.HandleFunc("GET /api/v1/search", s.search)
+	mux.HandleFunc("GET /api/products", s.products)
 
 	static, err := fs.Sub(webui.Files, "static")
 	if err != nil {
@@ -31,6 +35,91 @@ func New(registry *provider.Registry) http.Handler {
 	}
 	mux.Handle("GET /", http.FileServerFS(static))
 	return withHeaders(mux)
+}
+
+func (s *Server) products(w http.ResponseWriter, r *http.Request) {
+	sourceID := strings.TrimSpace(r.URL.Query().Get("source"))
+	if sourceID != "" {
+		p, err := s.registry.Provider(sourceID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		collections, err := p.Collections(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		products := make([]model.Product, 0, len(collections))
+		source := p.Source()
+		for _, collection := range collections {
+			products = append(products, provider.ProductFromCollection(source, collection))
+		}
+		sortProducts(products)
+		writeJSON(w, http.StatusOK, products)
+		return
+	}
+
+	providers := s.registry.Providers()
+	type result struct {
+		products []model.Product
+		err      error
+	}
+	results := make(chan result, len(providers))
+	var wg sync.WaitGroup
+	for _, p := range providers {
+		wg.Add(1)
+		go func(p provider.Provider) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(r.Context(), 75*time.Second)
+			defer cancel()
+			collections, err := p.Collections(ctx)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			source := p.Source()
+			items := make([]model.Product, 0, len(collections))
+			for _, collection := range collections {
+				items = append(items, provider.ProductFromCollection(source, collection))
+			}
+			results <- result{products: items}
+		}(p)
+	}
+	wg.Wait()
+	close(results)
+	products := make([]model.Product, 0, 512)
+	for item := range results {
+		if item.err != nil {
+			writeError(w, http.StatusBadGateway, item.err)
+			return
+		}
+		products = append(products, item.products...)
+	}
+	sortProducts(products)
+	writeJSON(w, http.StatusOK, products)
+}
+
+func sortProducts(products []model.Product) {
+	sort.Slice(products, func(i, j int) bool {
+		a, b := products[i], products[j]
+		if a.SourceID != b.SourceID {
+			return a.SourceID < b.SourceID
+		}
+		if a.Satellite != b.Satellite {
+			return a.Satellite < b.Satellite
+		}
+		if a.Instrument != b.Instrument {
+			return a.Instrument < b.Instrument
+		}
+		if a.Level != b.Level {
+			return a.Level < b.Level
+		}
+		if a.DataType != b.DataType {
+			return a.DataType < b.DataType
+		}
+		return a.Version < b.Version
+	})
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {

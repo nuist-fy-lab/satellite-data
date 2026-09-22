@@ -415,8 +415,26 @@ async function loadCatalog() {
   const source = sourceEl.value;
   if (!source) return;
   try {
-    const payload = await json('/api/v1/catalog?source=' + encodeURIComponent(source));
-    state.collections = payload.collections || [];
+    const payload = await json('/api/products?source=' + encodeURIComponent(source));
+    state.collections = (payload || []).map(product => ({
+      id: product.product_key,
+      source_id: product.source_id,
+      satellite: product.satellite,
+      instrument: product.instrument,
+      level: product.level,
+      product: product.data_type,
+      cadence: product.cadence,
+      metadata: {
+        ...(product.metadata || {}),
+        official_id: product.official_id || '',
+        title: product.display_name || product.data_type,
+        spatial_resolution: product.resolution || '',
+        version: product.version || '',
+        area_type: product.area_type || '',
+        catalog_source: product.catalog_source || '',
+        product_count: product.product_count ? String(product.product_count) : '',
+      },
+    }));
     const saved = readFilters();
     rebuildFilters('source');
     if (saved.source === source) {

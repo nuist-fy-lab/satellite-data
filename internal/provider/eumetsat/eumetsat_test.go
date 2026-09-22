@@ -18,10 +18,17 @@ func TestParseDateProperty(t *testing.T) {
 	}
 }
 
-func TestKnownMTGCollections(t *testing.T) {
-	for _, id := range []string{"EO:EUM:DAT:0662", "EO:EUM:DAT:0665"} {
-		if !knownCollection(id) {
-			t.Fatalf("expected %s to be supported", id)
-		}
+func TestMTGCatalogClassification(t *testing.T) {
+	if !isMTGCollection("FCI Level 1c Normal Resolution Image Data - MTG - 0 degree") {
+		t.Fatal("MTG collection was not recognized")
+	}
+	if got := mtgInstrument("LI Lightning Flashes - MTG - 0 degree"); got != "LI" {
+		t.Fatalf("instrument=%q", got)
+	}
+	if got := mtgLevel("FCI Level 1c High Resolution Image Data - MTG - 0 degree"); got != "L1c" {
+		t.Fatalf("level=%q", got)
+	}
+	if got := mtgArea("Cloud Mask - MTG - 0 degree"); got != "DISK" {
+		t.Fatalf("area=%q", got)
 	}
 }

@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +18,9 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 )
 
-const apiBase = "https://ladsweb.modaps.eosdis.nasa.gov/api/v2"
+const cmrBase = "https://cmr.earthdata.nasa.gov/search"
+
+var resolutionPattern = regexp.MustCompile(`(?i)\b(?:250|500|1000)\s*m\b|\b(?:1|5|10)\s*km\b|\b(?:0\.05|0\.1|0\.5|1)\s*(?:degree|deg)\b`)
 
 type Provider struct {
 	client *http.Client
@@ -37,249 +42,354 @@ func (p *Provider) Source() model.Source {
 		ID:     "modis",
 		Name:   "MODIS Terra / Aqua",
 		Tier:   model.TierToken,
-		Method: "NASA LAADS API v2 JSON/REST discovery + LAADS Download Token HTTPS transfer",
+		Method: "NASA CMR canonical collection/granule catalogue + LAADS Earthdata Cloud HTTPS transfer",
 		Capabilities: []model.Capability{
 			model.CapabilityCatalog,
 			model.CapabilitySearch,
 			model.CapabilityDownload,
 			model.CapabilitySubscription,
 		},
-		Description: "Current LAADS API v2 path; avoids the retired LAADS Classic service. LAADS-specific download tokens are preferred for transfer performance.",
+		Description: "CMR is the canonical MODIS catalogue for the LAADS provider. Science assets are selected from LAADS Earthdata Cloud HTTPS links.",
 	}
 }
 
+type collectionFeed struct {
+	Feed struct {
+		Entries []struct {
+			ID                string   `json:"id"`
+			ShortName         string   `json:"short_name"`
+			VersionID         string   `json:"version_id"`
+			DatasetID         string   `json:"dataset_id"`
+			ProcessingLevelID string   `json:"processing_level_id"`
+			TimeStart         string   `json:"time_start"`
+			TimeEnd           string   `json:"time_end"`
+			CloudHosted       bool     `json:"cloud_hosted"`
+			Platforms         []string `json:"platforms"`
+		} `json:"entry"`
+	} `json:"feed"`
+}
+
 func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) {
-	// LAADS' API v2 product catalogue is large (~MiB) and can take many
-	// seconds over the c2ln1 path. Fetch it once for both Terra and Aqua and
-	// retain it for six hours rather than issuing two heavyweight requests on
-	// every UI/API catalogue view.
 	p.catalogMu.Lock()
 	defer p.catalogMu.Unlock()
 	if len(p.catalog) > 0 && time.Since(p.catalogTime) < 6*time.Hour {
 		return append([]model.Collection(nil), p.catalog...), nil
 	}
-	collections, err := p.products(ctx)
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(collections, func(i, j int) bool {
-		if collections[i].Satellite == collections[j].Satellite {
-			return collections[i].Product < collections[j].Product
-		}
-		return collections[i].Satellite < collections[j].Satellite
-	})
-	p.catalog = collections
-	p.catalogTime = time.Now()
-	return append([]model.Collection(nil), collections...), nil
-}
-
-type productInfo struct {
-	Name               string `json:"name"`
-	Title              string `json:"title"`
-	ProcessingLevel    string `json:"processingLevel"`
-	InstrumentPlatform string `json:"instrument:platform"`
-	SpatialResolution  string `json:"spatialResolution"`
-	TemporalResolution string `json:"temporalResolution"`
-	DefaultCollection  any    `json:"defaultCollection"`
-	DefaultArchiveSet  any    `json:"defaultArchiveSet"`
-}
-
-func (p *Provider) products(ctx context.Context) ([]model.Collection, error) {
 	values := url.Values{
-		"instruments": {"MODIS"},
-		"formats":     {"json"},
+		"provider":   {"LAADS"},
+		"instrument": {"MODIS"},
+		"page_size":  {"2000"},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/measurements/products?"+values.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cmrBase+"/collections.json?"+values.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/json")
+	setCMRHeaders(req)
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("LAADS products returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("CMR MODIS collection search returned HTTP %d", resp.StatusCode)
 	}
-	var raw map[string]productInfo
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("decode LAADS products: %w", err)
+	var payload collectionFeed
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode CMR MODIS collection search: %w", err)
 	}
-	out := make([]model.Collection, 0, len(raw))
-	for key, item := range raw {
-		shortName := strings.TrimSpace(item.Name)
-		if shortName == "" {
-			shortName = strings.TrimSpace(key)
-		}
-		platform := modisPlatform(item.InstrumentPlatform)
-		if shortName == "" || platform == "" {
+	out := make([]model.Collection, 0, len(payload.Feed.Entries))
+	for _, item := range payload.Feed.Entries {
+		if item.ID == "" || item.ShortName == "" {
 			continue
 		}
-		title := strings.TrimSpace(item.Title)
-		if title == "" {
-			title = shortName
+		satellite := modisSatellite(item.Platforms)
+		if satellite == "" {
+			continue
 		}
 		out = append(out, model.Collection{
-			ID:         "modis:" + shortName,
+			ID:         "modis:" + item.ID,
 			SourceID:   "modis",
-			Satellite:  platform,
+			Satellite:  satellite,
 			Instrument: "MODIS",
-			Level:      item.ProcessingLevel,
-			Product:    shortName,
-			Cadence:    "event",
+			Level:      normalizeLevel(item.ProcessingLevelID),
+			Product:    item.ShortName,
+			Cadence:    modisCadence(item.DatasetID),
 			Metadata: map[string]string{
-				"title":               title,
-				"spatial_resolution":  item.SpatialResolution,
-				"temporal_resolution": item.TemporalResolution,
-				"default_collection":  fmt.Sprint(item.DefaultCollection),
-				"default_archive_set": fmt.Sprint(item.DefaultArchiveSet),
-				"version_strategy":    "LAADS API v2 current archive metadata",
+				"official_id":        item.ID,
+				"concept_id":         item.ID,
+				"title":              item.DatasetID,
+				"version":            item.VersionID,
+				"spatial_resolution": modisResolution(item.DatasetID),
+				"time_start":         item.TimeStart,
+				"time_end":           item.TimeEnd,
+				"cloud_hosted":       strconv.FormatBool(item.CloudHosted),
 			},
 		})
 	}
-	return out, nil
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Satellite != out[j].Satellite {
+			return out[i].Satellite < out[j].Satellite
+		}
+		if out[i].Product != out[j].Product {
+			return out[i].Product < out[j].Product
+		}
+		return out[i].Metadata["version"] < out[j].Metadata["version"]
+	})
+	p.catalog = out
+	p.catalogTime = time.Now()
+	return append([]model.Collection(nil), out...), nil
 }
 
-func modisPlatform(value string) string {
-	value = strings.TrimSpace(value)
-	if !strings.HasPrefix(strings.ToUpper(value), "MODIS:") {
-		return ""
-	}
-	platform := strings.TrimSpace(strings.TrimPrefix(value, "MODIS:"))
-	switch strings.ToLower(platform) {
-	case "terra":
-		return "Terra"
-	case "aqua":
-		return "Aqua"
-	default:
-		return ""
-	}
+type granuleFeed struct {
+	Feed struct {
+		Entries []cmrGranule `json:"entry"`
+	} `json:"feed"`
 }
 
-type detailsPage struct {
-	Content []struct {
-		ArchiveSet   any    `json:"archiveSets"`
-		Checksum     string `json:"cksum"`
-		Collection   string `json:"collections"`
-		DownloadLink string `json:"downloadsLink"`
-		FileID       any    `json:"fileId"`
-		MD5          string `json:"md5sum"`
-		Name         string `json:"name"`
-		Product      string `json:"products"`
-		Size         int64  `json:"size"`
-		Start        string `json:"start"`
-		Status       string `json:"status"`
-	} `json:"content"`
-	NextPageLink string `json:"nextPageLink"`
-	Pages        int    `json:"n_pages"`
-	Page         int    `json:"page"`
+type cmrGranule struct {
+	ID                  string    `json:"id"`
+	CollectionConceptID string    `json:"collection_concept_id"`
+	ProducerGranuleID   string    `json:"producer_granule_id"`
+	TimeStart           string    `json:"time_start"`
+	TimeEnd             string    `json:"time_end"`
+	GranuleSize         string    `json:"granule_size"`
+	DayNightFlag        string    `json:"day_night_flag"`
+	Links               []cmrLink `json:"links"`
+}
+
+type cmrLink struct {
+	Rel       string `json:"rel"`
+	Type      string `json:"type"`
+	Href      string `json:"href"`
+	Title     string `json:"title"`
+	Inherited bool   `json:"inherited"`
 }
 
 func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, error) {
 	if err := provider.ValidateQuery(q); err != nil {
 		return nil, err
 	}
-	shortName, ok := strings.CutPrefix(q.CollectionID, "modis:")
-	if !ok || shortName == "" || strings.ContainsAny(shortName, "/\\") {
+	conceptID, ok := strings.CutPrefix(q.CollectionID, "modis:")
+	if !ok || conceptID == "" || strings.ContainsAny(conceptID, "/\\") || !p.knownCollection(ctx, q.CollectionID) {
 		return nil, provider.ErrUnsupportedCollection
 	}
-
 	values := url.Values{
-		"products":       {shortName},
-		"temporalRanges": {formatRange(q.Start, q.End)},
-		"formats":        {"json"},
+		"collection_concept_id": {conceptID},
+		"temporal":              {q.Start.UTC().Format(time.RFC3339) + "," + q.End.UTC().Format(time.RFC3339)},
+		"page_size":             {"2000"},
+		"sort_key[]":            {"start_date"},
 	}
-	nextURL := apiBase + "/content/details?" + values.Encode()
-	out := make([]model.Granule, 0, 256)
-	for pageNumber := 0; nextURL != "" && pageNumber < 1000; pageNumber++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURL, nil)
+	endpoint := cmrBase + "/granules.json?" + values.Encode()
+	searchAfter := ""
+	out := make([]model.Granule, 0, 512)
+	for pageNumber := 0; pageNumber < 1000; pageNumber++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Accept", "application/json")
+		setCMRHeaders(req)
+		if searchAfter != "" {
+			req.Header.Set("CMR-Search-After", searchAfter)
+		}
 		resp, err := p.client.Do(req)
 		if err != nil {
 			return nil, err
 		}
-		var page detailsPage
-		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		var payload granuleFeed
+		decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
+		nextSearchAfter := resp.Header.Get("CMR-Search-After")
 		_ = resp.Body.Close()
 		if resp.StatusCode/100 != 2 {
-			return nil, fmt.Errorf("LAADS content/details returned HTTP %d", resp.StatusCode)
+			return nil, fmt.Errorf("CMR MODIS granule search returned HTTP %d", resp.StatusCode)
 		}
 		if decodeErr != nil {
-			return nil, fmt.Errorf("decode LAADS details: %w", decodeErr)
+			return nil, fmt.Errorf("decode CMR MODIS granule search: %w", decodeErr)
 		}
-		for _, item := range page.Content {
-			if item.Name == "" || item.DownloadLink == "" || !strings.EqualFold(item.Status, "Online") {
-				continue
+		for _, item := range payload.Feed.Entries {
+			granule, ok := cmrGranuleModel(item, q.CollectionID)
+			if ok && granule.End.After(q.Start) && granule.Start.Before(q.End) {
+				out = append(out, granule)
 			}
-			start, err := time.ParseInLocation("2006-01-02 15:04:05", item.Start, time.UTC)
-			if err != nil || start.Before(q.Start) || !start.Before(q.End) {
-				continue
-			}
-			mediaType := "application/octet-stream"
-			lower := strings.ToLower(item.Name)
-			switch {
-			case strings.HasSuffix(lower, ".nc"):
-				mediaType = "application/x-netcdf"
-			case strings.HasSuffix(lower, ".hdf") || strings.HasSuffix(lower, ".h5"):
-				mediaType = "application/x-hdf"
-			}
-			fileID := fmt.Sprint(item.FileID)
-			out = append(out, model.Granule{
-				ID:           "modis:" + fileID,
-				SourceID:     "modis",
-				CollectionID: q.CollectionID,
-				Start:        start,
-				Assets: []model.Asset{
-					{
-						ID:        fileID,
-						Name:      item.Name,
-						URL:       item.DownloadLink,
-						AuthRef:   "laads",
-						Size:      item.Size,
-						MediaType: mediaType,
-						Metadata: map[string]string{
-							"md5":      item.MD5,
-							"checksum": item.Checksum,
-						},
-					},
-				},
-				Metadata: map[string]string{
-					"archive_set": fmt.Sprint(item.ArchiveSet),
-					"collection":  item.Collection,
-					"product":     item.Product,
-				},
-			})
 		}
-		if page.NextPageLink == "" || page.NextPageLink == nextURL {
+		if len(payload.Feed.Entries) == 0 || nextSearchAfter == "" || nextSearchAfter == searchAfter {
 			break
 		}
-		nextURL = page.NextPageLink
+		searchAfter = nextSearchAfter
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
 	return out, nil
 }
 
-func formatRange(start, end time.Time) string {
-	// LAADS API v2 accepts minute precision in UTC. Expand the upper edge to the
-	// next minute so sub-minute caller ranges cannot accidentally omit a granule;
-	// exact filtering is applied again after the API response.
-	start = start.UTC()
-	end = end.UTC()
-	return start.Format("2006-01-02 15:04") + ".." + end.Add(time.Minute-1).Truncate(time.Minute).Format("2006-01-02 15:04")
-}
-
-func isMODISShortName(name, platform string) bool {
-	upper := strings.ToUpper(name)
-	switch strings.ToLower(platform) {
-	case "terra":
-		return strings.HasPrefix(upper, "MOD")
-	case "aqua":
-		return strings.HasPrefix(upper, "MYD")
-	default:
+func (p *Provider) knownCollection(ctx context.Context, id string) bool {
+	collections, err := p.Collections(ctx)
+	if err != nil {
 		return false
 	}
+	for _, collection := range collections {
+		if collection.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func cmrGranuleModel(item cmrGranule, collectionID string) (model.Granule, bool) {
+	start, err := time.Parse(time.RFC3339Nano, item.TimeStart)
+	if err != nil {
+		return model.Granule{}, false
+	}
+	end := start
+	if item.TimeEnd != "" {
+		if parsed, err := time.Parse(time.RFC3339Nano, item.TimeEnd); err == nil {
+			end = parsed
+		}
+	}
+	link, ok := modisDataLink(item.Links)
+	if !ok {
+		return model.Granule{}, false
+	}
+	name := item.ProducerGranuleID
+	if name == "" {
+		name = path.Base(link.Href)
+	}
+	return model.Granule{
+		ID:           "modis:" + item.ID,
+		SourceID:     "modis",
+		CollectionID: collectionID,
+		Start:        start.UTC(),
+		End:          end.UTC(),
+		Assets: []model.Asset{
+			{
+				ID:        item.ID,
+				Name:      name,
+				URL:       link.Href,
+				AuthRef:   "laads",
+				Size:      parseMiB(item.GranuleSize),
+				MediaType: modisMediaType(link.Type, name),
+			},
+		},
+		Metadata: map[string]string{
+			"concept_id":            item.ID,
+			"collection_concept_id": item.CollectionConceptID,
+			"day_night":             item.DayNightFlag,
+		},
+	}, true
+}
+
+func modisDataLink(links []cmrLink) (cmrLink, bool) {
+	for _, link := range links {
+		if link.Inherited || !strings.Contains(link.Rel, "/data#") {
+			continue
+		}
+		if strings.HasPrefix(link.Href, "https://data.laadsdaac.earthdatacloud.nasa.gov/") {
+			return link, true
+		}
+	}
+	for _, link := range links {
+		if link.Inherited || !strings.Contains(link.Rel, "/data#") || !strings.HasPrefix(link.Href, "https://") {
+			continue
+		}
+		lower := strings.ToLower(link.Href)
+		if !strings.HasSuffix(lower, ".met") && !strings.Contains(lower, "opendap") {
+			return link, true
+		}
+	}
+	return cmrLink{}, false
+}
+
+func modisSatellite(platforms []string) string {
+	hasTerra, hasAqua := false, false
+	for _, platform := range platforms {
+		switch strings.ToLower(strings.TrimSpace(platform)) {
+		case "terra":
+			hasTerra = true
+		case "aqua":
+			hasAqua = true
+		}
+	}
+	switch {
+	case hasTerra && hasAqua:
+		return "Terra / Aqua"
+	case hasTerra:
+		return "Terra"
+	case hasAqua:
+		return "Aqua"
+	default:
+		return ""
+	}
+}
+
+func normalizeLevel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	upper := strings.ToUpper(value)
+	if strings.HasPrefix(upper, "L") {
+		return value
+	}
+	return "L" + value
+}
+
+func modisCadence(title string) string {
+	upper := strings.ToUpper(title)
+	switch {
+	case strings.Contains(upper, "5-MIN"), strings.Contains(upper, "5 MIN"):
+		return "5m"
+	case strings.Contains(upper, "DAILY"):
+		return "1d"
+	case strings.Contains(upper, "8-DAY"), strings.Contains(upper, "8 DAY"):
+		return "8d"
+	case strings.Contains(upper, "MONTHLY"):
+		return "1mo"
+	default:
+		return "event"
+	}
+}
+
+func modisResolution(title string) string {
+	matches := resolutionPattern.FindAllString(title, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	seen := map[string]struct{}{}
+	values := make([]string, 0, len(matches))
+	for _, match := range matches {
+		match = strings.ReplaceAll(strings.ToLower(match), " ", "")
+		match = strings.ReplaceAll(match, "degree", "deg")
+		if _, exists := seen[match]; exists {
+			continue
+		}
+		seen[match] = struct{}{}
+		values = append(values, match)
+	}
+	return strings.Join(values, "/")
+}
+
+func modisMediaType(linkType, name string) string {
+	if linkType != "" {
+		return linkType
+	}
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasSuffix(lower, ".nc"):
+		return "application/x-netcdf"
+	case strings.HasSuffix(lower, ".hdf"), strings.HasSuffix(lower, ".h5"):
+		return "application/x-hdf"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func parseMiB(value string) int64 {
+	size, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || size <= 0 {
+		return 0
+	}
+	return int64(size * 1024 * 1024)
+}
+
+func setCMRHeaders(req *http.Request) {
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Client-Id", "nuist-fy-lab-satellite-data")
 }

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
@@ -18,27 +19,12 @@ import (
 
 const catalogBase = "https://catalog.maap.eo.esa.int/catalogue"
 
-var collections = []struct {
-	ID     string
-	Level  string
-	Access string
-}{
-	{"EarthCAREL1Validated_MAAP", "L1", "validated"},
-	{"EarthCAREL2Validated_MAAP", "L2", "validated"},
-	{"JAXAL2Validated_MAAP", "L2", "validated"},
-	{"EarthCAREL1InstChecked_MAAP", "L1", "calval"},
-	{"EarthCAREL2InstChecked_MAAP", "L2", "calval"},
-	{"JAXAL2InstChecked_MAAP", "L2", "calval"},
-	{"EarthCAREL0L1Products_MAAP", "L0/L1", "commissioning"},
-	{"EarthCAREL2Products_MAAP", "L2", "commissioning"},
-	{"EarthCAREXMETL1DProducts10_MAAP", "L1D", "validated"},
-	{"JAXAL2Products_MAAP", "L2", "commissioning"},
-	{"EarthCAREOrbitData_MAAP", "orbit", "open"},
-	{"EarthCAREAuxiliary_MAAP", "aux", "open"},
-}
-
 type Provider struct {
 	client *http.Client
+
+	catalogMu   sync.Mutex
+	catalog     []model.Collection
+	catalogTime time.Time
 }
 
 func New(client *http.Client) *Provider {
@@ -64,24 +50,98 @@ func (p *Provider) Source() model.Source {
 	}
 }
 
-func (p *Provider) Collections(context.Context) ([]model.Collection, error) {
-	out := make([]model.Collection, 0, len(collections))
-	for _, item := range collections {
-		out = append(out, model.Collection{
-			ID:         "earthcare:" + item.ID,
-			SourceID:   "earthcare",
-			Satellite:  "EarthCARE",
-			Instrument: "multi-instrument",
-			Level:      item.Level,
-			Product:    item.ID,
-			Cadence:    "event",
-			Metadata: map[string]string{
-				"stac_collection": item.ID,
-				"access_class":    item.Access,
-			},
-		})
+type seriesCatalog struct {
+	Features []struct {
+		ID         string         `json:"id"`
+		Properties map[string]any `json:"properties"`
+	} `json:"features"`
+}
+
+func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) {
+	p.catalogMu.Lock()
+	defer p.catalogMu.Unlock()
+	if len(p.catalog) > 0 && time.Since(p.catalogTime) < 6*time.Hour {
+		return append([]model.Collection(nil), p.catalog...), nil
 	}
-	return out, nil
+	values := url.Values{
+		"platform": {"EarthCARE"},
+		"limit":    {"100"},
+		"mode":     {"owc"},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogBase+"/collections?"+values.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/geo+json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("ESA MAAP collection catalogue returned HTTP %d", resp.StatusCode)
+	}
+	var payload seriesCatalog
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode ESA MAAP collection catalogue: %w", err)
+	}
+	out := make([]model.Collection, 0, 64)
+	for _, feature := range payload.Features {
+		seriesID := propertyString(feature.Properties, "identifier")
+		title := propertyString(feature.Properties, "title")
+		if seriesID == "" {
+			continue
+		}
+		productTypes := earthcareProductTypes(feature.Properties)
+		if len(productTypes) == 0 {
+			out = append(out, model.Collection{
+				ID:         "earthcare:" + seriesID,
+				SourceID:   "earthcare",
+				Satellite:  "EarthCARE",
+				Instrument: "EarthCARE",
+				Level:      earthcareSeriesLevel(seriesID, title),
+				Product:    seriesID,
+				Cadence:    "event",
+				Metadata: map[string]string{
+					"official_id":     seriesID,
+					"stac_collection": seriesID,
+					"title":           title,
+					"version_info":    propertyString(feature.Properties, "versionInfo"),
+					"access_class":    earthcareAccessClass(seriesID, title),
+				},
+			})
+			continue
+		}
+		for _, productType := range productTypes {
+			out = append(out, model.Collection{
+				ID:         "earthcare:" + seriesID + ":" + productType,
+				SourceID:   "earthcare",
+				Satellite:  "EarthCARE",
+				Instrument: earthcareInstrument(productType),
+				Level:      earthcareProductLevel(productType),
+				Product:    productType,
+				Cadence:    "event",
+				Metadata: map[string]string{
+					"official_id":     productType,
+					"stac_collection": seriesID,
+					"product_type":    productType,
+					"title":           title + " · " + productType,
+					"series_title":    title,
+					"version_info":    propertyString(feature.Properties, "versionInfo"),
+					"access_class":    earthcareAccessClass(seriesID, title),
+				},
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Metadata["stac_collection"] == out[j].Metadata["stac_collection"] {
+			return out[i].Product < out[j].Product
+		}
+		return out[i].Metadata["stac_collection"] < out[j].Metadata["stac_collection"]
+	})
+	p.catalog = out
+	p.catalogTime = time.Now()
+	return append([]model.Collection(nil), out...), nil
 }
 
 type stacPage struct {
@@ -107,15 +167,24 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	if err := provider.ValidateQuery(q); err != nil {
 		return nil, err
 	}
-	collectionID, ok := strings.CutPrefix(q.CollectionID, "earthcare:")
-	if !ok || !knownCollection(collectionID) {
+	catalogKey, ok := strings.CutPrefix(q.CollectionID, "earthcare:")
+	if !ok || !p.knownCollection(ctx, q.CollectionID) {
 		return nil, provider.ErrUnsupportedCollection
+	}
+	parts := strings.SplitN(catalogKey, ":", 2)
+	collectionID := parts[0]
+	productType := ""
+	if len(parts) == 2 {
+		productType = parts[1]
 	}
 
 	values := url.Values{
 		"collections": {collectionID},
 		"datetime":    {q.Start.UTC().Format(time.RFC3339) + "/" + q.End.UTC().Format(time.RFC3339)},
 		"limit":       {"1000"},
+	}
+	if productType != "" {
+		values.Set("filter", "productType = '"+productType+"'")
 	}
 	nextURL := catalogBase + "/search?" + values.Encode()
 	out := make([]model.Granule, 0, 1024)
@@ -219,13 +288,108 @@ func scienceAssets(raw map[string]map[string]any) []model.Asset {
 	return assets
 }
 
-func knownCollection(id string) bool {
+func (p *Provider) knownCollection(ctx context.Context, id string) bool {
+	collections, err := p.Collections(ctx)
+	if err != nil {
+		return false
+	}
 	for _, item := range collections {
 		if item.ID == id {
 			return true
 		}
 	}
 	return false
+}
+
+func earthcareProductTypes(properties map[string]any) []string {
+	raw, ok := properties["categories"].([]any)
+	if !ok {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 16)
+	for _, value := range raw {
+		category, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		scheme := anyString(category["scheme"])
+		if !strings.HasSuffix(scheme, "/productType") {
+			continue
+		}
+		label := anyString(category["label"])
+		if label == "" {
+			continue
+		}
+		if _, exists := seen[label]; exists {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func earthcareInstrument(productType string) string {
+	upper := strings.ToUpper(productType)
+	switch {
+	case strings.HasPrefix(upper, "ATL"):
+		return "ATLID"
+	case strings.HasPrefix(upper, "CPR"):
+		return "CPR"
+	case strings.HasPrefix(upper, "MSI"):
+		return "MSI"
+	case strings.HasPrefix(upper, "BBR"):
+		return "BBR"
+	default:
+		return "Synergy"
+	}
+}
+
+func earthcareProductLevel(productType string) string {
+	upper := strings.ToUpper(productType)
+	for _, level := range []string{"L0", "1A", "1B", "1C", "1D", "2A", "2B", "3"} {
+		if strings.HasSuffix(upper, "_"+level) {
+			if strings.HasPrefix(level, "L") {
+				return level
+			}
+			return "L" + level
+		}
+	}
+	return ""
+}
+
+func earthcareSeriesLevel(seriesID, title string) string {
+	upper := strings.ToUpper(seriesID + " " + title)
+	switch {
+	case strings.Contains(upper, "L0") && strings.Contains(upper, "L1"):
+		return "L0/L1"
+	case strings.Contains(upper, "L1D"):
+		return "L1D"
+	case strings.Contains(upper, "L1"):
+		return "L1"
+	case strings.Contains(upper, "L2"):
+		return "L2"
+	case strings.Contains(upper, "ORBIT"):
+		return "orbit"
+	case strings.Contains(upper, "AUX"):
+		return "aux"
+	default:
+		return ""
+	}
+}
+
+func earthcareAccessClass(seriesID, title string) string {
+	upper := strings.ToUpper(seriesID + " " + title)
+	switch {
+	case strings.Contains(upper, "INSTCHECKED"), strings.Contains(upper, "CAL/VAL"):
+		return "calval"
+	case strings.Contains(upper, "PRODUCTS_MAAP"), strings.Contains(upper, "COMMISSIONING"):
+		return "commissioning"
+	default:
+		return "open"
+	}
 }
 
 func nextLink(links []stacLink) string {

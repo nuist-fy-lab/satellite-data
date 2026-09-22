@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
@@ -19,39 +20,15 @@ const (
 	apiBase        = "https://api.eumetsat.int"
 	searchEndpoint = apiBase + "/data/search-products/1.0.0/os"
 	downloadBase   = apiBase + "/data/download/1.0.0/collections"
+	browseCatalog  = apiBase + "/data/browse/1.0.0/collections"
 )
-
-var mtgCollections = []model.Collection{
-	{
-		ID:         "mtg:EO:EUM:DAT:0662",
-		SourceID:   "mtg",
-		Satellite:  "Meteosat-12 (MTG-I1)",
-		Instrument: "FCI",
-		Level:      "L1c",
-		Product:    "FCI Level 1c Normal Resolution Image Data (FDHSI)",
-		Cadence:    "10m",
-		Metadata: map[string]string{
-			"collection_ref": "EO:EUM:DAT:0662",
-			"coverage":       "full disk",
-		},
-	},
-	{
-		ID:         "mtg:EO:EUM:DAT:0665",
-		SourceID:   "mtg",
-		Satellite:  "Meteosat-12 (MTG-I1)",
-		Instrument: "FCI",
-		Level:      "L1c",
-		Product:    "FCI Level 1c High Resolution Image Data (HRFI)",
-		Cadence:    "10m",
-		Metadata: map[string]string{
-			"collection_ref": "EO:EUM:DAT:0665",
-			"coverage":       "full disk",
-		},
-	},
-}
 
 type Provider struct {
 	client *http.Client
+
+	catalogMu   sync.Mutex
+	catalog     []model.Collection
+	catalogTime time.Time
 }
 
 func New(client *http.Client) *Provider {
@@ -77,10 +54,68 @@ func (p *Provider) Source() model.Source {
 	}
 }
 
-func (p *Provider) Collections(context.Context) ([]model.Collection, error) {
-	out := make([]model.Collection, len(mtgCollections))
-	copy(out, mtgCollections)
-	return out, nil
+type browseCollectionList struct {
+	Links []struct {
+		Href             string  `json:"href"`
+		Title            string  `json:"title"`
+		DatasetTitle     string  `json:"datasetTitle"`
+		Rel              string  `json:"rel"`
+		NumberOfProducts float64 `json:"numberOfProducts"`
+	} `json:"links"`
+}
+
+func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) {
+	p.catalogMu.Lock()
+	defer p.catalogMu.Unlock()
+	if len(p.catalog) > 0 && time.Since(p.catalogTime) < 6*time.Hour {
+		return append([]model.Collection(nil), p.catalog...), nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, browseCatalog, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("EUMETSAT Browse API returned HTTP %d", resp.StatusCode)
+	}
+	var payload browseCollectionList
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode EUMETSAT collection catalogue: %w", err)
+	}
+	out := make([]model.Collection, 0, 32)
+	for _, item := range payload.Links {
+		title := strings.TrimSpace(item.DatasetTitle)
+		officialID := strings.TrimSpace(item.Title)
+		if item.Rel != "collection/details" || officialID == "" || !isMTGCollection(title) {
+			continue
+		}
+		out = append(out, model.Collection{
+			ID:         "mtg:" + officialID,
+			SourceID:   "mtg",
+			Satellite:  "MTG",
+			Instrument: mtgInstrument(title),
+			Level:      mtgLevel(title),
+			Product:    officialID,
+			Cadence:    mtgCadence(title),
+			Metadata: map[string]string{
+				"official_id":    officialID,
+				"collection_ref": officialID,
+				"title":          title,
+				"product_count":  strconv.FormatInt(int64(item.NumberOfProducts), 10),
+				"catalog_href":   item.Href,
+				"area_type":      mtgArea(title),
+			},
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Product < out[j].Product })
+	p.catalog = out
+	p.catalogTime = time.Now()
+	return append([]model.Collection(nil), out...), nil
 }
 
 type searchPage struct {
@@ -96,7 +131,7 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 		return nil, err
 	}
 	collectionID, ok := strings.CutPrefix(q.CollectionID, "mtg:")
-	if !ok || !knownCollection(collectionID) {
+	if !ok || !p.knownCollection(ctx, collectionID) {
 		return nil, provider.ErrUnsupportedCollection
 	}
 
@@ -172,13 +207,69 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	return out, nil
 }
 
-func knownCollection(id string) bool {
-	for _, collection := range mtgCollections {
+func (p *Provider) knownCollection(ctx context.Context, id string) bool {
+	collections, err := p.Collections(ctx)
+	if err != nil {
+		return false
+	}
+	for _, collection := range collections {
 		if collection.Metadata["collection_ref"] == id {
 			return true
 		}
 	}
 	return false
+}
+
+func isMTGCollection(title string) bool {
+	return strings.Contains(strings.ToUpper(title), "MTG")
+}
+
+func mtgInstrument(title string) string {
+	upper := strings.ToUpper(title)
+	switch {
+	case strings.Contains(upper, "FCI"):
+		return "FCI"
+	case strings.Contains(upper, "IRS"):
+		return "IRS"
+	case strings.Contains(upper, "LIGHTNING"), strings.Contains(upper, "LI "):
+		return "LI"
+	default:
+		return "MTG"
+	}
+}
+
+func mtgLevel(title string) string {
+	upper := strings.ToUpper(title)
+	switch {
+	case strings.Contains(upper, "LEVEL 1C"):
+		return "L1c"
+	case strings.Contains(upper, "LEVEL 1B"):
+		return "L1b"
+	case strings.Contains(upper, "LEVEL 1"):
+		return "L1"
+	case strings.Contains(upper, "LEVEL 2"):
+		return "L2"
+	case strings.Contains(upper, "LEVEL 3"):
+		return "L3"
+	default:
+		return ""
+	}
+}
+
+func mtgCadence(title string) string {
+	upper := strings.ToUpper(title)
+	if strings.Contains(upper, "FCI LEVEL 1C") {
+		return "10m"
+	}
+	return "event"
+}
+
+func mtgArea(title string) string {
+	upper := strings.ToUpper(title)
+	if strings.Contains(upper, "0 DEGREE") {
+		return "DISK"
+	}
+	return ""
 }
 
 func parseDateProperty(value any) (time.Time, time.Time, bool) {
