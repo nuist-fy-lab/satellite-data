@@ -237,15 +237,18 @@ type LocalFile struct {
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// busy_timeout is connection-local in SQLite. Put it in the DSN so every
+	// pooled connection receives the same wait policy; executing PRAGMA once on
+	// *sql.DB only configures whichever connection happens to service that call.
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	db, err := sql.Open("sqlite", path+separator+"_busy_timeout=30000")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(8)
-	if _, err := db.Exec(`PRAGMA busy_timeout=30000`); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize state schema: %w", err)
