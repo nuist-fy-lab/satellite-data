@@ -387,9 +387,9 @@ FROM accounts a
 LEFT JOIN credentials c ON c.id=a.credential_id
 LEFT JOIN proxies p ON p.id=a.proxy_id`
 
-type scanner interface{ Scan(...any) error }
+type accessScanner interface{ Scan(...any) error }
 
-func scanCredential(row scanner) (model.Credential, error) {
+func scanCredential(row accessScanner) (model.Credential, error) {
 	var item model.Credential
 	var enabled int
 	err := row.Scan(&item.ID, &item.Alias, &item.Kind, &enabled, &item.Priority, &item.SecretHint, &item.State, &item.LastError, &item.LastUsedAt, &item.LastSuccessAt, &item.UpdatedAt)
@@ -397,7 +397,7 @@ func scanCredential(row scanner) (model.Credential, error) {
 	return item, err
 }
 
-func scanProxy(row scanner) (model.Proxy, error) {
+func scanProxy(row accessScanner) (model.Proxy, error) {
 	var item model.Proxy
 	var enabled int
 	var providers string
@@ -407,7 +407,7 @@ func scanProxy(row scanner) (model.Proxy, error) {
 	return item, err
 }
 
-func scanAccount(row scanner) (model.Account, error) {
+func scanAccount(row accessScanner) (model.Account, error) {
 	var item model.Account
 	var credentialID, proxyID sql.NullInt64
 	var enabled int
