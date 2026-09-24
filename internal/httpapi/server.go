@@ -104,10 +104,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	// download discovery pipeline. This is deliberately not awaited: download
 	// discovery has its own provider-isolated workers and must not depend on the
 	// calendar indexer finishing first.
-	if err := s.store.EnqueueRange(r.Context(), payload.Collection, start, end, 200); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
+	_ = s.store.EnqueueRange(r.Context(), payload.Collection, start, end, 200)
 	writeJSON(w, http.StatusAccepted, map[string]any{"download": request})
 }
 
