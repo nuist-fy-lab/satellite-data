@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,14 @@ func main() {
 		err = c.catalogList(args[2:])
 	case "query list":
 		err = c.query(args[2:])
+	case "download create":
+		err = c.downloadCreate(args[2:])
+	case "download list":
+		err = c.downloadList(args[2:])
+	case "download status":
+		err = c.downloadStatus(args[2:])
+	case "download providers":
+		err = c.downloadProviders()
 	default:
 		usage()
 		os.Exit(2)
@@ -42,6 +51,126 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "satellite:", err)
 		os.Exit(1)
+	}
+}
+
+type downloadRequest struct {
+	ID                 int64     `json:"id"`
+	SourceID           string    `json:"source_id"`
+	ProviderID         string    `json:"provider_id"`
+	CollectionID       string    `json:"collection_id"`
+	Start              time.Time `json:"start"`
+	End                time.Time `json:"end"`
+	Cursor             time.Time `json:"cursor"`
+	State              string    `json:"state"`
+	GranulesDiscovered int       `json:"granules_discovered"`
+	AssetsQueued       int       `json:"assets_queued"`
+	FilesDone          int       `json:"files_done"`
+	FilesFailed        int       `json:"files_failed"`
+	FilesWaitingAuth   int       `json:"files_waiting_auth"`
+	LastError          string    `json:"last_error,omitempty"`
+}
+
+func (c *client) downloadCreate(args []string) error {
+	set := flag.NewFlagSet("download create", flag.ContinueOnError)
+	source := set.String("source", "", "source id")
+	collection := set.String("collection", "", "collection id")
+	start := set.String("start", "", "start RFC3339 or YYYY-MM-DD")
+	end := set.String("end", "", "end RFC3339 or YYYY-MM-DD")
+	jsonOutput := set.Bool("json", false, "print JSON")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if *source == "" || *collection == "" || *start == "" || *end == "" {
+		return errors.New("--source, --collection, --start and --end are required")
+	}
+	var payload struct {
+		Download downloadRequest `json:"download"`
+	}
+	request := map[string]string{
+		"source": *source, "collection": *collection, "start": *start, "end": *end,
+	}
+	if err := c.post("/api/v1/downloads", request, &payload); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(payload.Download)
+	}
+	printDownload(payload.Download)
+	return nil
+}
+
+func (c *client) downloadList(args []string) error {
+	set := flag.NewFlagSet("download list", flag.ContinueOnError)
+	limit := set.Int("limit", 50, "maximum requests to return")
+	jsonOutput := set.Bool("json", false, "print JSON")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	var payload struct {
+		Downloads []downloadRequest `json:"downloads"`
+	}
+	if err := c.get("/api/v1/downloads?limit="+strconv.Itoa(*limit), &payload); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(payload.Downloads)
+	}
+	for _, item := range payload.Downloads {
+		printDownload(item)
+	}
+	return nil
+}
+
+func (c *client) downloadStatus(args []string) error {
+	set := flag.NewFlagSet("download status", flag.ContinueOnError)
+	id := set.Int64("id", 0, "download request id")
+	jsonOutput := set.Bool("json", false, "print JSON")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if *id <= 0 {
+		return errors.New("--id is required")
+	}
+	var payload struct {
+		Download downloadRequest `json:"download"`
+	}
+	if err := c.get("/api/v1/downloads/"+strconv.FormatInt(*id, 10), &payload); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(payload.Download)
+	}
+	printDownload(payload.Download)
+	return nil
+}
+
+func (c *client) downloadProviders() error {
+	var payload struct {
+		Providers []struct {
+			SourceID       string         `json:"source_id"`
+			Enabled        bool           `json:"enabled"`
+			AuthRef        string         `json:"auth_ref"`
+			AuthConfigured bool           `json:"auth_configured"`
+			States         map[string]int `json:"states"`
+		} `json:"providers"`
+	}
+	if err := c.get("/api/v1/downloader/providers", &payload); err != nil {
+		return err
+	}
+	for _, item := range payload.Providers {
+		fmt.Printf("%-12s enabled=%-5t auth=%-10s configured=%-5t states=%v\n",
+			item.SourceID, item.Enabled, item.AuthRef, item.AuthConfigured, item.States)
+	}
+	return nil
+}
+
+func printDownload(item downloadRequest) {
+	fmt.Printf("#%-5d %-11s %-10s files=%d/%d failed=%d auth=%d cursor=%s %s\n",
+		item.ID, item.SourceID, item.State, item.FilesDone, item.AssetsQueued,
+		item.FilesFailed, item.FilesWaitingAuth, item.Cursor.Format(time.RFC3339), item.CollectionID)
+	if item.LastError != "" {
+		fmt.Printf("  error: %s\n", item.LastError)
 	}
 }
 
@@ -115,11 +244,32 @@ func (c *client) query(args []string) error {
 }
 
 func (c *client) get(path string, target any) error {
-	req, err := http.NewRequest(http.MethodGet, c.base+path, nil)
+	return c.do(http.MethodGet, path, nil, target)
+}
+
+func (c *client) post(path string, body any, target any) error {
+	return c.do(http.MethodPost, path, body, target)
+}
+
+func (c *client) do(method, path string, body any, target any) error {
+	var reader *strings.Reader
+	if body == nil {
+		reader = strings.NewReader("")
+	} else {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = strings.NewReader(string(payload))
+	}
+	req, err := http.NewRequest(method, c.base+path, reader)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -135,6 +285,9 @@ func (c *client) get(path string, target any) error {
 		}
 		return errors.New(problem.Error)
 	}
+	if target == nil {
+		return nil
+	}
 	return json.NewDecoder(resp.Body).Decode(target)
 }
 
@@ -143,6 +296,10 @@ func usage() {
   satellite source list
   satellite catalog list --source goes18
   satellite query list --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22T09:00:00Z --end 2026-09-22T10:00:00Z [--json]
+  satellite download create --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22 --end 2026-09-23 [--json]
+  satellite download list [--limit 50] [--json]
+  satellite download status --id 1 [--json]
+  satellite download providers
 
 Environment:
   SATELLITE_SERVER=http://127.0.0.1:8080`)

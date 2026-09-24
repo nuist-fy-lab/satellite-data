@@ -128,7 +128,7 @@ func catalogSource(sourceID string) string {
 	switch sourceID {
 	case "mtg":
 		return "EUMETSAT Data Store Browse API"
-	case "modis", "calipso":
+	case "modis", "viirs", "calipso":
 		return "NASA Common Metadata Repository (CMR)"
 	case "earthcare":
 		return "ESA MAAP OpenSearch/STAC catalogue"

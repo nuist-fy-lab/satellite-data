@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
+	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
@@ -16,17 +18,26 @@ import (
 )
 
 type Server struct {
-	registry *provider.Registry
-	store    *state.Store
+	registry   *provider.Registry
+	store      *state.Store
+	downloader *downloader.Client
 }
 
-func New(registry *provider.Registry, store *state.Store) http.Handler {
-	s := &Server{registry: registry, store: store}
+func New(registry *provider.Registry, store *state.Store, clients ...*downloader.Client) http.Handler {
+	var downloaderClient *downloader.Client
+	if len(clients) > 0 {
+		downloaderClient = clients[0]
+	}
+	s := &Server{registry: registry, store: store, downloader: downloaderClient}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /api/v1/sources", s.sources)
 	mux.HandleFunc("GET /api/v1/catalog", s.catalog)
 	mux.HandleFunc("GET /api/v1/search", s.search)
+	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
+	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
+	mux.HandleFunc("GET /api/v1/downloads/{id}", s.download)
+	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
 	mux.HandleFunc("GET /api/products", s.products)
 	mux.HandleFunc("GET /api/year", s.year)
 	mux.HandleFunc("GET /api/day", s.day)
@@ -38,6 +49,103 @@ func New(registry *provider.Registry, store *state.Store) http.Handler {
 	}
 	mux.Handle("GET /", http.FileServerFS(static))
 	return withHeaders(mux)
+}
+
+func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	var payload struct {
+		Source     string `json:"source"`
+		Collection string `json:"collection"`
+		Start      string `json:"start"`
+		End        string `json:"end"`
+	}
+	if err := decoder.Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid download request JSON"))
+		return
+	}
+	payload.Source = strings.TrimSpace(payload.Source)
+	payload.Collection = strings.TrimSpace(payload.Collection)
+	start, err := parseTime(payload.Start)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid start time; use RFC3339 or YYYY-MM-DD"))
+		return
+	}
+	end, err := parseTime(payload.End)
+	if err != nil || !end.After(start) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid end time; it must be after start"))
+		return
+	}
+	productSource, _, err := s.store.ProductSource(r.Context(), payload.Collection)
+	if err != nil {
+		writeError(w, http.StatusNotFound, errors.New("unknown collection"))
+		return
+	}
+	if productSource != payload.Source {
+		writeError(w, http.StatusBadRequest, errors.New("collection does not belong to source"))
+		return
+	}
+	providerID, ok := downloadcoord.ProviderForSource(payload.Source)
+	if !ok {
+		if payload.Source == "himawari8" || payload.Source == "himawari9" {
+			writeError(w, http.StatusConflict, errors.New("Himawari-8/9 downloads are temporarily paused on c2ln1"))
+			return
+		}
+		writeError(w, http.StatusBadRequest, errors.New("source does not have a downloader pipeline"))
+		return
+	}
+	request, err := s.store.EnqueueDownloadRequest(r.Context(), payload.Source, providerID, payload.Collection, start, end)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	// Keep the official calendar/index pipeline moving in parallel with the
+	// download discovery pipeline. This is deliberately not awaited: download
+	// discovery has its own provider-isolated workers and must not depend on the
+	// calendar indexer finishing first.
+	if err := s.store.EnqueueRange(r.Context(), payload.Collection, start, end, 200); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"download": request})
+}
+
+func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := s.store.DownloadRequests(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"downloads": items})
+}
+
+func (s *Server) download(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid download id"))
+		return
+	}
+	item, err := s.store.DownloadRequest(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, errors.New("download request not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"download": item})
+}
+
+func (s *Server) downloaderProviders(w http.ResponseWriter, r *http.Request) {
+	if s.downloader == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("satellite downloader is not configured"))
+		return
+	}
+	items, err := s.downloader.Providers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"providers": items})
 }
 
 func (s *Server) products(w http.ResponseWriter, r *http.Request) {

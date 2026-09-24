@@ -24,10 +24,21 @@ type Indexer struct {
 	store        *state.Store
 	archiveRoot  string
 	catalogWrite sync.Mutex
+	localWake    chan struct{}
 }
 
 func New(registry *provider.Registry, store *state.Store, archiveRoot string) *Indexer {
-	return &Indexer{registry: registry, store: store, archiveRoot: archiveRoot}
+	return &Indexer{registry: registry, store: store, archiveRoot: archiveRoot, localWake: make(chan struct{}, 1)}
+}
+
+func (i *Indexer) TriggerLocalScan() {
+	if i == nil || i.localWake == nil {
+		return
+	}
+	select {
+	case i.localWake <- struct{}{}:
+	default:
+	}
 }
 
 func (i *Indexer) Run(ctx context.Context) {
@@ -180,6 +191,8 @@ func (i *Indexer) localLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-i.localWake:
+			i.scanLocal(ctx)
 		case <-ticker.C:
 			i.scanLocal(ctx)
 		}

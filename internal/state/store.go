@@ -250,6 +250,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize state schema: %w", err)
 	}
+	if err := initDownloadSchema(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize download schema: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
