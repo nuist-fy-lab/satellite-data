@@ -57,6 +57,7 @@ type Credential struct {
 	ID            int64  `json:"id"`
 	Alias         string `json:"alias"`
 	Kind          string `json:"kind"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
 	Enabled       bool   `json:"enabled"`
 	Priority      int    `json:"priority"`
 	SecretHint    string `json:"secret_hint"`

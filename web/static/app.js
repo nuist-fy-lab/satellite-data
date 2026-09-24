@@ -600,10 +600,25 @@ function renderCredentialList() {
     row.innerHTML = `
       <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(accessKindLabels[item.kind] || item.kind)} · ${esc(item.secret_hint || 'Secret 已保存')}</small></div>
       <div class="pool-actions"><button type="button" data-edit-credential="${item.id}">编辑</button><button type="button" data-delete-credential="${item.id}">删除</button></div></div>
-      <div class="pool-meta">${poolStatePill(item)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
+      <div class="pool-meta">${poolStatePill(item)}${credentialExpiryPill(item.expires_at)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
       ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
     node.append(row);
   }
+}
+
+function credentialExpiryPill(value) {
+  const expiresAt = String(value || '').trim();
+  if (!expiresAt) return '<span class="pool-pill expiry-unknown">有效期 未设置</span>';
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(expiresAt);
+  if (!match) return `<span class="pool-pill expiry-unknown">到期 ${esc(expiresAt)}</span>`;
+  const expiry = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((expiry.getTime() - today.getTime()) / 86400000);
+  if (days < 0) return `<span class="pool-pill expired">已过期 · ${esc(expiresAt)}</span>`;
+  if (days === 0) return `<span class="pool-pill expiring">今天到期 · ${esc(expiresAt)}</span>`;
+  if (days <= 30) return `<span class="pool-pill expiring">${days} 天后到期 · ${esc(expiresAt)}</span>`;
+  return `<span class="pool-pill">到期 ${esc(expiresAt)}</span>`;
 }
 
 function renderAccountList() {
@@ -712,6 +727,7 @@ function openPoolForm(kind, item = null) {
     $('#credential-alias').value = item?.alias || '';
     $('#credential-kind').value = item?.kind || 'laads';
     $('#credential-kind').disabled = Boolean(item);
+    $('#credential-expires').value = item?.expires_at || '';
     $('#credential-priority').value = item?.priority ?? 0;
     $('#credential-enabled').checked = item?.enabled ?? true;
     credentialFields();
@@ -760,7 +776,7 @@ async function saveCredential(event) {
   }
   Object.keys(secret).forEach(key => { if (!secret[key]) delete secret[key]; });
   const payload = {
-    alias, kind, secret,
+    alias, kind, secret, expires_at: $('#credential-expires').value || '',
     priority: Number($('#credential-priority').value || 0), enabled: $('#credential-enabled').checked,
   };
   if (currentId) payload.id = currentId;

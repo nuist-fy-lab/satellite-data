@@ -167,6 +167,7 @@
               <label>类型<select id="credential-kind"><option value="laads">LAADS · MODIS / VIIRS</option><option value="earthdata">Earthdata · CALIPSO</option><option value="earthcare">ESA MAAP · EarthCARE</option><option value="eumetsat">EUMETSAT · MTG</option><option value="cloudsat">CloudSat DPC</option></select></label>
               <aside id="credential-guide" class="credential-guide"></aside>
               <div id="credential-secret-fields"></div>
+              <label>过期日期（可选）<input id="credential-expires" type="date"><small>按服务商页面显示的日期填写；未知或长期有效可留空。</small></label>
               <div class="form-line"><label>优先级<input id="credential-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="credential-enabled" type="checkbox" checked>启用</label></div>
               <small id="credential-secret-note">新增必须填写 Secret；编辑时留空表示保留原 Secret。</small>
               <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="credential">取消</button></div>
@@ -211,6 +212,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=5"></script>
+  <script type="module" src="/app.js?v=6"></script>
 </body>
 </html>
