@@ -129,12 +129,87 @@
     </section>
 
     <section class="view" id="access-view">
-      <header class="simple-header"><div><div class="brand">访问凭据</div><div class="subbrand">Earthdata / EUMETSAT / ESA MAAP / CloudSat</div></div></header>
-      <div class="empty-panel">凭据只保存于部署节点的安全配置中；Web 页面不会显示 Secret 明文。</div>
+      <header class="simple-header">
+        <div><div class="brand">访问池</div><div class="subbrand">账号池 · 加密凭据池 · IP 代理池</div></div>
+        <div class="controls">
+          <span id="access-user" class="access-user"></span>
+          <button id="refresh-access" type="button">刷新</button>
+          <button id="logout-access" type="button" class="hidden">退出管理</button>
+        </div>
+      </header>
+
+      <section id="access-login" class="access-login hidden">
+        <div>
+          <strong>管理员解锁</strong>
+          <p>使用 NSMC Data 的管理员账号。管理会话只用于访问池，不影响公开数据日历。</p>
+        </div>
+        <form id="access-login-form" class="access-login-form">
+          <input id="access-username" name="username" autocomplete="username" placeholder="管理员账号" required>
+          <input id="access-password" name="password" type="password" autocomplete="current-password" placeholder="密码" required>
+          <button type="submit">解锁</button>
+        </form>
+        <div id="access-login-error" class="form-error"></div>
+      </section>
+
+      <section id="access-manager" class="hidden">
+        <div class="access-summary">
+          <article><span>账号</span><strong id="access-account-count">0</strong></article>
+          <article><span>凭据</span><strong id="access-credential-count">0</strong></article>
+          <article><span>代理</span><strong id="access-proxy-count">0</strong></article>
+        </div>
+
+        <div class="access-grid">
+          <section class="pool-card">
+            <div class="pool-head"><div><strong>凭据池</strong><small>Secret AES-GCM 加密落库，仅显示掩码</small></div><button type="button" data-pool-new="credential">新增</button></div>
+            <form id="credential-form" class="pool-form hidden">
+              <input type="hidden" id="credential-id">
+              <label>别名<input id="credential-alias" maxlength="64" required placeholder="例如 LAADS 主账号"></label>
+              <label>类型<select id="credential-kind"><option value="laads">LAADS · MODIS / VIIRS</option><option value="earthdata">Earthdata · CALIPSO</option><option value="earthcare">ESA MAAP · EarthCARE</option><option value="eumetsat">EUMETSAT · MTG</option><option value="cloudsat">CloudSat DPC</option></select></label>
+              <div id="credential-secret-fields"></div>
+              <div class="form-line"><label>优先级<input id="credential-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="credential-enabled" type="checkbox" checked>启用</label></div>
+              <small id="credential-secret-note">新增必须填写 Secret；编辑时留空表示保留原 Secret。</small>
+              <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="credential">取消</button></div>
+              <div id="credential-error" class="form-error"></div>
+            </form>
+            <div id="credential-list" class="pool-list"></div>
+          </section>
+
+          <section class="pool-card">
+            <div class="pool-head"><div><strong>账号池</strong><small>Provider → 凭据 → 代理策略</small></div><button type="button" data-pool-new="account">新增</button></div>
+            <form id="account-form" class="pool-form hidden">
+              <input type="hidden" id="account-id">
+              <label>别名<input id="account-alias" maxlength="64" required placeholder="例如 MODIS 主路由"></label>
+              <label>Provider<select id="account-source"><option value="goes">GOES</option><option value="modis">MODIS</option><option value="viirs">VIIRS</option><option value="mtg">MTG</option><option value="earthcare">EarthCARE</option><option value="calipso">CALIPSO</option><option value="cloudsat">CloudSat</option></select></label>
+              <label>凭据<select id="account-credential"></select></label>
+              <label>代理策略<select id="account-proxy-mode"><option value="direct">Direct · 直连</option><option value="auto">Auto · 代理池轮转</option><option value="fixed">Fixed · 固定代理</option></select></label>
+              <label id="account-proxy-row" class="hidden">固定代理<select id="account-proxy"></select></label>
+              <div class="form-line"><label>优先级<input id="account-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="account-enabled" type="checkbox" checked>启用</label></div>
+              <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="account">取消</button></div>
+              <div id="account-error" class="form-error"></div>
+            </form>
+            <div id="account-list" class="pool-list"></div>
+          </section>
+
+          <section class="pool-card">
+            <div class="pool-head"><div><strong>IP 代理池</strong><small>HTTP / HTTPS / SOCKS5，可限制 Provider</small></div><button type="button" data-pool-new="proxy">新增</button></div>
+            <form id="proxy-form" class="pool-form hidden">
+              <input type="hidden" id="proxy-id">
+              <label>别名<input id="proxy-alias" maxlength="64" required placeholder="例如 US-West-01"></label>
+              <label>代理 URL<input id="proxy-url" type="password" autocomplete="off" placeholder="socks5://user:pass@host:port"></label>
+              <label>适用 Provider<input id="proxy-providers" placeholder="* 或 goes,modis,viirs"></label>
+              <div class="form-line"><label>优先级<input id="proxy-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="proxy-enabled" type="checkbox" checked>启用</label></div>
+              <small>编辑时代理 URL 留空表示保留原地址与认证信息。</small>
+              <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="proxy">取消</button></div>
+              <div id="proxy-error" class="form-error"></div>
+            </form>
+            <div id="proxy-list" class="pool-list"></div>
+          </section>
+        </div>
+      </section>
     </section>
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=2"></script>
+  <script type="module" src="/app.js?v=3"></script>
 </body>
 </html>

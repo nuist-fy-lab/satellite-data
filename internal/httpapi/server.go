@@ -5,10 +5,12 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
@@ -17,10 +19,14 @@ import (
 	webui "github.com/nuist-fy-lab/satellite-data/web"
 )
 
+const accessSessionCookie = "satellite_access_session"
+
 type Server struct {
 	registry   *provider.Registry
 	store      *state.Store
 	downloader *downloader.Client
+	auth       *authstore.Store
+	sessionTTL time.Duration
 }
 
 func New(registry *provider.Registry, store *state.Store, clients ...*downloader.Client) http.Handler {
@@ -28,7 +34,15 @@ func New(registry *provider.Registry, store *state.Store, clients ...*downloader
 	if len(clients) > 0 {
 		downloaderClient = clients[0]
 	}
-	s := &Server{registry: registry, store: store, downloader: downloaderClient}
+	return newHandler(registry, store, downloaderClient, nil, 0)
+}
+
+func NewWithAuth(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration) http.Handler {
+	return newHandler(registry, store, downloaderClient, auth, sessionTTL)
+}
+
+func newHandler(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration) http.Handler {
+	s := &Server{registry: registry, store: store, downloader: downloaderClient, auth: auth, sessionTTL: sessionTTL}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /api/v1/sources", s.sources)
@@ -38,6 +52,16 @@ func New(registry *provider.Registry, store *state.Store, clients ...*downloader
 	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.download)
 	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
+	mux.HandleFunc("POST /api/v1/access/login", s.accessLogin)
+	mux.HandleFunc("POST /api/v1/access/logout", s.accessLogout)
+	mux.HandleFunc("GET /api/v1/access/session", s.accessSession)
+	mux.HandleFunc("GET /api/v1/access/pools", s.accessPools)
+	mux.HandleFunc("POST /api/v1/access/credentials", s.accessCredential)
+	mux.HandleFunc("DELETE /api/v1/access/credentials/{id}", s.deleteAccessCredential)
+	mux.HandleFunc("POST /api/v1/access/proxies", s.accessProxy)
+	mux.HandleFunc("DELETE /api/v1/access/proxies/{id}", s.deleteAccessProxy)
+	mux.HandleFunc("POST /api/v1/access/accounts", s.accessAccount)
+	mux.HandleFunc("DELETE /api/v1/access/accounts/{id}", s.deleteAccessAccount)
 	mux.HandleFunc("GET /api/products", s.products)
 	mux.HandleFunc("GET /api/year", s.year)
 	mux.HandleFunc("GET /api/day", s.day)
@@ -49,6 +73,219 @@ func New(registry *provider.Registry, store *state.Store, clients ...*downloader
 	}
 	mux.Handle("GET /", http.FileServerFS(static))
 	return withHeaders(mux)
+}
+
+func (s *Server) accessLogin(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("access management authentication is not configured"))
+		return
+	}
+	var request struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := decodeRequestJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	user, err := s.auth.VerifyPassword(r.Context(), request.Username, request.Password)
+	if err != nil || user.Role != "admin" {
+		writeError(w, http.StatusUnauthorized, errors.New("invalid administrator credentials"))
+		return
+	}
+	ttl := s.sessionTTL
+	if ttl <= 0 {
+		ttl = 12 * time.Hour
+	}
+	token, err := s.auth.CreateSession(r.Context(), user.ID, ttl)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("session unavailable"))
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: accessSessionCookie, Value: token, Path: "/", MaxAge: int(ttl.Seconds()),
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+}
+
+func (s *Server) accessLogout(w http.ResponseWriter, r *http.Request) {
+	if s.auth != nil {
+		if cookie, err := r.Cookie(accessSessionCookie); err == nil {
+			_ = s.auth.RevokeSession(r.Context(), cookie.Value)
+		}
+	}
+	http.SetCookie(w, &http.Cookie{Name: accessSessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) accessSession(w http.ResponseWriter, r *http.Request) {
+	user, err := s.adminUser(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+}
+
+func (s *Server) accessPools(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.adminUser(r); err != nil {
+		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		return
+	}
+	if s.downloader == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("satellite downloader is not configured"))
+		return
+	}
+	pools, err := s.downloader.AccessPools(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pools)
+}
+
+func (s *Server) accessCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	var payload map[string]any
+	if err := decodeRequestJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	item, err := s.downloader.UpsertCredential(r.Context(), payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"credential": item})
+}
+
+func (s *Server) deleteAccessCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid credential id"))
+		return
+	}
+	if err := s.downloader.DeleteCredential(r.Context(), id); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) accessProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	var payload map[string]any
+	if err := decodeRequestJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	item, err := s.downloader.UpsertProxy(r.Context(), payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"proxy": item})
+}
+
+func (s *Server) deleteAccessProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid proxy id"))
+		return
+	}
+	if err := s.downloader.DeleteProxy(r.Context(), id); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) accessAccount(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	var payload map[string]any
+	if err := decodeRequestJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	item, err := s.downloader.UpsertAccount(r.Context(), payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"account": item})
+}
+
+func (s *Server) deleteAccessAccount(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, errors.New("invalid account id"))
+		return
+	}
+	if err := s.downloader.DeleteAccount(r.Context(), id); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) authorizeMutation(w http.ResponseWriter, r *http.Request) bool {
+	if _, err := s.adminUser(r); err != nil {
+		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		return false
+	}
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		parsed, err := url.Parse(origin)
+		if err != nil || !strings.EqualFold(parsed.Host, r.Host) {
+			writeError(w, http.StatusForbidden, errors.New("cross-origin access mutation rejected"))
+			return false
+		}
+	}
+	if s.downloader == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("satellite downloader is not configured"))
+		return false
+	}
+	return true
+}
+
+func (s *Server) adminUser(r *http.Request) (authstore.User, error) {
+	if s.auth == nil {
+		return authstore.User{}, errors.New("auth unavailable")
+	}
+	cookie, err := r.Cookie(accessSessionCookie)
+	if err != nil {
+		return authstore.User{}, err
+	}
+	user, err := s.auth.VerifySession(r.Context(), cookie.Value)
+	if err != nil || user.Role != "admin" {
+		return authstore.User{}, errors.New("admin session required")
+	}
+	return user, nil
+}
+
+func decodeRequestJSON(w http.ResponseWriter, r *http.Request, target any) error {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return errors.New("invalid request JSON")
+	}
+	return nil
 }
 
 func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {

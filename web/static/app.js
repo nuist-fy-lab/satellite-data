@@ -17,6 +17,7 @@ const state = {
   dayState: new Map(),
   yearPoll: 0,
   dayPoll: 0,
+  access: {user: null, credentials: [], proxies: [], accounts: []},
   displayZone: localStorage.getItem('satellite-data-zone') === 'BJT' ? 'BJT' : 'UTC',
 };
 
@@ -42,7 +43,11 @@ async function json(url, options = {}) {
   });
   let payload = {};
   try { payload = await response.json(); } catch {}
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return payload;
 }
 
@@ -495,6 +500,263 @@ function resetFilters() {
   loadCatalog();
 }
 
+const accessKindLabels = {
+  laads: 'LAADS', earthdata: 'Earthdata', earthcare: 'ESA MAAP', eumetsat: 'EUMETSAT', cloudsat: 'CloudSat DPC',
+};
+const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat'};
+
+async function loadAccess() {
+  $('#access-login-error').textContent = '';
+  try {
+    const session = await json('/api/v1/access/session');
+    state.access.user = session.user;
+    $('#access-user').textContent = session.user?.username ? `${session.user.username} · admin` : '管理员';
+    $('#access-login').classList.add('hidden');
+    $('#access-manager').classList.remove('hidden');
+    $('#logout-access').classList.remove('hidden');
+    $('#refresh-access').classList.remove('hidden');
+    await loadAccessPools();
+  } catch (error) {
+    state.access.user = null;
+    $('#access-user').textContent = '';
+    $('#access-manager').classList.add('hidden');
+    $('#access-login').classList.remove('hidden');
+    $('#logout-access').classList.add('hidden');
+  }
+}
+
+async function loadAccessPools() {
+  const payload = await json('/api/v1/access/pools');
+  state.access.credentials = payload.credentials || [];
+  state.access.proxies = payload.proxies || [];
+  state.access.accounts = payload.accounts || [];
+  $('#access-account-count').textContent = state.access.accounts.length;
+  $('#access-credential-count').textContent = state.access.credentials.length;
+  $('#access-proxy-count').textContent = state.access.proxies.length;
+  renderCredentialList();
+  renderAccountList();
+  renderProxyList();
+  rebuildAccessSelects();
+}
+
+function poolStatePill(item) {
+  const stateName = item.enabled === false ? 'disabled' : (item.state || 'ready');
+  const label = {ready: '可用', auth_required: '需认证', degraded: '降级', disabled: '已停用'}[stateName] || stateName;
+  return `<span class="pool-pill ${esc(stateName)}">${esc(label)}</span>`;
+}
+
+function renderCredentialList() {
+  const node = $('#credential-list');
+  node.replaceChildren();
+  if (!state.access.credentials.length) {
+    node.innerHTML = '<div class="pool-empty">暂无凭据</div>';
+    return;
+  }
+  for (const item of state.access.credentials) {
+    const row = document.createElement('div');
+    row.className = 'pool-row';
+    row.innerHTML = `
+      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(accessKindLabels[item.kind] || item.kind)} · ${esc(item.secret_hint || 'Secret 已保存')}</small></div>
+      <div class="pool-actions"><button type="button" data-edit-credential="${item.id}">编辑</button><button type="button" data-delete-credential="${item.id}">删除</button></div></div>
+      <div class="pool-meta">${poolStatePill(item)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
+      ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
+    node.append(row);
+  }
+}
+
+function renderAccountList() {
+  const node = $('#account-list');
+  node.replaceChildren();
+  if (!state.access.accounts.length) {
+    node.innerHTML = '<div class="pool-empty">暂无账号路由</div>';
+    return;
+  }
+  for (const item of state.access.accounts) {
+    const route = item.proxy_mode === 'direct' ? '直连' : item.proxy_mode === 'auto' ? '代理池' : `固定 · ${item.proxy_alias || '—'}`;
+    const row = document.createElement('div');
+    row.className = 'pool-row';
+    row.innerHTML = `
+      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(item.source_id)} · ${esc(item.credential_alias || '匿名')} · ${esc(route)}</small></div>
+      <div class="pool-actions"><button type="button" data-edit-account="${item.id}">编辑</button><button type="button" data-delete-account="${item.id}">删除</button></div></div>
+      <div class="pool-meta">${poolStatePill(item)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
+      ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
+    node.append(row);
+  }
+}
+
+function renderProxyList() {
+  const node = $('#proxy-list');
+  node.replaceChildren();
+  if (!state.access.proxies.length) {
+    node.innerHTML = '<div class="pool-empty">暂无代理</div>';
+    return;
+  }
+  for (const item of state.access.proxies) {
+    const scope = item.providers?.length ? item.providers.join(', ') : '*';
+    const row = document.createElement('div');
+    row.className = 'pool-row';
+    row.innerHTML = `
+      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(item.scheme)} · ${esc(item.endpoint_hint)} · ${esc(scope)}</small></div>
+      <div class="pool-actions"><button type="button" data-edit-proxy="${item.id}">编辑</button><button type="button" data-delete-proxy="${item.id}">删除</button></div></div>
+      <div class="pool-meta">${poolStatePill(item)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
+      ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
+    node.append(row);
+  }
+}
+
+function formatAccessTime(value) {
+  return String(value || '').replace('T', ' ').slice(0, 19) + 'Z';
+}
+
+function credentialFields() {
+  const kind = $('#credential-kind').value;
+  const node = $('#credential-secret-fields');
+  const password = (id, label, placeholder = '') => `<label>${label}<input id="${id}" type="password" autocomplete="new-password" placeholder="${placeholder}"></label>`;
+  if (['laads','earthdata','earthcare'].includes(kind)) {
+    node.innerHTML = `<div class="secret-grid">${password('credential-token','Token','编辑时留空即保留')}</div>`;
+  } else if (kind === 'eumetsat') {
+    node.innerHTML = `<div class="secret-grid">${password('credential-consumer-key','Consumer Key')}${password('credential-consumer-secret','Consumer Secret')}</div>`;
+  } else {
+    node.innerHTML = `<div class="secret-grid"><label>用户名<input id="credential-username" autocomplete="off" placeholder="编辑时留空即保留"></label>${password('credential-password','密码')}</div>`;
+  }
+}
+
+function rebuildAccessSelects() {
+  const credentialSelect = $('#account-credential');
+  const previousCredential = credentialSelect.value;
+  credentialSelect.replaceChildren(new Option('匿名 / 无凭据', ''));
+  const required = providerKinds[$('#account-source').value] || '';
+  for (const item of state.access.credentials.filter(item => required && item.kind === required)) {
+    credentialSelect.add(new Option(`${item.alias} · ${accessKindLabels[item.kind] || item.kind}`, String(item.id)));
+  }
+  if ([...credentialSelect.options].some(option => option.value === previousCredential)) credentialSelect.value = previousCredential;
+
+  const proxySelect = $('#account-proxy');
+  const previousProxy = proxySelect.value;
+  proxySelect.replaceChildren(new Option('选择代理', ''));
+  for (const item of state.access.proxies) proxySelect.add(new Option(`${item.alias} · ${item.endpoint_hint}`, String(item.id)));
+  if ([...proxySelect.options].some(option => option.value === previousProxy)) proxySelect.value = previousProxy;
+  $('#account-proxy-row').classList.toggle('hidden', $('#account-proxy-mode').value !== 'fixed');
+}
+
+function openPoolForm(kind, item = null) {
+  $(`#${kind}-form`).classList.remove('hidden');
+  $(`#${kind}-error`).textContent = '';
+  if (kind === 'credential') {
+    $('#credential-id').value = item?.id || '';
+    $('#credential-alias').value = item?.alias || '';
+    $('#credential-kind').value = item?.kind || 'laads';
+    $('#credential-kind').disabled = Boolean(item);
+    $('#credential-priority').value = item?.priority ?? 0;
+    $('#credential-enabled').checked = item?.enabled ?? true;
+    credentialFields();
+  } else if (kind === 'proxy') {
+    $('#proxy-id').value = item?.id || '';
+    $('#proxy-alias').value = item?.alias || '';
+    $('#proxy-url').value = '';
+    $('#proxy-providers').value = item?.providers?.length ? item.providers.join(',') : '*';
+    $('#proxy-priority').value = item?.priority ?? 0;
+    $('#proxy-enabled').checked = item?.enabled ?? true;
+  } else {
+    $('#account-id').value = item?.id || '';
+    $('#account-alias').value = item?.alias || '';
+    $('#account-source').value = item?.source_id || 'goes';
+    $('#account-proxy-mode').value = item?.proxy_mode || 'direct';
+    $('#account-priority').value = item?.priority ?? 0;
+    $('#account-enabled').checked = item?.enabled ?? true;
+    rebuildAccessSelects();
+    $('#account-credential').value = item?.credential_id ? String(item.credential_id) : '';
+    $('#account-proxy').value = item?.proxy_id ? String(item.proxy_id) : '';
+  }
+}
+
+function closePoolForm(kind) {
+  $(`#${kind}-form`).classList.add('hidden');
+  if (kind === 'credential') $('#credential-kind').disabled = false;
+}
+
+async function saveCredential(event) {
+  event.preventDefault();
+  const kind = $('#credential-kind').value;
+  const secret = {};
+  if (['laads','earthdata','earthcare'].includes(kind)) secret.token = $('#credential-token')?.value || '';
+  else if (kind === 'eumetsat') {
+    secret.consumer_key = $('#credential-consumer-key')?.value || '';
+    secret.consumer_secret = $('#credential-consumer-secret')?.value || '';
+  } else {
+    secret.username = $('#credential-username')?.value || '';
+    secret.password = $('#credential-password')?.value || '';
+  }
+  Object.keys(secret).forEach(key => { if (!secret[key]) delete secret[key]; });
+  const payload = {
+    alias: $('#credential-alias').value.trim(), kind, secret,
+    priority: Number($('#credential-priority').value || 0), enabled: $('#credential-enabled').checked,
+  };
+  if ($('#credential-id').value) payload.id = Number($('#credential-id').value);
+  try {
+    await json('/api/v1/access/credentials', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    closePoolForm('credential');
+    await loadAccessPools();
+  } catch (error) { $('#credential-error').textContent = error.message; }
+}
+
+async function saveProxy(event) {
+  event.preventDefault();
+  const providers = $('#proxy-providers').value.split(',').map(value => value.trim()).filter(Boolean);
+  const payload = {
+    alias: $('#proxy-alias').value.trim(), url: $('#proxy-url').value.trim(), providers,
+    priority: Number($('#proxy-priority').value || 0), enabled: $('#proxy-enabled').checked,
+  };
+  if ($('#proxy-id').value) payload.id = Number($('#proxy-id').value);
+  try {
+    await json('/api/v1/access/proxies', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    closePoolForm('proxy');
+    await loadAccessPools();
+  } catch (error) { $('#proxy-error').textContent = error.message; }
+}
+
+async function saveAccount(event) {
+  event.preventDefault();
+  const credential = $('#account-credential').value;
+  const proxy = $('#account-proxy').value;
+  const payload = {
+    alias: $('#account-alias').value.trim(), source_id: $('#account-source').value,
+    credential_id: credential ? Number(credential) : null, proxy_mode: $('#account-proxy-mode').value,
+    proxy_id: proxy ? Number(proxy) : null, priority: Number($('#account-priority').value || 0), enabled: $('#account-enabled').checked,
+  };
+  if ($('#account-id').value) payload.id = Number($('#account-id').value);
+  try {
+    await json('/api/v1/access/accounts', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    closePoolForm('account');
+    await loadAccessPools();
+  } catch (error) { $('#account-error').textContent = error.message; }
+}
+
+async function deletePoolItem(kind, id) {
+  if (!confirm('确认删除这条配置？关联账号可能会立即失去可用路由。')) return;
+  try {
+    const resource = kind === 'proxy' ? 'proxies' : `${kind}s`;
+    await json(`/api/v1/access/${resource}/${id}`, {method:'DELETE'});
+    await loadAccessPools();
+  } catch (error) { alert(error.message); }
+}
+
+async function loginAccess(event) {
+  event.preventDefault();
+  $('#access-login-error').textContent = '';
+  try {
+    await json('/api/v1/access/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:$('#access-username').value, password:$('#access-password').value})});
+    $('#access-password').value = '';
+    await loadAccess();
+  } catch (error) { $('#access-login-error').textContent = error.message; }
+}
+
+async function logoutAccess() {
+  try { await json('/api/v1/access/logout', {method:'POST'}); } catch {}
+  state.access.user = null;
+  await loadAccess();
+}
+
 async function health() {
   const dot = $('#service-dot');
   const label = $('#service-label');
@@ -510,7 +772,10 @@ async function health() {
 
 function bind() {
   $('.sidebar-toggle').addEventListener('click', () => setSidebar(document.body.classList.contains('sidebar-collapsed'), true));
-  document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', () => setView(node.dataset.view)));
+  document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', () => {
+    setView(node.dataset.view);
+    if (node.dataset.view === 'access-view') loadAccess();
+  }));
   sourceEl.addEventListener('change', () => { persistFilters(); loadCatalog(); });
   satelliteEl.addEventListener('change', () => { rebuildFilters('satellite'); persistFilters(); });
   instrumentEl.addEventListener('change', () => { rebuildFilters('instrument'); persistFilters(); });
@@ -528,6 +793,35 @@ function bind() {
   $('#clear-calendar').addEventListener('click', () => loadYear(true));
   $('#close-detail').addEventListener('click', closeDetail);
   $('#refresh-sources').addEventListener('click', loadSources);
+  $('#access-login-form').addEventListener('submit', loginAccess);
+  $('#refresh-access').addEventListener('click', loadAccess);
+  $('#logout-access').addEventListener('click', logoutAccess);
+  document.querySelectorAll('[data-pool-new]').forEach(node => node.addEventListener('click', () => openPoolForm(node.dataset.poolNew)));
+  document.querySelectorAll('[data-form-cancel]').forEach(node => node.addEventListener('click', () => closePoolForm(node.dataset.formCancel)));
+  $('#credential-kind').addEventListener('change', credentialFields);
+  $('#account-source').addEventListener('change', rebuildAccessSelects);
+  $('#account-proxy-mode').addEventListener('change', rebuildAccessSelects);
+  $('#credential-form').addEventListener('submit', saveCredential);
+  $('#proxy-form').addEventListener('submit', saveProxy);
+  $('#account-form').addEventListener('submit', saveAccount);
+  $('#credential-list').addEventListener('click', event => {
+    const edit = event.target.closest('[data-edit-credential]');
+    const remove = event.target.closest('[data-delete-credential]');
+    if (edit) openPoolForm('credential', state.access.credentials.find(item => item.id === Number(edit.dataset.editCredential)));
+    if (remove) deletePoolItem('credential', Number(remove.dataset.deleteCredential));
+  });
+  $('#proxy-list').addEventListener('click', event => {
+    const edit = event.target.closest('[data-edit-proxy]');
+    const remove = event.target.closest('[data-delete-proxy]');
+    if (edit) openPoolForm('proxy', state.access.proxies.find(item => item.id === Number(edit.dataset.editProxy)));
+    if (remove) deletePoolItem('proxy', Number(remove.dataset.deleteProxy));
+  });
+  $('#account-list').addEventListener('click', event => {
+    const edit = event.target.closest('[data-edit-account]');
+    const remove = event.target.closest('[data-delete-account]');
+    if (edit) openPoolForm('account', state.access.accounts.find(item => item.id === Number(edit.dataset.editAccount)));
+    if (remove) deletePoolItem('account', Number(remove.dataset.deleteAccount));
+  });
 }
 
 async function boot() {

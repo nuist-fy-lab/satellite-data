@@ -14,6 +14,7 @@ import (
 
 	"github.com/nuist-fy-lab/satellite-data/internal/app"
 	"github.com/nuist-fy-lab/satellite-data/internal/archiveevent"
+	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
 	"github.com/nuist-fy-lab/satellite-data/internal/config"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
@@ -60,6 +61,12 @@ func main() {
 	archiveIndexer := indexer.New(registry, store, *archiveRoot)
 	archiveIndexer.Run(ctx)
 	downloaderClient := downloader.New(runtimeConfig.DownloaderSocket)
+	authStore, err := authstore.Open(runtimeConfig.AuthDB)
+	if err != nil {
+		slog.Error("open access auth store", "error", err)
+		os.Exit(1)
+	}
+	defer authStore.Close()
 	coordinator, err := downloadcoord.New(registry, store, downloaderClient)
 	if err != nil {
 		slog.Error("initialize download coordinator", "error", err)
@@ -75,7 +82,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              *addr,
-		Handler:           httpapi.New(registry, store, downloaderClient),
+		Handler:           httpapi.NewWithAuth(registry, store, downloaderClient, authStore, runtimeConfig.SessionTTL),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      2 * time.Minute,

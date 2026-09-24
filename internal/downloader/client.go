@@ -53,6 +53,59 @@ type ProviderStatus struct {
 	States         map[string]int `json:"states"`
 }
 
+type Credential struct {
+	ID            int64  `json:"id"`
+	Alias         string `json:"alias"`
+	Kind          string `json:"kind"`
+	Enabled       bool   `json:"enabled"`
+	Priority      int    `json:"priority"`
+	SecretHint    string `json:"secret_hint"`
+	State         string `json:"state"`
+	LastError     string `json:"last_error,omitempty"`
+	LastUsedAt    string `json:"last_used_at,omitempty"`
+	LastSuccessAt string `json:"last_success_at,omitempty"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+type Proxy struct {
+	ID            int64    `json:"id"`
+	Alias         string   `json:"alias"`
+	Scheme        string   `json:"scheme"`
+	EndpointHint  string   `json:"endpoint_hint"`
+	Providers     []string `json:"providers"`
+	Enabled       bool     `json:"enabled"`
+	Priority      int      `json:"priority"`
+	State         string   `json:"state"`
+	LastError     string   `json:"last_error,omitempty"`
+	LastUsedAt    string   `json:"last_used_at,omitempty"`
+	LastSuccessAt string   `json:"last_success_at,omitempty"`
+	UpdatedAt     string   `json:"updated_at"`
+}
+
+type Account struct {
+	ID              int64  `json:"id"`
+	Alias           string `json:"alias"`
+	SourceID        string `json:"source_id"`
+	CredentialID    *int64 `json:"credential_id,omitempty"`
+	CredentialAlias string `json:"credential_alias,omitempty"`
+	ProxyMode       string `json:"proxy_mode"`
+	ProxyID         *int64 `json:"proxy_id,omitempty"`
+	ProxyAlias      string `json:"proxy_alias,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	Priority        int    `json:"priority"`
+	State           string `json:"state"`
+	LastError       string `json:"last_error,omitempty"`
+	LastUsedAt      string `json:"last_used_at,omitempty"`
+	LastSuccessAt   string `json:"last_success_at,omitempty"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
+type AccessPools struct {
+	Credentials []Credential `json:"credentials"`
+	Proxies     []Proxy      `json:"proxies"`
+	Accounts    []Account    `json:"accounts"`
+}
+
 func New(socket string) *Client {
 	socket = strings.TrimSpace(socket)
 	transport := &http.Transport{
@@ -103,6 +156,56 @@ func (c *Client) Retry(ctx context.Context, id int64) error {
 
 func (c *Client) Health(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodGet, "/healthz", nil, nil)
+}
+
+func (c *Client) AccessPools(ctx context.Context) (AccessPools, error) {
+	var payload AccessPools
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/access", nil, &payload); err != nil {
+		return AccessPools{}, err
+	}
+	return payload, nil
+}
+
+func (c *Client) UpsertCredential(ctx context.Context, payload any) (Credential, error) {
+	var response struct {
+		Credential Credential `json:"credential"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/credentials", payload, &response); err != nil {
+		return Credential{}, err
+	}
+	return response.Credential, nil
+}
+
+func (c *Client) DeleteCredential(ctx context.Context, id int64) error {
+	return c.doJSON(ctx, http.MethodDelete, "/v1/credentials/"+strconv.FormatInt(id, 10), nil, nil)
+}
+
+func (c *Client) UpsertProxy(ctx context.Context, payload any) (Proxy, error) {
+	var response struct {
+		Proxy Proxy `json:"proxy"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/proxies", payload, &response); err != nil {
+		return Proxy{}, err
+	}
+	return response.Proxy, nil
+}
+
+func (c *Client) DeleteProxy(ctx context.Context, id int64) error {
+	return c.doJSON(ctx, http.MethodDelete, "/v1/proxies/"+strconv.FormatInt(id, 10), nil, nil)
+}
+
+func (c *Client) UpsertAccount(ctx context.Context, payload any) (Account, error) {
+	var response struct {
+		Account Account `json:"account"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/accounts", payload, &response); err != nil {
+		return Account{}, err
+	}
+	return response.Account, nil
+}
+
+func (c *Client) DeleteAccount(ctx context.Context, id int64) error {
+	return c.doJSON(ctx, http.MethodDelete, "/v1/accounts/"+strconv.FormatInt(id, 10), nil, nil)
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body any, target any) error {
