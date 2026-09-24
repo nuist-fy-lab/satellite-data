@@ -504,6 +504,48 @@ const accessKindLabels = {
   laads: 'LAADS', earthdata: 'Earthdata', earthcare: 'ESA MAAP', eumetsat: 'EUMETSAT', cloudsat: 'CloudSat DPC',
 };
 const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat'};
+const credentialGuides = {
+  laads: {
+    title: 'LAADS Download Token',
+    summary: '用于 MODIS 与 VIIRS。优先使用 LAADS 自己生成的下载 Token，而不是通用 Earthdata Token。',
+    steps: ['登录 NASA LAADS DAAC。', '在 Token / Download Token 区域生成或复制当前 Token。', '把完整 Token 粘贴到下方 Token 输入框；保存后网页只保留掩码。'],
+    note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。',
+    url: 'https://ladsweb.modaps.eosdis.nasa.gov/',
+    link: '打开 LAADS DAAC',
+  },
+  earthdata: {
+    title: 'NASA Earthdata User Token',
+    summary: '当前用于 CALIPSO。需要 Earthdata Login 账号生成 User Token。',
+    steps: ['登录 Earthdata Login。', '进入 Generate Token / User Token 页面并生成 Token。', '点击 Show Token，复制完整值后粘贴到下方。'],
+    note: 'Earthdata User Token 有有效期；到期后直接编辑本条凭据并替换 Token。',
+    url: 'https://urs.earthdata.nasa.gov/',
+    link: '打开 Earthdata Login',
+  },
+  earthcare: {
+    title: 'ESA MAAP EarthCARE Token',
+    summary: '用于 EarthCARE 数据访问。需要 ESA EO / MAAP 账号，并生成 EarthCARE MAAP 长期访问 Token。',
+    steps: ['登录 ESA MAAP，并确保账号有 EarthCARE 数据访问权限。', '打开 MAAP Token 页面生成长期 Token。', '复制生成的 Token 粘贴到下方；不要填写示例里的 CLIENT_SECRET。'],
+    note: '部分 Cal/Val 或 Commissioning 集合还取决于你的 ESA 账号权限。',
+    url: 'https://portal.maap.eo.esa.int/ini/services/auth/token/90dToken.php',
+    link: '生成 ESA MAAP Token',
+  },
+  eumetsat: {
+    title: 'EUMETSAT Consumer Key / Secret',
+    summary: '用于 MTG。这里保存的是长期 API Key 凭据，下载器会自动换取短期 Access Token。',
+    steps: ['登录 EUMETSAT User Portal。', '进入 API Key Management 创建或查看个人 API Key。', '分别复制 Consumer Key 与 Consumer Secret 到下方两个输入框。'],
+    note: '不要粘贴临时 Access Token；应保存 Consumer Key + Consumer Secret。',
+    url: 'https://api.eumetsat.int/api-key/',
+    link: '打开 EUMETSAT API Key',
+  },
+  cloudsat: {
+    title: 'CloudSat DPC THREDDS 账号',
+    summary: '用于 CloudSat THREDDS / HTTPServer 下载，用户名与普通 DPC 网站登录并不一定是同一套密码。',
+    steps: ['先注册并登录 CloudSat DPC 网站账号。', '按官方 THREDDS 指引向 cloudsat@colostate.edu 申请 THREDDS 访问。', '收到授权后，用户名通常是你的邮箱；把邮件提供的 THREDDS 密码填入下方。'],
+    note: '如果你只有 CloudSat 网站密码、尚未申请 THREDDS 密码，下载仍可能认证失败。',
+    url: 'https://www.cloudsat.cira.colostate.edu/order/THREDDS-OpeNDAP-access',
+    link: '查看 CloudSat THREDDS 指引',
+  },
+};
 
 async function loadAccess() {
   $('#access-login-error').textContent = '';
@@ -619,6 +661,29 @@ function credentialFields() {
   } else {
     node.innerHTML = `<div class="secret-grid"><label>用户名<input id="credential-username" autocomplete="off" placeholder="编辑时留空即保留"></label>${password('credential-password','密码')}</div>`;
   }
+  renderCredentialGuide();
+}
+
+function renderCredentialGuide() {
+  const kind = $('#credential-kind').value;
+  const guide = credentialGuides[kind];
+  const node = $('#credential-guide');
+  if (!guide) {
+    node.replaceChildren();
+    node.classList.add('hidden');
+    return;
+  }
+  node.classList.remove('hidden');
+  node.innerHTML = `
+    <div class="credential-guide-head">
+      <div><strong>${esc(guide.title)}</strong><p>${esc(guide.summary)}</p></div>
+      <a href="${esc(guide.url)}" target="_blank" rel="noopener noreferrer">${esc(guide.link)} ↗</a>
+    </div>
+    <details>
+      <summary>查看获取教程</summary>
+      <ol>${guide.steps.map(step => `<li>${esc(step)}</li>`).join('')}</ol>
+      <p class="credential-guide-note">${esc(guide.note)}</p>
+    </details>`;
 }
 
 function rebuildAccessSelects() {

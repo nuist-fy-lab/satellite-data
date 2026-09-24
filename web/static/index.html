@@ -165,6 +165,7 @@
               <input type="hidden" id="credential-id">
               <label>别名<input id="credential-alias" maxlength="64" required placeholder="例如 LAADS 主账号"></label>
               <label>类型<select id="credential-kind"><option value="laads">LAADS · MODIS / VIIRS</option><option value="earthdata">Earthdata · CALIPSO</option><option value="earthcare">ESA MAAP · EarthCARE</option><option value="eumetsat">EUMETSAT · MTG</option><option value="cloudsat">CloudSat DPC</option></select></label>
+              <aside id="credential-guide" class="credential-guide"></aside>
               <div id="credential-secret-fields"></div>
               <div class="form-line"><label>优先级<input id="credential-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="credential-enabled" type="checkbox" checked>启用</label></div>
               <small id="credential-secret-note">新增必须填写 Secret；编辑时留空表示保留原 Secret。</small>
@@ -210,6 +211,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=3"></script>
+  <script type="module" src="/app.js?v=4"></script>
 </body>
 </html>
