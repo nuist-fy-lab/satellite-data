@@ -743,6 +743,12 @@ function closePoolForm(kind) {
 async function saveCredential(event) {
   event.preventDefault();
   const kind = $('#credential-kind').value;
+  const currentId = Number($('#credential-id').value || 0);
+  const alias = $('#credential-alias').value.trim();
+  if (duplicateAlias(state.access.credentials, alias, currentId)) {
+    $('#credential-error').textContent = `凭据别名“${alias}”已存在，请编辑已有凭据或换一个别名。`;
+    return;
+  }
   const secret = {};
   if (['laads','earthdata','earthcare'].includes(kind)) secret.token = $('#credential-token')?.value || '';
   else if (kind === 'eumetsat') {
@@ -754,10 +760,10 @@ async function saveCredential(event) {
   }
   Object.keys(secret).forEach(key => { if (!secret[key]) delete secret[key]; });
   const payload = {
-    alias: $('#credential-alias').value.trim(), kind, secret,
+    alias, kind, secret,
     priority: Number($('#credential-priority').value || 0), enabled: $('#credential-enabled').checked,
   };
-  if ($('#credential-id').value) payload.id = Number($('#credential-id').value);
+  if (currentId) payload.id = currentId;
   try {
     await json('/api/v1/access/credentials', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     closePoolForm('credential');
@@ -767,12 +773,18 @@ async function saveCredential(event) {
 
 async function saveProxy(event) {
   event.preventDefault();
+  const currentId = Number($('#proxy-id').value || 0);
+  const alias = $('#proxy-alias').value.trim();
+  if (duplicateAlias(state.access.proxies, alias, currentId)) {
+    $('#proxy-error').textContent = `代理别名“${alias}”已存在，请编辑已有代理或换一个别名。`;
+    return;
+  }
   const providers = $('#proxy-providers').value.split(',').map(value => value.trim()).filter(Boolean);
   const payload = {
-    alias: $('#proxy-alias').value.trim(), url: $('#proxy-url').value.trim(), providers,
+    alias, url: $('#proxy-url').value.trim(), providers,
     priority: Number($('#proxy-priority').value || 0), enabled: $('#proxy-enabled').checked,
   };
-  if ($('#proxy-id').value) payload.id = Number($('#proxy-id').value);
+  if (currentId) payload.id = currentId;
   try {
     await json('/api/v1/access/proxies', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     closePoolForm('proxy');
@@ -782,19 +794,31 @@ async function saveProxy(event) {
 
 async function saveAccount(event) {
   event.preventDefault();
+  const currentId = Number($('#account-id').value || 0);
+  const alias = $('#account-alias').value.trim();
+  if (duplicateAlias(state.access.accounts, alias, currentId)) {
+    $('#account-error').textContent = `账号别名“${alias}”已存在，请编辑已有账号或换一个别名。`;
+    return;
+  }
   const credential = $('#account-credential').value;
   const proxy = $('#account-proxy').value;
   const payload = {
-    alias: $('#account-alias').value.trim(), source_id: $('#account-source').value,
+    alias, source_id: $('#account-source').value,
     credential_id: credential ? Number(credential) : null, proxy_mode: $('#account-proxy-mode').value,
     proxy_id: proxy ? Number(proxy) : null, priority: Number($('#account-priority').value || 0), enabled: $('#account-enabled').checked,
   };
-  if ($('#account-id').value) payload.id = Number($('#account-id').value);
+  if (currentId) payload.id = currentId;
   try {
     await json('/api/v1/access/accounts', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     closePoolForm('account');
     await loadAccessPools();
   } catch (error) { $('#account-error').textContent = error.message; }
+}
+
+function duplicateAlias(items, alias, currentId = 0) {
+  const normalized = String(alias || '').trim().toLocaleLowerCase();
+  if (!normalized) return false;
+  return items.some(item => item.id !== currentId && String(item.alias || '').trim().toLocaleLowerCase() === normalized);
 }
 
 async function deletePoolItem(kind, id) {
