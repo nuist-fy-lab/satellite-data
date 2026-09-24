@@ -16,6 +16,31 @@ type Authorizer interface {
 	Authorize(context.Context, *http.Request) error
 }
 
+type Secret struct {
+	Token          string `json:"token,omitempty"`
+	Username       string `json:"username,omitempty"`
+	Password       string `json:"password,omitempty"`
+	ConsumerKey    string `json:"consumer_key,omitempty"`
+	ConsumerSecret string `json:"consumer_secret,omitempty"`
+}
+
+func Build(kind string, secret Secret, client *http.Client) (Authorizer, error) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "laads":
+		return bearer(secret.Token, "LAADS download token"), nil
+	case "earthdata":
+		return bearer(secret.Token, "NASA Earthdata bearer token"), nil
+	case "earthcare":
+		return bearer(secret.Token, "ESA MAAP access token"), nil
+	case "cloudsat":
+		return &basic{username: strings.TrimSpace(secret.Username), password: secret.Password}, nil
+	case "eumetsat":
+		return &eumetsatToken{client: client, key: strings.TrimSpace(secret.ConsumerKey), secret: secret.ConsumerSecret}, nil
+	default:
+		return nil, errors.New("unsupported credential kind")
+	}
+}
+
 type CredentialError struct {
 	Detail string
 }

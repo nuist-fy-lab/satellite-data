@@ -70,6 +70,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize downloader state: %w", err)
 	}
+	if _, err := db.Exec(accessSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize access pool state: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 

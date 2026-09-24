@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nuist-fy-lab/satellite-data-downloader/internal/access"
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/archiveevent"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/auth"
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/config"
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/store"
@@ -24,19 +24,17 @@ import (
 type Runtime struct {
 	cfg      config.Config
 	store    *store.Store
-	auth     *auth.Registry
+	access   *access.Manager
 	provider map[string]config.Provider
-	clients  map[string]*transfer.HTTP
 	events   *archiveevent.Notifier
 	wg       sync.WaitGroup
 }
 
-func New(cfg config.Config, state *store.Store, authRegistry *auth.Registry) (*Runtime, error) {
-	if state == nil || authRegistry == nil {
-		return nil, errors.New("pipeline requires store and auth registry")
+func New(cfg config.Config, state *store.Store, accessManager *access.Manager) (*Runtime, error) {
+	if state == nil || accessManager == nil {
+		return nil, errors.New("pipeline requires store and access manager")
 	}
 	providers := make(map[string]config.Provider, len(cfg.Providers))
-	clients := make(map[string]*transfer.HTTP, len(cfg.Providers))
 	for _, item := range cfg.Providers {
 		if strings.TrimSpace(item.SourceID) == "" {
 			return nil, errors.New("provider source id is empty")
@@ -45,17 +43,9 @@ func New(cfg config.Config, state *store.Store, authRegistry *auth.Registry) (*R
 			return nil, fmt.Errorf("duplicate provider %q", item.SourceID)
 		}
 		providers[item.SourceID] = item
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.MaxIdleConns = max(128, item.TransferConcurrency*16)
-		transport.MaxIdleConnsPerHost = max(16, item.TransferConcurrency*4)
-		transport.IdleConnTimeout = 90 * time.Second
-		clients[item.SourceID] = transfer.NewHTTP(&http.Client{
-			Transport: transport,
-			Timeout:   item.RequestTimeout,
-		})
 	}
 	return &Runtime{
-		cfg: cfg, store: state, auth: authRegistry, provider: providers, clients: clients,
+		cfg: cfg, store: state, access: accessManager, provider: providers,
 		events: archiveevent.New(cfg.ArchiveEventSocket),
 	}, nil
 }
@@ -103,7 +93,7 @@ func (r *Runtime) ProviderStatuses(ctx context.Context) ([]model.ProviderStatus,
 		out = append(out, model.ProviderStatus{
 			SourceID: item.SourceID, Enabled: item.Enabled,
 			TransferConcurrency: item.TransferConcurrency, VerifyConcurrency: item.VerifyConcurrency,
-			AuthRef: item.AuthRef, AuthConfigured: r.auth.Configured(item.AuthRef), States: counts,
+			AuthRef: item.AuthRef, AuthConfigured: r.access.Configured(ctx, item.SourceID, item.AuthRef), States: counts,
 		})
 	}
 	return out, nil
@@ -145,7 +135,7 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 			return
 		case <-poll.C:
 		}
-		if worker == 0 && provider.AuthRef != "" && r.auth.Configured(provider.AuthRef) {
+		if worker == 0 && provider.AuthRef != "" && r.access.Configured(ctx, provider.SourceID, provider.AuthRef) {
 			if err := r.store.ReleaseWaitingAuth(ctx, provider.SourceID); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Warn("release provider auth wait", "provider", provider.SourceID, "worker", worker, "error", err)
 			}
@@ -160,25 +150,25 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 			poll.Reset(150 * time.Millisecond)
 			continue
 		}
-		if provider.AuthRef != "" && !r.auth.Configured(provider.AuthRef) {
-			_ = r.store.WaitForAuth(context.WithoutCancel(ctx), task.ID, fmt.Errorf("%s credentials are not configured", provider.AuthRef))
-			poll.Reset(25 * time.Millisecond)
-			continue
-		}
-		authorizer, err := r.auth.Resolve(provider.AuthRef)
+		route, err := r.access.Resolve(ctx, provider.SourceID, provider.AuthRef, provider.RequestTimeout)
 		if err != nil {
-			_ = r.store.Fail(context.WithoutCancel(ctx), task.ID, err)
+			if errors.Is(err, access.ErrNoRoute) {
+				_ = r.store.WaitForAuth(context.WithoutCancel(ctx), task.ID, fmt.Errorf("%s access route is not configured", provider.SourceID))
+			} else {
+				_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, err, retryDelay(task.Attempts))
+			}
 			poll.Reset(25 * time.Millisecond)
 			continue
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, provider.RequestTimeout)
-		result, err := r.clients[provider.SourceID].Download(requestCtx, task, r.cfg.DownloadRoot, authorizer)
+		result, err := route.Transfer.Download(requestCtx, task, r.cfg.DownloadRoot, route.Authorizer)
 		cancel()
 		if err != nil {
-			r.handleTransferError(ctx, provider, task, err)
+			r.handleTransferError(ctx, provider, task, route, err)
 			poll.Reset(25 * time.Millisecond)
 			continue
 		}
+		r.access.MarkSuccess(context.WithoutCancel(ctx), route)
 		if err := r.store.MarkDownloaded(context.WithoutCancel(ctx), task.ID, result.Path, result.Size); err != nil {
 			slog.Warn("checkpoint provider transfer", "provider", provider.SourceID, "task", task.ID, "error", err)
 		}
@@ -186,15 +176,25 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 	}
 }
 
-func (r *Runtime) handleTransferError(ctx context.Context, provider config.Provider, task model.Task, cause error) {
-	if auth.IsCredentialError(cause) {
-		_ = r.store.WaitForAuth(context.WithoutCancel(ctx), task.ID, cause)
+func (r *Runtime) handleTransferError(ctx context.Context, provider config.Provider, task model.Task, route access.Route, cause error) {
+	if isCredentialFailure(cause) {
+		r.access.MarkAuthFailure(context.WithoutCancel(ctx), route, cause.Error())
+		if r.access.HasUsableRoute(ctx, provider.SourceID, provider.AuthRef, provider.RequestTimeout) {
+			_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, cause, time.Second)
+		} else {
+			_ = r.store.WaitForAuth(context.WithoutCancel(ctx), task.ID, cause)
+		}
 		return
 	}
 	var httpErr *transfer.HTTPError
 	if errors.As(cause, &httpErr) {
 		if provider.AuthRef != "" && (httpErr.Status == http.StatusUnauthorized || httpErr.Status == http.StatusForbidden) {
-			_ = r.store.WaitForAuth(context.WithoutCancel(ctx), task.ID, cause)
+			r.access.MarkAuthFailure(context.WithoutCancel(ctx), route, cause.Error())
+			if r.access.HasUsableRoute(ctx, provider.SourceID, provider.AuthRef, provider.RequestTimeout) {
+				_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, cause, time.Second)
+			} else {
+				_ = r.store.WaitForAuth(context.WithoutCancel(ctx), task.ID, cause)
+			}
 			return
 		}
 		if httpErr.Status == http.StatusNotFound || httpErr.Status == http.StatusGone {
@@ -202,12 +202,20 @@ func (r *Runtime) handleTransferError(ctx context.Context, provider config.Provi
 			return
 		}
 	}
+	if route.ProxyID != nil {
+		r.access.MarkProxyFailure(context.WithoutCancel(ctx), route, cause.Error())
+	}
 	var integrity *transfer.IntegrityError
 	if errors.As(cause, &integrity) {
 		_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, cause, retryDelay(task.Attempts))
 		return
 	}
 	_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, cause, retryDelay(task.Attempts))
+}
+
+func isCredentialFailure(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "credential") ||
+		strings.Contains(strings.ToLower(err.Error()), "token") && strings.Contains(strings.ToLower(err.Error()), "not configured")
 }
 
 func (r *Runtime) verifyLoop(ctx context.Context, provider config.Provider, worker int) {
