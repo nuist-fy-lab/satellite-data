@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS credentials (
   alias TEXT NOT NULL UNIQUE COLLATE NOCASE,
   kind TEXT NOT NULL,
   expires_at TEXT NOT NULL DEFAULT '',
+  expiry_status TEXT NOT NULL DEFAULT 'unknown',
+  expiry_source TEXT NOT NULL DEFAULT '',
+  expiry_checked_at TEXT NOT NULL DEFAULT '',
   encrypted_secret BLOB NOT NULL,
   secret_hint TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
@@ -73,7 +76,7 @@ func migrateAccessSchema(db *sql.DB) error {
 		return err
 	}
 	defer rows.Close()
-	hasExpiresAt := false
+	columns := map[string]bool{}
 	for rows.Next() {
 		var cid int
 		var name, columnType string
@@ -83,9 +86,7 @@ func migrateAccessSchema(db *sql.DB) error {
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			return err
 		}
-		if name == "expires_at" {
-			hasExpiresAt = true
-		}
+		columns[name] = true
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -93,25 +94,30 @@ func migrateAccessSchema(db *sql.DB) error {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if hasExpiresAt {
-		return nil
+	for _, migration := range []struct {
+		name string
+		sql  string
+	}{
+		{"expires_at", `ALTER TABLE credentials ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`},
+		{"expiry_status", `ALTER TABLE credentials ADD COLUMN expiry_status TEXT NOT NULL DEFAULT 'unknown'`},
+		{"expiry_source", `ALTER TABLE credentials ADD COLUMN expiry_source TEXT NOT NULL DEFAULT ''`},
+		{"expiry_checked_at", `ALTER TABLE credentials ADD COLUMN expiry_checked_at TEXT NOT NULL DEFAULT ''`},
+	} {
+		if columns[migration.name] {
+			continue
+		}
+		if _, err := db.Exec(migration.sql); err != nil {
+			return err
+		}
 	}
-	_, err = db.Exec(`ALTER TABLE credentials ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`)
-	return err
+	return nil
 }
 
-func (s *Store) UpsertCredential(ctx context.Context, id int64, alias, kind, expiresAt string, encrypted []byte, hint string, enabled bool, priority int) (model.Credential, error) {
+func (s *Store) UpsertCredential(ctx context.Context, id int64, alias, kind string, encrypted []byte, hint string, enabled bool, priority int) (model.Credential, error) {
 	alias = strings.TrimSpace(alias)
 	kind = strings.TrimSpace(kind)
-	expiresAt = strings.TrimSpace(expiresAt)
 	if alias == "" || len(alias) > 64 || kind == "" {
 		return model.Credential{}, errors.New("invalid credential alias or kind")
-	}
-	if expiresAt != "" {
-		parsed, err := time.Parse("2006-01-02", expiresAt)
-		if err != nil || parsed.Format("2006-01-02") != expiresAt {
-			return model.Credential{}, errors.New("expires_at must use YYYY-MM-DD")
-		}
 	}
 	if priority < -1000 || priority > 1000 {
 		return model.Credential{}, errors.New("priority out of range")
@@ -119,9 +125,9 @@ func (s *Store) UpsertCredential(ctx context.Context, id int64, alias, kind, exp
 	now := stamp(time.Now())
 	if id <= 0 {
 		result, err := s.db.ExecContext(ctx, `
-			INSERT INTO credentials(alias,kind,expires_at,encrypted_secret,secret_hint,enabled,priority,state,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,'ready',?,?)`,
-			alias, kind, expiresAt, encrypted, hint, boolInt(enabled), priority, now, now)
+			INSERT INTO credentials(alias,kind,encrypted_secret,secret_hint,enabled,priority,state,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,'ready',?,?)`,
+			alias, kind, encrypted, hint, boolInt(enabled), priority, now, now)
 		if err != nil {
 			return model.Credential{}, err
 		}
@@ -132,9 +138,9 @@ func (s *Store) UpsertCredential(ctx context.Context, id int64, alias, kind, exp
 	} else {
 		_, err := s.db.ExecContext(ctx, `
 			UPDATE credentials
-			SET alias=?,kind=?,expires_at=?,encrypted_secret=?,secret_hint=?,enabled=?,priority=?,state='ready',last_error='',updated_at=?
+			SET alias=?,kind=?,encrypted_secret=?,secret_hint=?,enabled=?,priority=?,state='ready',last_error='',updated_at=?
 			WHERE id=?`,
-			alias, kind, expiresAt, encrypted, hint, boolInt(enabled), priority, now, id)
+			alias, kind, encrypted, hint, boolInt(enabled), priority, now, id)
 		if err != nil {
 			return model.Credential{}, err
 		}
@@ -144,7 +150,7 @@ func (s *Store) UpsertCredential(ctx context.Context, id int64, alias, kind, exp
 
 func (s *Store) Credentials(ctx context.Context) ([]model.Credential, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id,alias,kind,expires_at,enabled,priority,secret_hint,state,last_error,last_used_at,last_success_at,updated_at
+		SELECT id,alias,kind,expires_at,expiry_status,expiry_source,expiry_checked_at,enabled,priority,secret_hint,state,last_error,last_used_at,last_success_at,updated_at
 		FROM credentials ORDER BY priority DESC,alias COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
@@ -163,7 +169,7 @@ func (s *Store) Credentials(ctx context.Context) ([]model.Credential, error) {
 
 func (s *Store) Credential(ctx context.Context, id int64) (model.Credential, error) {
 	return scanCredential(s.db.QueryRowContext(ctx, `
-		SELECT id,alias,kind,expires_at,enabled,priority,secret_hint,state,last_error,last_used_at,last_success_at,updated_at
+		SELECT id,alias,kind,expires_at,expiry_status,expiry_source,expiry_checked_at,enabled,priority,secret_hint,state,last_error,last_used_at,last_success_at,updated_at
 		FROM credentials WHERE id=?`, id))
 }
 
@@ -172,6 +178,15 @@ func (s *Store) CredentialSecret(ctx context.Context, id int64) ([]byte, string,
 	var kind string
 	err := s.db.QueryRowContext(ctx, `SELECT encrypted_secret,kind FROM credentials WHERE id=?`, id).Scan(&encrypted, &kind)
 	return encrypted, kind, err
+}
+
+func (s *Store) UpdateCredentialExpiry(ctx context.Context, id int64, expiry model.CredentialExpiry) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE credentials
+		SET expires_at=?,expiry_status=?,expiry_source=?,expiry_checked_at=?
+		WHERE id=?`,
+		expiry.ExpiresAt, expiry.Status, expiry.Source, expiry.CheckedAt, id)
+	return err
 }
 
 func (s *Store) DeleteCredential(ctx context.Context, id int64) error {
@@ -433,7 +448,7 @@ type accessScanner interface{ Scan(...any) error }
 func scanCredential(row accessScanner) (model.Credential, error) {
 	var item model.Credential
 	var enabled int
-	err := row.Scan(&item.ID, &item.Alias, &item.Kind, &item.ExpiresAt, &enabled, &item.Priority, &item.SecretHint, &item.State, &item.LastError, &item.LastUsedAt, &item.LastSuccessAt, &item.UpdatedAt)
+	err := row.Scan(&item.ID, &item.Alias, &item.Kind, &item.ExpiresAt, &item.ExpiryStatus, &item.ExpirySource, &item.ExpiryCheckedAt, &enabled, &item.Priority, &item.SecretHint, &item.State, &item.LastError, &item.LastUsedAt, &item.LastSuccessAt, &item.UpdatedAt)
 	item.Enabled = enabled != 0
 	return item, err
 }

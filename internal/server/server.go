@@ -64,13 +64,12 @@ func (s *Server) accessPools(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) upsertCredential(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		ID        int64       `json:"id,omitempty"`
-		Alias     string      `json:"alias"`
-		Kind      string      `json:"kind"`
-		ExpiresAt string      `json:"expires_at,omitempty"`
-		Secret    auth.Secret `json:"secret"`
-		Enabled   bool        `json:"enabled"`
-		Priority  int         `json:"priority"`
+		ID       int64       `json:"id,omitempty"`
+		Alias    string      `json:"alias"`
+		Kind     string      `json:"kind"`
+		Secret   auth.Secret `json:"secret"`
+		Enabled  bool        `json:"enabled"`
+		Priority int         `json:"priority"`
 	}
 	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -113,10 +112,21 @@ func (s *Server) upsertCredential(w http.ResponseWriter, r *http.Request) {
 		}
 		hint = access.SecretHint(request.Kind, request.Secret)
 	}
-	item, err := s.store.UpsertCredential(r.Context(), request.ID, request.Alias, request.Kind, request.ExpiresAt, encrypted, hint, request.Enabled, request.Priority)
+	item, err := s.store.UpsertCredential(r.Context(), request.ID, request.Alias, request.Kind, encrypted, hint, request.Enabled, request.Priority)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, friendlyPoolError(err))
 		return
+	}
+	expiry, inspectErr := access.InspectCredentialExpiry(request.Kind, encrypted, s.vault)
+	if inspectErr != nil {
+		expiry.Status = "check_failed"
+	}
+	if err := s.store.UpdateCredentialExpiry(r.Context(), item.ID, expiry); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if refreshed, err := s.store.Credential(r.Context(), item.ID); err == nil {
+		item = refreshed
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"credential": item})
 }

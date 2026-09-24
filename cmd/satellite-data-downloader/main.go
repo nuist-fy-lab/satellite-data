@@ -44,6 +44,9 @@ func main() {
 		slog.Error("open credential vault", "error", err)
 		os.Exit(1)
 	}
+	if err := access.RefreshCredentialExpiries(context.Background(), state, secretVault); err != nil {
+		slog.Warn("refresh credential expiry metadata", "error", err)
+	}
 
 	sharedHTTP := &http.Client{Timeout: 30 * time.Second}
 	authRegistry := auth.NewRegistry(sharedHTTP)

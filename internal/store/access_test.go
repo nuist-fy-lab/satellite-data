@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+
+	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
 )
 
 func TestAccessPools(t *testing.T) {
@@ -15,7 +17,7 @@ func TestAccessPools(t *testing.T) {
 	defer state.Close()
 	ctx := context.Background()
 
-	credential, err := state.UpsertCredential(ctx, 0, "LAADS main", "laads", "2026-12-31", []byte("ciphertext"), "••••1234", true, 20)
+	credential, err := state.UpsertCredential(ctx, 0, "LAADS main", "laads", []byte("ciphertext"), "••••1234", true, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,8 +32,17 @@ func TestAccessPools(t *testing.T) {
 	if account.CredentialAlias != "LAADS main" || account.ProxyAlias != "proxy-a" {
 		t.Fatalf("account joins not populated: %#v", account)
 	}
-	if credential.ExpiresAt != "2026-12-31" {
-		t.Fatalf("expires_at=%q", credential.ExpiresAt)
+	if err := state.UpdateCredentialExpiry(ctx, credential.ID, model.CredentialExpiry{
+		ExpiresAt: "2026-12-31T00:00:00Z",
+		Status:    "known",
+		Source:    "test",
+		CheckedAt: "2026-09-24T00:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	credential, err = state.Credential(ctx, credential.ID)
+	if err != nil || credential.ExpiresAt != "2026-12-31T00:00:00Z" || credential.ExpiryStatus != "known" {
+		t.Fatalf("credential=%#v err=%v", credential, err)
 	}
 	accounts, err := state.AccountsForSource(ctx, "modis")
 	if err != nil || len(accounts) != 1 || accounts[0].ID != account.ID {
@@ -95,7 +106,7 @@ func TestAccessSchemaMigratesCredentialExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Alias != "legacy" || items[0].ExpiresAt != "" {
+	if len(items) != 1 || items[0].Alias != "legacy" || items[0].ExpiresAt != "" || items[0].ExpiryStatus != "unknown" {
 		t.Fatalf("unexpected migrated credentials: %#v", items)
 	}
 }
