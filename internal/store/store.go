@@ -126,6 +126,28 @@ func (s *Store) Enqueue(ctx context.Context, spec model.TaskSpec) (model.Task, b
 		return task, true, err
 	}
 	task, err = s.TaskByKey(ctx, spec.Key)
+	if err != nil {
+		return model.Task{}, false, err
+	}
+	if task.State != "done" && (task.URL != spec.URL || task.AuthRef != spec.AuthRef || task.Size != spec.Size || task.ETag != spec.ETag || task.MediaType != spec.MediaType || task.RelativeDir != spec.RelativeDir) {
+		state := task.State
+		lastError := task.LastError
+		nextAttempt := int64(0)
+		if task.State == "waiting_auth" || task.State == "failed" || task.State == "retry_wait" {
+			state = "queued"
+			lastError = ""
+		}
+		_, updateErr := s.db.ExecContext(ctx, `
+			UPDATE tasks
+			SET url=?,auth_ref=?,relative_dir=?,expected_size=?,etag=?,media_type=?,state=?,next_attempt_ns=?,last_error=?,updated_at=?
+			WHERE id=?`,
+			spec.URL, spec.AuthRef, spec.RelativeDir, spec.Size, spec.ETag, spec.MediaType,
+			state, nextAttempt, lastError, stamp(now), task.ID)
+		if updateErr != nil {
+			return model.Task{}, false, updateErr
+		}
+		task, err = s.Task(ctx, task.ID)
+	}
 	return task, false, err
 }
 
