@@ -509,7 +509,7 @@ const credentialGuides = {
     title: 'LAADS Download Token',
     summary: '用于 MODIS 与 VIIRS。优先使用 LAADS 自己生成的下载 Token，而不是通用 Earthdata Token。',
     steps: ['登录 NASA LAADS DAAC。', '在 Token / Download Token 区域生成或复制当前 Token。', '把完整 Token 粘贴到下方 Token 输入框；保存后网页只保留掩码。'],
-    note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。LAADS 当前 /oauth/key 只返回 Token 文本，不提供到期字段；页面会如实显示“官网未提供”。',
+    note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。下载器会优先读取 LAADS Token 自带的 exp 到期字段；只有 Token 本身不提供 exp 时才显示“官网未提供”。',
     url: 'https://ladsweb.modaps.eosdis.nasa.gov/',
     link: '打开 LAADS DAAC',
   },
