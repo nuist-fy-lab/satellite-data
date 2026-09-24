@@ -77,10 +77,16 @@ func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) Recover(ctx context.Context) error {
 	now := stamp(time.Now())
-	_, err := s.db.ExecContext(ctx, `
+	if _, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
 		SET state='queued',started_at='',last_error='recovered after downloader restart',updated_at=?
-		WHERE state='downloading'`, now)
+		WHERE state='downloading'`, now); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE tasks
+		SET state='verifying',last_error='recovered interrupted promotion',updated_at=?
+		WHERE state='promoting'`, now)
 	return err
 }
 
@@ -165,8 +171,8 @@ func (s *Store) ClaimVerify(ctx context.Context, sourceID string) (model.Task, b
 	var id int64
 	err = tx.QueryRowContext(ctx, `
 		SELECT id FROM tasks
-		WHERE source_id=? AND state='verifying'
-		ORDER BY id LIMIT 1`, sourceID).Scan(&id)
+		WHERE source_id=? AND state IN ('verifying','verify_wait') AND next_attempt_ns<=?
+		ORDER BY id LIMIT 1`, sourceID, time.Now().UnixNano()).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Task{}, false, nil
 	}
@@ -175,8 +181,8 @@ func (s *Store) ClaimVerify(ctx context.Context, sourceID string) (model.Task, b
 	}
 	now := stamp(time.Now())
 	result, err := tx.ExecContext(ctx, `
-		UPDATE tasks SET state='promoting',updated_at=?
-		WHERE id=? AND state='verifying'`, now, id)
+		UPDATE tasks SET state='promoting',next_attempt_ns=0,updated_at=?
+		WHERE id=? AND state IN ('verifying','verify_wait')`, now, id)
 	if err != nil {
 		return model.Task{}, false, err
 	}
@@ -233,12 +239,15 @@ func (s *Store) ReleaseWaitingAuth(ctx context.Context, sourceID string) error {
 	return err
 }
 
-func (s *Store) RetryVerification(ctx context.Context, id int64, cause error) error {
-	now := stamp(time.Now())
+func (s *Store) RetryVerification(ctx context.Context, id int64, cause error, delay time.Duration) error {
+	if delay < time.Second {
+		delay = time.Second
+	}
+	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
-		SET state='verifying',last_error=?,updated_at=?
-		WHERE id=?`, safeError(cause), now, id)
+		SET state='verify_wait',next_attempt_ns=?,last_error=?,updated_at=?
+		WHERE id=?`, now.Add(delay).UnixNano(), safeError(cause), stamp(now), id)
 	return err
 }
 
@@ -276,7 +285,7 @@ func (s *Store) RetryTask(ctx context.Context, id int64) error {
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
 		SET state='queued',next_attempt_ns=0,last_error='',updated_at=?
-		WHERE id=? AND state IN ('failed','retry_wait','waiting_auth')`, now, id)
+		WHERE id=? AND state IN ('failed','retry_wait','verify_wait','waiting_auth')`, now, id)
 	if err != nil {
 		return err
 	}

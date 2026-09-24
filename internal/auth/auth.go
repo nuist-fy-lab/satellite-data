@@ -16,6 +16,17 @@ type Authorizer interface {
 	Authorize(context.Context, *http.Request) error
 }
 
+type CredentialError struct {
+	Detail string
+}
+
+func (e *CredentialError) Error() string { return e.Detail }
+
+func IsCredentialError(err error) bool {
+	var target *CredentialError
+	return errors.As(err, &target)
+}
+
 type Registry struct {
 	items map[string]Authorizer
 }
@@ -77,7 +88,11 @@ func bearer(token, name string) *bearerAuth {
 
 func (b *bearerAuth) Authorize(_ context.Context, req *http.Request) error {
 	if b == nil || b.token == "" {
-		return errors.New(b.name + " is not configured")
+		name := "bearer token"
+		if b != nil && b.name != "" {
+			name = b.name
+		}
+		return &CredentialError{Detail: name + " is not configured"}
 	}
 	req.Header.Set("Authorization", "Bearer "+b.token)
 	if b.name == "LAADS download token" {
@@ -93,7 +108,7 @@ type basic struct {
 
 func (b *basic) Authorize(_ context.Context, req *http.Request) error {
 	if b == nil || b.username == "" || b.password == "" {
-		return errors.New("CloudSat THREDDS credentials are not configured")
+		return &CredentialError{Detail: "CloudSat THREDDS credentials are not configured"}
 	}
 	req.SetBasicAuth(b.username, b.password)
 	return nil
@@ -122,7 +137,7 @@ func (e *eumetsatToken) token(ctx context.Context) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.key == "" || e.secret == "" {
-		return "", errors.New("EUMETSAT Consumer Key/Secret are not configured")
+		return "", &CredentialError{Detail: "EUMETSAT Consumer Key/Secret are not configured"}
 	}
 	if e.access != "" && time.Until(e.expiresAt) > time.Minute {
 		return e.access, nil
@@ -148,6 +163,9 @@ func (e *eumetsatToken) token(ctx context.Context) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return "", &CredentialError{Detail: "EUMETSAT credentials were rejected"}
+		}
 		return "", errors.New("EUMETSAT token request failed: " + resp.Status)
 	}
 	var payload struct {

@@ -145,7 +145,7 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 			return
 		case <-poll.C:
 		}
-		if provider.AuthRef != "" && r.auth.Configured(provider.AuthRef) {
+		if worker == 0 && provider.AuthRef != "" && r.auth.Configured(provider.AuthRef) {
 			if err := r.store.ReleaseWaitingAuth(ctx, provider.SourceID); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Warn("release provider auth wait", "provider", provider.SourceID, "worker", worker, "error", err)
 			}
@@ -187,6 +187,10 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 }
 
 func (r *Runtime) handleTransferError(ctx context.Context, provider config.Provider, task model.Task, cause error) {
+	if auth.IsCredentialError(cause) {
+		_ = r.store.WaitForAuth(context.WithoutCancel(ctx), task.ID, cause)
+		return
+	}
 	var httpErr *transfer.HTTPError
 	if errors.As(cause, &httpErr) {
 		if provider.AuthRef != "" && (httpErr.Status == http.StatusUnauthorized || httpErr.Status == http.StatusForbidden) {
@@ -232,7 +236,7 @@ func (r *Runtime) verifyLoop(ctx context.Context, provider config.Provider, work
 				_ = os.Remove(task.StagingPath)
 				_ = r.store.Redownload(context.WithoutCancel(ctx), task.ID, err, retryDelay(task.Attempts))
 			} else {
-				_ = r.store.RetryVerification(context.WithoutCancel(ctx), task.ID, err)
+				_ = r.store.RetryVerification(context.WithoutCancel(ctx), task.ID, err, retryDelay(task.Attempts))
 			}
 			poll.Reset(25 * time.Millisecond)
 			continue

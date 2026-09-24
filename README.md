@@ -57,6 +57,10 @@ Discovery may be public even when science-file transfer is not.
 Credentials are read only by the downloader process. They are never accepted in
 task JSON, stored in SQLite, or returned by status APIs.
 
+On the data node, run `deploy/configure-secrets.sh` interactively to create the
+private systemd EnvironmentFile without putting credentials in shell arguments
+or chat logs.
+
 ## Configuration
 
 General, non-secret runtime configuration and provider concurrency are separate
