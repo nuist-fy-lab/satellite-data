@@ -30,13 +30,13 @@ func TestMODISCadence(t *testing.T) {
 	}
 }
 
-func TestMODISDataLinkPrefersEarthdataCloud(t *testing.T) {
+func TestMODISDataLinkPrefersNativeLAADSArchive(t *testing.T) {
 	links := []cmrLink{
-		{Rel: "http://esipfed.org/ns/fedsearch/1.1/data#", Href: "https://ladsweb.modaps.eosdis.nasa.gov/archive/example.hdf"},
+		{Rel: "http://esipfed.org/ns/fedsearch/1.1/service#", Href: "https://ladsweb.modaps.eosdis.nasa.gov/opendap/RemoteResources/laads/allData/5110/CLDMSK_L2_MODIS_Aqua/2026/265/example.nc.html"},
 		{Rel: "http://esipfed.org/ns/fedsearch/1.1/data#", Href: "https://data.laadsdaac.earthdatacloud.nasa.gov/prod-lads/example.hdf"},
 	}
 	got, ok := modisDataLink(links)
-	if !ok || !strings.HasPrefix(got.Href, "https://data.laadsdaac.earthdatacloud.nasa.gov/") {
+	if !ok || !strings.HasPrefix(got.Href, "https://ladsweb.modaps.eosdis.nasa.gov/archive/allData/5110/") || strings.HasSuffix(got.Href, ".html") {
 		t.Fatalf("unexpected link: %#v", got)
 	}
 }

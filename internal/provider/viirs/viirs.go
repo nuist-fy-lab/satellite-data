@@ -270,6 +270,17 @@ func cmrGranuleModel(item cmrGranule, collectionID string) (model.Granule, bool)
 }
 
 func viirsDataLink(links []cmrLink) (cmrLink, bool) {
+	const opendapPrefix = "https://ladsweb.modaps.eosdis.nasa.gov/opendap/RemoteResources/laads/allData/"
+	const archivePrefix = "https://ladsweb.modaps.eosdis.nasa.gov/archive/allData/"
+	for _, link := range links {
+		if link.Inherited || !strings.Contains(link.Rel, "/service#") || !strings.HasPrefix(link.Href, opendapPrefix) {
+			continue
+		}
+		relative := strings.TrimSuffix(strings.TrimPrefix(link.Href, opendapPrefix), ".html")
+		if relative != "" && !strings.Contains(relative, "..") {
+			return cmrLink{Rel: link.Rel, Type: link.Type, Href: archivePrefix + relative}, true
+		}
+	}
 	for _, link := range links {
 		if link.Inherited || !strings.Contains(link.Rel, "/data#") {
 			continue
