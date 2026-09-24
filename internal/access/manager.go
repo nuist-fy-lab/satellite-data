@@ -62,6 +62,10 @@ func (m *Manager) Resolve(ctx context.Context, sourceID, authRef string, timeout
 	if err != nil {
 		return Route{}, err
 	}
+	hasPool, err := m.store.HasAccountsForSource(ctx, sourceID)
+	if err != nil {
+		return Route{}, err
+	}
 	for _, account := range accounts {
 		route, ok, err := m.routeForAccount(ctx, account, authRef, timeout)
 		if err != nil {
@@ -76,7 +80,7 @@ func (m *Manager) Resolve(ctx context.Context, sourceID, authRef string, timeout
 
 	// Backward compatibility: environment-file credentials remain usable until
 	// the web-managed pool has a route for this provider.
-	if len(accounts) == 0 {
+	if !hasPool {
 		authorizer, err := m.legacy.Resolve(authRef)
 		if err != nil {
 			return Route{}, err
@@ -117,6 +121,9 @@ func (m *Manager) Configured(ctx context.Context, sourceID, authRef string) bool
 				return true
 			}
 		}
+	}
+	if hasPool, poolErr := m.store.HasAccountsForSource(ctx, sourceID); poolErr == nil && hasPool {
+		return false
 	}
 	return m.legacy.Configured(authRef)
 }

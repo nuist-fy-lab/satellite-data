@@ -308,6 +308,14 @@ func (s *Store) AccountsForSource(ctx context.Context, sourceID string) ([]model
 	return out, rows.Err()
 }
 
+func (s *Store) HasAccountsForSource(ctx context.Context, sourceID string) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE source_id=?`, sourceID).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE id=?`, id)
 	if err != nil {

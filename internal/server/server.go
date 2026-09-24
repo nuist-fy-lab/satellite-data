@@ -230,6 +230,9 @@ func (s *Server) upsertAccount(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("credential kind does not match provider"))
 			return
 		}
+	} else if request.CredentialID != nil {
+		writeError(w, http.StatusBadRequest, errors.New("anonymous provider must not bind a credential"))
+		return
 	}
 	item, err := s.store.UpsertAccount(r.Context(), request.ID, request.Alias, request.SourceID, request.CredentialID, request.ProxyID, request.ProxyMode, request.Enabled, request.Priority)
 	if err != nil {
