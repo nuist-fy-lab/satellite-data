@@ -1,0 +1,18 @@
+[Unit]
+Description=Satellite Data Provider-Isolated Downloader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/satellite-data-downloader/runtime.env
+EnvironmentFile=-%h/.config/satellite-data-downloader/secrets.env
+ExecStart=%h/.local/bin/satellite-data-downloader
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+
