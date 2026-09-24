@@ -114,7 +114,7 @@ func (s *Server) upsertCredential(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.store.UpsertCredential(r.Context(), request.ID, request.Alias, request.Kind, encrypted, hint, request.Enabled, request.Priority)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, http.StatusBadRequest, friendlyPoolError(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"credential": item})
@@ -181,7 +181,7 @@ func (s *Server) upsertProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.store.UpsertProxy(r.Context(), request.ID, request.Alias, encrypted, scheme, hint, request.Providers, request.Enabled, request.Priority)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, http.StatusBadRequest, friendlyPoolError(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"proxy": item})
@@ -236,7 +236,7 @@ func (s *Server) upsertAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.store.UpsertAccount(r.Context(), request.ID, request.Alias, request.SourceID, request.CredentialID, request.ProxyID, request.ProxyMode, request.Enabled, request.Priority)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, http.StatusBadRequest, friendlyPoolError(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"account": item})
@@ -386,6 +386,23 @@ func pathID(value string) (int64, error) {
 		return 0, errors.New("invalid id")
 	}
 	return id, nil
+}
+
+func friendlyPoolError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "credentials.alias"):
+		return errors.New("凭据别名已存在，请编辑已有凭据或使用其他别名")
+	case strings.Contains(message, "proxies.alias"):
+		return errors.New("代理别名已存在，请编辑已有代理或使用其他别名")
+	case strings.Contains(message, "accounts.alias"):
+		return errors.New("账号别名已存在，请编辑已有账号或使用其他别名")
+	default:
+		return err
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
