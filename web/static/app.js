@@ -509,7 +509,7 @@ const credentialGuides = {
     title: 'LAADS Download Token',
     summary: '用于 MODIS 与 VIIRS。优先使用 LAADS 自己生成的下载 Token，而不是通用 Earthdata Token。',
     steps: ['登录 NASA LAADS DAAC。', '在 Token / Download Token 区域生成或复制当前 Token。', '把完整 Token 粘贴到下方 Token 输入框；保存后网页只保留掩码。'],
-    note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。',
+    note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。LAADS 当前 /oauth/key 只返回 Token 文本，不提供到期字段；页面会如实显示“官网未提供”。',
     url: 'https://ladsweb.modaps.eosdis.nasa.gov/',
     link: '打开 LAADS DAAC',
   },
@@ -517,7 +517,7 @@ const credentialGuides = {
     title: 'NASA Earthdata User Token',
     summary: '当前用于 CALIPSO。需要 Earthdata Login 账号生成 User Token。',
     steps: ['登录 Earthdata Login。', '进入 Generate Token / User Token 页面并生成 Token。', '点击 Show Token，复制完整值后粘贴到下方。'],
-    note: 'Earthdata User Token 有有效期；到期后直接编辑本条凭据并替换 Token。',
+    note: 'Earthdata User Token 当前有效 60 天；保存后下载器会自动读取 Token 的 exp 字段显示到期时间，无需手填。',
     url: 'https://urs.earthdata.nasa.gov/',
     link: '打开 Earthdata Login',
   },
@@ -525,7 +525,7 @@ const credentialGuides = {
     title: 'ESA MAAP EarthCARE Token',
     summary: '用于 EarthCARE 数据访问。需要 ESA EO / MAAP 账号，并生成 EarthCARE MAAP 长期访问 Token。',
     steps: ['登录 ESA MAAP，并确保账号有 EarthCARE 数据访问权限。', '打开 MAAP Token 页面生成长期 Token。', '复制生成的 Token 粘贴到下方；不要填写示例里的 CLIENT_SECRET。'],
-    note: '部分 Cal/Val 或 Commissioning 集合还取决于你的 ESA 账号权限。',
+    note: 'offline token 当前有效 90 天；下载器会自动读取 Token 的 exp 字段。部分 Cal/Val 或 Commissioning 集合仍取决于你的 ESA 账号权限。',
     url: 'https://portal.maap.eo.esa.int/ini/services/auth/token/90dToken.php',
     link: '生成 ESA MAAP Token',
   },
@@ -533,7 +533,7 @@ const credentialGuides = {
     title: 'EUMETSAT Consumer Key / Secret',
     summary: '用于 MTG。这里保存的是长期 API Key 凭据，下载器会自动换取短期 Access Token。',
     steps: ['登录 EUMETSAT User Portal。', '进入 API Key Management 创建或查看个人 API Key。', '分别复制 Consumer Key 与 Consumer Secret 到下方两个输入框。'],
-    note: '不要粘贴临时 Access Token；应保存 Consumer Key + Consumer Secret。',
+    note: '不要粘贴临时 Access Token；应保存 Consumer Key + Consumer Secret。短期 Access Token 会自动轮换，其到期时间不等于长期凭据的到期时间。',
     url: 'https://api.eumetsat.int/api-key/',
     link: '打开 EUMETSAT API Key',
   },
@@ -541,7 +541,7 @@ const credentialGuides = {
     title: 'CloudSat DPC THREDDS 账号',
     summary: '用于 CloudSat THREDDS / HTTPServer 下载，用户名与普通 DPC 网站登录并不一定是同一套密码。',
     steps: ['先注册并登录 CloudSat DPC 网站账号。', '按官方 THREDDS 指引向 cloudsat@colostate.edu 申请 THREDDS 访问。', '收到授权后，用户名通常是你的邮箱；把邮件提供的 THREDDS 密码填入下方。'],
-    note: '如果你只有 CloudSat 网站密码、尚未申请 THREDDS 密码，下载仍可能认证失败。',
+    note: '如果你只有 CloudSat 网站密码、尚未申请 THREDDS 密码，下载仍可能认证失败。官方未提供这组长期凭据的固定到期字段。',
     url: 'https://www.cloudsat.cira.colostate.edu/order/THREDDS-OpeNDAP-access',
     link: '查看 CloudSat THREDDS 指引',
   },
@@ -600,25 +600,30 @@ function renderCredentialList() {
     row.innerHTML = `
       <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(accessKindLabels[item.kind] || item.kind)} · ${esc(item.secret_hint || 'Secret 已保存')}</small></div>
       <div class="pool-actions"><button type="button" data-edit-credential="${item.id}">编辑</button><button type="button" data-delete-credential="${item.id}">删除</button></div></div>
-      <div class="pool-meta">${poolStatePill(item)}${credentialExpiryPill(item.expires_at)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
+      <div class="pool-meta">${poolStatePill(item)}${credentialExpiryPill(item)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
       ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
     node.append(row);
   }
 }
 
-function credentialExpiryPill(value) {
-  const expiresAt = String(value || '').trim();
-  if (!expiresAt) return '<span class="pool-pill expiry-unknown">有效期 未设置</span>';
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(expiresAt);
-  if (!match) return `<span class="pool-pill expiry-unknown">到期 ${esc(expiresAt)}</span>`;
-  const expiry = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+function credentialExpiryPill(item) {
+  const status = String(item?.expiry_status || 'unknown');
+  const source = String(item?.expiry_source || '');
+  const sourceTitle = source ? ` title="${esc(source)}"` : '';
+  if (status === 'not_provided') return `<span class="pool-pill expiry-unknown"${sourceTitle}>官网未提供到期字段</span>`;
+  if (status === 'check_failed') return `<span class="pool-pill expired"${sourceTitle}>有效期读取失败</span>`;
+  if (status !== 'known' || !item?.expires_at) return `<span class="pool-pill expiry-unknown"${sourceTitle}>有效期待同步</span>`;
+  const expiry = new Date(String(item.expires_at));
+  if (!Number.isFinite(expiry.getTime())) return `<span class="pool-pill expiry-unknown"${sourceTitle}>到期 ${esc(item.expires_at)}</span>`;
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const days = Math.round((expiry.getTime() - today.getTime()) / 86400000);
-  if (days < 0) return `<span class="pool-pill expired">已过期 · ${esc(expiresAt)}</span>`;
-  if (days === 0) return `<span class="pool-pill expiring">今天到期 · ${esc(expiresAt)}</span>`;
-  if (days <= 30) return `<span class="pool-pill expiring">${days} 天后到期 · ${esc(expiresAt)}</span>`;
-  return `<span class="pool-pill">到期 ${esc(expiresAt)}</span>`;
+  const expiryDay = new Date(expiry.getFullYear(), expiry.getMonth(), expiry.getDate());
+  const days = Math.round((expiryDay.getTime() - today.getTime()) / 86400000);
+  const date = expiry.toISOString().slice(0, 10);
+  if (days < 0) return `<span class="pool-pill expired"${sourceTitle}>已过期 · ${esc(date)}</span>`;
+  if (days === 0) return `<span class="pool-pill expiring"${sourceTitle}>今天到期 · ${esc(date)}</span>`;
+  if (days <= 30) return `<span class="pool-pill expiring"${sourceTitle}>${days} 天后到期 · ${esc(date)}</span>`;
+  return `<span class="pool-pill"${sourceTitle}>到期 ${esc(date)}</span>`;
 }
 
 function renderAccountList() {
@@ -727,7 +732,6 @@ function openPoolForm(kind, item = null) {
     $('#credential-alias').value = item?.alias || '';
     $('#credential-kind').value = item?.kind || 'laads';
     $('#credential-kind').disabled = Boolean(item);
-    $('#credential-expires').value = item?.expires_at || '';
     $('#credential-priority').value = item?.priority ?? 0;
     $('#credential-enabled').checked = item?.enabled ?? true;
     credentialFields();
@@ -776,7 +780,7 @@ async function saveCredential(event) {
   }
   Object.keys(secret).forEach(key => { if (!secret[key]) delete secret[key]; });
   const payload = {
-    alias, kind, secret, expires_at: $('#credential-expires').value || '',
+    alias, kind, secret,
     priority: Number($('#credential-priority').value || 0), enabled: $('#credential-enabled').checked,
   };
   if (currentId) payload.id = currentId;

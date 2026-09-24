@@ -54,18 +54,21 @@ type ProviderStatus struct {
 }
 
 type Credential struct {
-	ID            int64  `json:"id"`
-	Alias         string `json:"alias"`
-	Kind          string `json:"kind"`
-	ExpiresAt     string `json:"expires_at,omitempty"`
-	Enabled       bool   `json:"enabled"`
-	Priority      int    `json:"priority"`
-	SecretHint    string `json:"secret_hint"`
-	State         string `json:"state"`
-	LastError     string `json:"last_error,omitempty"`
-	LastUsedAt    string `json:"last_used_at,omitempty"`
-	LastSuccessAt string `json:"last_success_at,omitempty"`
-	UpdatedAt     string `json:"updated_at"`
+	ID              int64  `json:"id"`
+	Alias           string `json:"alias"`
+	Kind            string `json:"kind"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
+	ExpiryStatus    string `json:"expiry_status"`
+	ExpirySource    string `json:"expiry_source,omitempty"`
+	ExpiryCheckedAt string `json:"expiry_checked_at,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	Priority        int    `json:"priority"`
+	SecretHint      string `json:"secret_hint"`
+	State           string `json:"state"`
+	LastError       string `json:"last_error,omitempty"`
+	LastUsedAt      string `json:"last_used_at,omitempty"`
+	LastSuccessAt   string `json:"last_success_at,omitempty"`
+	UpdatedAt       string `json:"updated_at"`
 }
 
 type Proxy struct {
