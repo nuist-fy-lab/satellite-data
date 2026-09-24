@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -73,6 +74,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(accessSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize access pool state: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("secure downloader state: %w", err)
 	}
 	return &Store{db: db}, nil
 }

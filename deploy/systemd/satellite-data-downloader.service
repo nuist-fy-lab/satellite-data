@@ -10,6 +10,7 @@ EnvironmentFile=-%h/.config/satellite-data-downloader/secrets.env
 ExecStart=%h/.local/bin/satellite-data-downloader
 Restart=on-failure
 RestartSec=2s
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 
