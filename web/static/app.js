@@ -551,8 +551,8 @@ function monitorClock(value) {
   if (!value) return '—';
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return '—';
-  if (state.displayZone === 'BJT') date.setUTCHours(date.getUTCHours() + 8);
-  return date.toISOString().slice(11, 16);
+  date.setUTCHours(date.getUTCHours() + 8);
+  return date.toISOString().slice(11, 16) + ' BJT';
 }
 
 function monitorSpark(points = []) {
@@ -592,7 +592,7 @@ function monitorChart(points, key, fixedMax = null) {
   const left = 32;
   const right = 8;
   const top = 8;
-  const bottom = 21;
+  const bottom = 8;
   const plotWidth = width - left - right;
   const plotHeight = height - top - bottom;
   const t0 = entries[0].time;
@@ -621,12 +621,13 @@ function monitorChart(points, key, fixedMax = null) {
   const dot = lastCoord
     ? '<circle class="chart-dot" cx="' + lastCoord[0].toFixed(1) + '" cy="' + lastCoord[1].toFixed(1) + '" r="3"/>'
     : '';
-  return '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="xMidYMid meet">' +
+  return '<div class="monitor-chart-plot">' +
+    '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' +
     grids +
-    '<text class="chart-label" x="1" y="' + (top + 4) + '">' + esc(topLabel) + '</text>' +
-    '<text class="chart-label" x="' + left + '" y="' + (height - 4) + '">' + esc(startLabel) + '</text>' +
-    '<text class="chart-label" text-anchor="end" x="' + (width-right) + '" y="' + (height - 4) + '">' + esc(endLabel) + '</text>' +
-    '<path class="chart-line" d="' + path.trim() + '"/>' + dot + '</svg>';
+    '<path class="chart-line" d="' + path.trim() + '"/>' + dot + '</svg>' +
+    '<span class="monitor-chart-max">' + esc(topLabel) + '</span>' +
+    '</div>' +
+    '<div class="monitor-chart-time"><span>' + esc(startLabel) + '</span><span>' + esc(endLabel) + '</span></div>';
 }
 
 function renderMonitorDetail(link) {
