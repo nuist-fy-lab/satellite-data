@@ -573,7 +573,7 @@ function monitorSpark(points = []) {
   const line = coords.map(([x, y], index) => (index ? 'L' : 'M') + x.toFixed(1) + ',' + y.toFixed(1)).join(' ');
   const area = line + ' L' + width + ',32 L0,32 Z';
   const last = coords[coords.length - 1];
-  return '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' +
+  return '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="xMidYMid meet">' +
     '<line class="spark-base" x1="0" y1="30" x2="' + width + '" y2="30"/>' +
     '<path class="spark-area" d="' + area + '"/>' +
     '<path class="spark-line" d="' + line + '"/>' +
