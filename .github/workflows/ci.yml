@@ -49,3 +49,4 @@ jobs:
         with:
           name: satellite-data-linux-amd64
           path: dist/
+          retention-days: 1
