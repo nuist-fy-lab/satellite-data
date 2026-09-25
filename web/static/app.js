@@ -23,6 +23,7 @@ const state = {
     payload: null,
     poll: 0,
   },
+	 downloads: {poll: 0},
   access: {user: null, credentials: [], proxies: [], accounts: []},
   displayZone: localStorage.getItem('satellite-data-zone') === 'BJT' ? 'BJT' : 'UTC',
 };
@@ -75,6 +76,7 @@ function setSidebar(expanded, persist = false) {
 
 function setView(id) {
   if (id !== 'monitor-view') clearTimeout(state.monitor.poll);
+  if (id !== 'downloads-view') clearTimeout(state.downloads.poll);
   document.querySelectorAll('.view').forEach(node => node.classList.toggle('active', node.id === id));
   document.querySelectorAll('.nav-item').forEach(node => node.classList.toggle('active', node.dataset.view === id));
 }
@@ -665,9 +667,21 @@ function renderMonitor() {
   const payload = state.monitor.payload;
   if (!payload) return;
   $('#monitor-origin-name').textContent = payload.origin || 'c2ln1';
-  const links = payload.links || [];
-  if (!links.some(link => link.source_id === state.monitor.selected)) {
-    state.monitor.selected = links.find(link => link.source_id === 'earthcare')?.source_id || links[0]?.source_id || '';
+  const grouped = new Map();
+  for (const link of payload.links || []) {
+    const key = link.target + ':' + link.port;
+    if (!grouped.has(key)) grouped.set(key, {...link, group_id: key, source_ids: [], source_names: []});
+    grouped.get(key).source_ids.push(link.source_id);
+    grouped.get(key).source_names.push(link.name);
+  }
+  const links = [...grouped.values()].map(link => ({
+    ...link,
+    name: link.source_names.length > 2 && link.source_names.every(name => name.startsWith('GOES-'))
+      ? 'GOES' : link.source_names.join(' / '),
+  }));
+  if (!links.some(link => link.group_id === state.monitor.selected)) {
+    state.monitor.selected = links.find(link => link.source_ids.includes(state.monitor.selected))?.group_id ||
+      links.find(link => link.source_ids.includes('earthcare'))?.group_id || links[0]?.group_id || '';
   }
   localStorage.setItem('satellite-data-monitor-source', state.monitor.selected);
   const tones = links.map(monitorTone);
@@ -677,7 +691,7 @@ function renderMonitor() {
   const meanJitter = monitorMean(latest.map(item => monitorNumber(item, 'jitter_ms')));
   const meanLoss = monitorMean(latest.map(item => monitorNumber(item, 'loss_pct')));
   $('#monitor-healthy').textContent = healthy + '/' + links.length;
-  $('#monitor-link-count').textContent = latest.length ? latest.length + ' 条已有样本' : '等待首轮采样';
+  $('#monitor-link-count').textContent = latest.length ? latest.length + ' 个域名已有样本' : '等待首轮采样';
   $('#monitor-latency').textContent = monitorValue(medianLatency, ' ms', 0);
   $('#monitor-jitter').textContent = monitorValue(meanJitter, ' ms', 1);
   $('#monitor-loss').textContent = monitorValue(meanLoss, '%', meanLoss != null && meanLoss > 0 && meanLoss < 10 ? 1 : 0);
@@ -693,8 +707,8 @@ function renderMonitor() {
     const jitter = monitorValue(jitterValue, ' ms', 1);
     const loss = monitorValue(lossValue, '%', lossValue != null && lossValue % 1 ? 1 : 0);
     const target = link.target + (current.resolved_ip ? ' · ' + current.resolved_ip : '');
-    return '<button type="button" class="monitor-link-card' + (state.monitor.selected === link.source_id ? ' selected' : '') +
-      '" data-monitor-source="' + esc(link.source_id) + '" data-tone="' + tone + '">' +
+    return '<button type="button" class="monitor-link-card' + (state.monitor.selected === link.group_id ? ' selected' : '') +
+      '" data-monitor-source="' + esc(link.group_id) + '" data-tone="' + tone + '">' +
       '<div class="monitor-link-head">' +
       '<div class="monitor-link-title"><strong><i></i>' + esc(link.name) + '</strong><small>' + esc(target) + '</small></div>' +
       '<div class="monitor-link-primary"><strong>' + esc(latency) + '</strong><small>' + esc(monitorToneLabel(tone)) + '</small></div>' +
@@ -702,7 +716,48 @@ function renderMonitor() {
       '<span>Jitter <b>' + esc(jitter) + '</b></span><span>Loss <b>' + esc(loss) + '</b></span>' +
       '</div><div class="monitor-spark">' + monitorSpark(link.points) + '</div></button>';
   }).join('');
-  renderMonitorDetail(links.find(link => link.source_id === state.monitor.selected));
+  renderMonitorDetail(links.find(link => link.group_id === state.monitor.selected));
+}
+
+const downloadStates = {
+  pending: '等待发现', discovering: '正在发现', retry_wait: '等待重试', transferring: '传输中',
+  verifying: '校验中', waiting_auth: '等待授权', done: '已完成', failed: '失败',
+};
+
+function downloadRate(value) {
+  const rate = Math.max(0, Number(value) || 0);
+  if (rate < 1024) return Math.round(rate) + ' B/s';
+  if (rate < 1048576) return (rate / 1024).toFixed(1) + ' KiB/s';
+  return (rate / 1048576).toFixed(1) + ' MiB/s';
+}
+
+async function loadDownloads(schedule = true) {
+  clearTimeout(state.downloads.poll);
+  const [requests, providers] = await Promise.allSettled([
+    json('/api/v1/downloads?limit=50'), json('/api/v1/downloader/providers'),
+  ]);
+  const error = [requests, providers].filter(result => result.status === 'rejected').map(result => result.reason.message);
+  $('#downloads-error').textContent = error.join(' · ');
+  const statuses = providers.status === 'fulfilled' ? providers.value.providers || [] : [];
+  $('#download-providers').innerHTML = statuses.map(item => {
+    const states = item.states || {};
+    const waiting = (states.queued || 0) + (states.retry_wait || 0);
+    return '<div class="download-provider"><strong>' + esc(item.source_id) + '</strong>' +
+      '<span>' + esc(downloadRate(item.bytes_per_second)) + '</span>' +
+      '<span>' + esc(item.active_transfers || 0) + ' / ' + esc(item.adaptive_concurrency || item.transfer_concurrency || 0) + ' 并发</span>' +
+      '<span>' + esc(waiting) + ' 排队 · ' + esc(states.verifying || 0) + ' 校验 · ' + esc(states.done || 0) + ' 完成</span>' +
+      '<span>' + esc(states.failed || 0) + ' 失败 · ' + esc(states.waiting_auth || 0) + ' 待授权</span></div>';
+  }).join('') || '<div class="pool-empty">暂无 Provider 状态</div>';
+  const items = requests.status === 'fulfilled' ? requests.value.downloads || [] : [];
+  $('#download-requests').innerHTML = items.map(item => '<div class="download-request">' +
+    '<strong>#' + esc(item.id) + ' · ' + esc(item.collection_id) + '</strong>' +
+    '<span>' + esc(downloadStates[item.state] || item.state) + ' · ' + esc(item.files_done) + '/' + esc(item.assets_queued) + ' 文件</span>' +
+    '<span>' + esc(String(item.start).slice(0, 16)) + ' - ' + esc(String(item.end).slice(0, 16)) + ' UTC</span>' +
+    (item.last_error ? '<small title="' + esc(item.last_error) + '">' + esc(item.last_error) + '</small>' : '') +
+    '</div>').join('') || '<div class="pool-empty">暂无下载任务</div>';
+  if (schedule && $('#downloads-view').classList.contains('active')) {
+    state.downloads.poll = setTimeout(() => loadDownloads(true), 3000);
+  }
 }
 
 function syncMonitorWindowButtons() {
@@ -1116,6 +1171,7 @@ function bind() {
     setView(node.dataset.view);
     if (node.dataset.view === 'access-view') loadAccess();
     if (node.dataset.view === 'monitor-view') loadMonitor(true);
+    if (node.dataset.view === 'downloads-view') loadDownloads(true);
   }));
   sourceEl.addEventListener('change', () => { persistFilters(); loadCatalog(); });
   satelliteEl.addEventListener('change', () => { rebuildFilters('satellite'); persistFilters(); });
@@ -1136,6 +1192,7 @@ function bind() {
   $('#close-detail').addEventListener('click', closeDetail);
   $('#refresh-sources').addEventListener('click', loadSources);
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
+  $('#refresh-downloads').addEventListener('click', () => loadDownloads(true));
   $('#monitor-window-tabs').addEventListener('click', event => {
     const button = event.target.closest('[data-monitor-window]');
     if (!button) return;

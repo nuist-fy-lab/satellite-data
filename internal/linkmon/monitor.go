@@ -89,13 +89,21 @@ func (m *Monitor) Run(ctx context.Context) {
 
 func (m *Monitor) probeAll(ctx context.Context) {
 	var wg sync.WaitGroup
+	groups := map[string][]Target{}
 	for _, target := range m.targets {
-		target := target
+		key := net.JoinHostPort(target.Host, portString(target.Port))
+		groups[key] = append(groups[key], target)
+	}
+	for _, targets := range groups {
+		targets := targets
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sample := m.probe(ctx, target)
-			_ = m.store.RecordLinkSample(context.WithoutCancel(ctx), sample)
+			sample := m.probe(ctx, targets[0])
+			for _, target := range targets {
+				sample.SourceID = target.SourceID
+				_ = m.store.RecordLinkSample(context.WithoutCancel(ctx), sample)
+			}
 		}()
 	}
 	wg.Wait()

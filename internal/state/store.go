@@ -907,37 +907,36 @@ func (s *Store) ReplaceLocalFiles(ctx context.Context, files []LocalFile, finger
 		return false, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM local_files`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS scanned_local_files (
+		path TEXT PRIMARY KEY, filename TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL
+	)`); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM scanned_local_files`); err != nil {
 		return false, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, file := range files {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO local_files(path,filename,size,mtime_ns,state,detail,updated_at) VALUES(?,?,?,?,?,?,?)`,
-			file.Path, file.Filename, file.Size, file.MtimeNS, "ok", "", now); err != nil {
+			INSERT INTO scanned_local_files(path,filename,size,mtime_ns) VALUES(?,?,?,?)`,
+			file.Path, file.Filename, file.Size, file.MtimeNS); err != nil {
 			return false, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO local_scan_state(id,fingerprint,scanned_at) VALUES(1,?,?)
-		ON CONFLICT(id) DO UPDATE SET fingerprint=excluded.fingerprint,scanned_at=excluded.scanned_at`,
-		fingerprint, now); err != nil {
-		return false, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM local_slots`); err != nil {
-		return false, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO local_slots(product_key,slot_ts,path,filename,size,mtime_ns,state,detail,updated_at)
-		SELECT a.product_key,a.slot_ts,f.path,f.filename,f.size,f.mtime_ns,f.state,f.detail,?
-		FROM official_assets a JOIN local_files f ON f.filename=a.filename`, now); err != nil {
-		return false, err
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT product_key,day FROM official_days`)
+	type pair struct{ product, day string }
+	rows, err := tx.QueryContext(ctx, `
+		WITH changed AS (
+			SELECT f.filename FROM local_files f LEFT JOIN scanned_local_files n ON n.path=f.path
+			WHERE n.path IS NULL OR f.filename<>n.filename OR f.size<>n.size OR f.mtime_ns<>n.mtime_ns
+			UNION
+			SELECT n.filename FROM scanned_local_files n LEFT JOIN local_files f ON f.path=n.path
+			WHERE f.path IS NULL OR f.filename<>n.filename OR f.size<>n.size OR f.mtime_ns<>n.mtime_ns
+		)
+		SELECT DISTINCT a.product_key,substr(a.slot_ts,1,10)
+		FROM changed JOIN official_assets a ON a.filename=changed.filename`)
 	if err != nil {
 		return false, err
 	}
-	type pair struct{ product, day string }
 	var pairs []pair
 	for rows.Next() {
 		var item pair
@@ -947,8 +946,34 @@ func (s *Store) ReplaceLocalFiles(ctx context.Context, files []LocalFile, finger
 		}
 		pairs = append(pairs, item)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
 	rows.Close()
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM local_files WHERE NOT EXISTS (
+			SELECT 1 FROM scanned_local_files n WHERE n.path=local_files.path
+			AND n.filename=local_files.filename AND n.size=local_files.size AND n.mtime_ns=local_files.mtime_ns
+		)`); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO local_files(path,filename,size,mtime_ns,state,detail,updated_at)
+		SELECT n.path,n.filename,n.size,n.mtime_ns,'ok','',?
+		FROM scanned_local_files n WHERE NOT EXISTS (SELECT 1 FROM local_files f WHERE f.path=n.path)`, now); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO local_scan_state(id,fingerprint,scanned_at) VALUES(1,?,?)
+		ON CONFLICT(id) DO UPDATE SET fingerprint=excluded.fingerprint,scanned_at=excluded.scanned_at`,
+		fingerprint, now); err != nil {
+		return false, err
+	}
 	for _, item := range pairs {
+		if err := s.reconcileLocalSlotsTx(ctx, tx, item.product, item.day, now); err != nil {
+			return false, err
+		}
 		if err := s.recomputeDayTx(ctx, tx, item.product, item.day, now); err != nil {
 			return false, err
 		}
@@ -962,7 +987,9 @@ func (s *Store) reconcileLocalSlotsTx(ctx context.Context, tx *sql.Tx, product, 
 	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO local_slots(product_key,slot_ts,path,filename,size,mtime_ns,state,detail,updated_at)
-		SELECT a.product_key,a.slot_ts,f.path,f.filename,f.size,f.mtime_ns,f.state,f.detail,?
+		SELECT a.product_key,a.slot_ts,f.path,f.filename,f.size,f.mtime_ns,
+		       CASE WHEN a.size>0 AND a.size<>f.size THEN 'error' ELSE f.state END,
+		       CASE WHEN a.size>0 AND a.size<>f.size THEN 'local size differs from official asset' ELSE f.detail END,?
 		FROM official_assets a JOIN local_files f ON f.filename=a.filename
 		WHERE a.product_key=? AND substr(a.slot_ts,1,10)=?`, now, product, day)
 	return err

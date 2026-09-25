@@ -173,6 +173,67 @@ func TestRecoverOfficialWork(t *testing.T) {
 	}
 }
 
+func TestLocalScanUpdatesOnlyAffectedDaysAndChecksSize(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	product := model.Product{ProductKey: "goes19:test", SourceID: "goes19", Cadence: "24h"}
+	if err := store.UpsertProducts(ctx, "goes19", []model.Product{product}); err != nil {
+		t.Fatal(err)
+	}
+	first := "2026-09-23"
+	second := "2026-09-24"
+	for _, day := range []string{first, second} {
+		at, _ := time.Parse(time.DateOnly, day)
+		name := day + ".nc"
+		if err := store.SaveOfficialBatch(ctx, WorkBatch{Product: product.ProductKey, Days: []string{day}}, []model.Granule{{
+			ID: name, Start: at, Assets: []model.Asset{{Name: name, Size: 10}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := []LocalFile{
+		{Path: "/archive/first.nc", Filename: first + ".nc", Size: 10, MtimeNS: 1},
+		{Path: "/archive/second.nc", Filename: second + ".nc", Size: 10, MtimeNS: 1},
+	}
+	if _, err := store.ReplaceLocalFiles(ctx, files, "initial"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Year(ctx, product.ProductKey, 2026)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondUpdatedAt := *findYearDay(t, before, second).UpdatedAt
+	files[0].Size = 5
+	if _, err := store.ReplaceLocalFiles(ctx, files, "size-changed"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.Year(ctx, product.ProductKey, 2026)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := findYearDay(t, after, first)
+	if changed.Status != "error" || changed.ErrorCount != 1 || changed.LocalOKCount != 0 {
+		t.Fatalf("size mismatch summary=%+v", changed)
+	}
+	if got := findYearDay(t, after, second); got.Status != "complete" || *got.UpdatedAt != secondUpdatedAt {
+		t.Fatalf("unaffected day changed=%+v", got)
+	}
+	if _, err := store.ReplaceLocalFiles(ctx, files[1:], "removed-first"); err != nil {
+		t.Fatal(err)
+	}
+	after, err = store.Year(ctx, product.ProductKey, 2026)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findYearDay(t, after, first); got.Status != "missing" || got.MissingCount != 1 {
+		t.Fatalf("removed file summary=%+v", got)
+	}
+}
+
 func findYearDay(t *testing.T, response YearResponse, day string) YearDay {
 	t.Helper()
 	for _, item := range response.Days {

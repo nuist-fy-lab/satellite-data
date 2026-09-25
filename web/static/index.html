@@ -114,8 +114,10 @@
     </section>
 
     <section class="view" id="downloads-view">
-      <header class="simple-header"><div><div class="brand">下载任务</div><div class="subbrand">队列、速度、重试和归档状态</div></div></header>
-      <div class="empty-panel">下载任务队列将在调度器接入后显示在这里。</div>
+      <header class="simple-header"><div><div class="brand">下载任务</div><div class="subbrand">队列、速度、重试和归档状态</div></div><button id="refresh-downloads" type="button">刷新</button></header>
+      <div id="downloads-error" class="form-error"></div>
+      <section class="download-section"><h2>Provider 传输</h2><div id="download-providers" class="download-list"></div></section>
+      <section class="download-section"><h2>最近请求</h2><div id="download-requests" class="download-list"></div></section>
     </section>
 
     <section class="view" id="sync-view">

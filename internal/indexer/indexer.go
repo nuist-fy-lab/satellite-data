@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -235,6 +236,8 @@ func (i *Indexer) scanLocal(ctx context.Context) {
 		_, _ = hash.Write([]byte(file.Path))
 		_, _ = hash.Write([]byte{0})
 		_, _ = hash.Write([]byte(time.Unix(0, file.MtimeNS).UTC().Format(time.RFC3339Nano)))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(strconv.FormatInt(file.Size, 10)))
 		_, _ = hash.Write([]byte{0})
 		_, _ = hash.Write([]byte(strings.TrimSpace(strings.ToLower(file.Filename))))
 		_, _ = hash.Write([]byte{0})
