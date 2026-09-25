@@ -14,6 +14,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
+	"github.com/nuist-fy-lab/satellite-data/internal/slotaxis"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
 
@@ -108,20 +109,39 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 	if !chunkEnd.After(request.Cursor) {
 		return c.store.AdvanceDownloadRequest(ctx, request.ID, request.End, 0, nil, true)
 	}
+	axis := slotaxis.Resolve(request.SourceID, request.CollectionID, product.Cadence)
+	searchStart, searchEnd := request.Cursor, chunkEnd
+	if len(request.Selection.Times) > 0 {
+		searchStart = searchStart.Add(-axis.Max)
+		searchEnd = searchEnd.Add(axis.Max)
+	}
 	queryCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	granules, err := p.Search(queryCtx, model.Query{
 		CollectionID: request.CollectionID,
-		Start:        request.Cursor,
-		End:          chunkEnd,
+		Start:        searchStart,
+		End:          searchEnd,
 	})
 	cancel()
 	if err != nil {
 		return err
 	}
+	// Estimate the scan phase from the selected band, not other bands that
+	// can start seconds apart within the same nominal observation.
+	observed := make([]time.Time, 0, len(granules))
+	for _, granule := range granules {
+		for _, asset := range granule.Assets {
+			if request.Selection.MatchesAsset(request.SourceID, request.CollectionID, asset.Name) {
+				observed = append(observed, granule.Start)
+				break
+			}
+		}
+	}
 	refs := make([]state.DownloaderTaskRef, 0, len(granules))
 	selected := 0
+	tolerance := axis.Tolerance(observed)
 	for _, granule := range granules {
-		if !request.Selection.MatchesScan(granule.Start) {
+		nominal, match := axis.MatchWithin(granule.Start, request.Selection.Times, observed, tolerance)
+		if !match || nominal.Before(request.Cursor) || !nominal.Before(chunkEnd) {
 			continue
 		}
 		matched := false

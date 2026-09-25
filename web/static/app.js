@@ -325,21 +325,26 @@ function renderTimeline(day) {
     const total = 1440 / interval;
     const by = new Map();
     for (const slot of slots) {
-      const date = new Date(slot.slot);
+	  if (!slot.nominal_slot) continue;
+      const date = new Date(slot.nominal_slot);
       const minute = date.getUTCHours() * 60 + date.getUTCMinutes();
-      by.set(Math.round(minute / interval) % total, slot);
+	  const index = Math.round(minute / interval) % total;
+	  if (!by.has(index)) by.set(index, []);
+	  by.get(index).push(slot);
     }
     const grid = document.createElement('div');
     grid.className = 'slots';
     grid.style.gridTemplateColumns = `repeat(${total},minmax(4px,1fr))`;
     for (let i = 0; i < total; i++) {
-      const slot = by.get(i);
+	  const group = by.get(i) || [];
       const cell = document.createElement('i');
       const hourly = i % (60 / interval) === 0;
-      const status = slot?.status || (day.official_day?.state === 'present' ? 'official_missing' : 'unknown');
+	  const status = ['error','processing','missing','official_missing','unknown','complete'].find(value => group.some(slot => slot.status === value))
+	    || (day.official_day?.state === 'present' ? 'official_missing' : 'unknown');
       cell.className = `slot c ${status}${hourly ? ' hourly' : ''}`;
       const minute = i * interval;
-      cell.title = `${String(Math.floor(minute / 60)).padStart(2,'0')}:${String(minute % 60).padStart(2,'0')} · ${statusLabels[status] || status}`;
+	  cell.title = `${String(Math.floor(minute / 60)).padStart(2,'0')}:${String(minute % 60).padStart(2,'0')} · ${statusLabels[status] || status}` +
+	    (group.length ? ` · 实际 ${group.map(slot => displayTime(slot.slot)).join(', ')}` : '');
       grid.append(cell);
     }
     timeline.append(grid);
@@ -349,8 +354,7 @@ function renderTimeline(day) {
     const [hour, minute, second] = displayTime(slot.slot).split(':').map(Number);
     const pos = (hour * 3600 + minute * 60 + second) / 86400 * 100;
     const marker = document.createElement('i');
-    const hourly = Math.min(minute, 60 - minute) <= 3;
-    marker.className = `event-slot c ${slot.status}${hourly ? ' hourly' : ''}`;
+	marker.className = `event-slot c ${slot.status}`;
     marker.style.left = `${Math.max(0, Math.min(100, pos)).toFixed(4)}%`;
     marker.title = `${displayTime(slot.slot)} · ${statusLabels[slot.status] || slot.status}`;
     timeline.append(marker);
@@ -366,7 +370,8 @@ function renderGranules(slots) {
     const officialAssets = (slot.official || []).reduce((sum, row) => sum + (row.asset_count || 0), 0);
     const row = document.createElement('div');
     row.className = 'granule-row';
-    row.innerHTML = `<time>${esc(displayTime(slot.slot))}</time><span>${local} / ${officialAssets} 文件</span><code title="${esc(first?.filename || '')}">${esc(first?.filename || statusLabels[slot.status] || slot.status)}</code>`;
+	const nominal = slot.nominal_slot && slot.nominal_slot !== slot.slot ? ` → ${displayTime(slot.nominal_slot).slice(0, 5)}` : '';
+	row.innerHTML = `<time>${esc(displayTime(slot.slot) + nominal)}</time><span>${local} / ${officialAssets} 文件</span><code title="${esc(first?.filename || '')}">${esc(first?.filename || statusLabels[slot.status] || slot.status)}</code>`;
     list.append(row);
   }
   if (slots.length > 80) {

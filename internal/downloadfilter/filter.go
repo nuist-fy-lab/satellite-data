@@ -110,19 +110,6 @@ func (s Selection) Normalize(source, collection string) (Selection, error) {
 	return s, nil
 }
 
-func (s Selection) MatchesScan(start time.Time) bool {
-	if len(s.Times) == 0 {
-		return true
-	}
-	minute := start.UTC().Format("15:04")
-	for _, value := range s.Times {
-		if value == minute {
-			return true
-		}
-	}
-	return false
-}
-
 func (s Selection) MatchesAsset(source, collection, filename string) bool {
 	if s.Band == 0 {
 		return true

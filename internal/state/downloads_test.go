@@ -70,7 +70,7 @@ func TestDownloadSelectionSurvivesRestartAndMigratesOldSchema(t *testing.T) {
 	if err != nil || item.Selection.Band != 6 || len(item.Selection.Times) != 2 || item.Selection.Times[0] != "00:00" {
 		t.Fatalf("restored=%+v err=%v", item, err)
 	}
-	if _, err := store.ClaimDownloadRequest(t.Context(), "goes"); err != nil {
+	if _, _, err := store.ClaimDownloadRequest(t.Context(), "goes"); err != nil {
 		t.Fatal(err)
 	}
 }

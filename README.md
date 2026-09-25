@@ -83,11 +83,18 @@ satellite download status --id 1 --json
 
 `SATELLITE_SERVER` selects the API endpoint. Provider credentials are never stored in the CLI.
 `download submit` takes inclusive UTC dates and supports repeatable `--time HH:MM` or `--hourly`.
-Times select the UTC minute of a granule's scan start; the hourly shortcut selects
-all 24 `HH:00` minutes each day. `--band` is available only for products with
+The hourly shortcut requests all 24 nominal `HH:00` UTC slots each day.
+`--band` is available only for products with
 a configured band-to-filename profile. A request is persistent and may discover
 and transfer files asynchronously; inspect `download status` before treating it
 as complete. The existing `download create` command retains its exclusive end.
+For fixed-cadence products, requested `HH:MM` is a nominal slot: scan starts
+within an adaptive, bounded offset match that slot, including at UTC date
+boundaries. For non-fixed products, events retain their actual timestamps and
+requested times match only isolated nearby events. The year calendar uses the
+same policy; it exposes actual and nominal times separately and switches to an
+event axis rather than silently snapping scans outside the tolerance. Timing
+policies are configured in `internal/slotaxis/profiles.json`.
 The download page uses the same API with a normalized provider catalogue. Band
 profiles for GOES ABI and Himawari AHI full-disk live in
 `internal/downloadfilter/profiles.json`; other provider metadata

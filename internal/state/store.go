@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/slotaxis"
 	_ "modernc.org/sqlite"
 )
 
@@ -220,10 +221,11 @@ type LocalSlot struct {
 }
 
 type DaySlot struct {
-	Slot     string         `json:"slot"`
-	Status   string         `json:"status"`
-	Official []OfficialSlot `json:"official"`
-	Local    []LocalSlot    `json:"local"`
+	Slot        string         `json:"slot"`
+	NominalSlot string         `json:"nominal_slot,omitempty"`
+	Status      string         `json:"status"`
+	Official    []OfficialSlot `json:"official"`
+	Local       []LocalSlot    `json:"local"`
 }
 
 type DayResponse struct {
@@ -848,6 +850,24 @@ func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, erro
 		ordered = append(ordered, key)
 	}
 	sort.Strings(ordered)
+	axis := slotaxis.Resolve(productInfo.SourceID, productInfo.ProductKey, productInfo.Cadence)
+	observed := make([]time.Time, 0, len(officialBy))
+	for key := range officialBy {
+		if at, err := time.Parse(time.RFC3339Nano, key); err == nil {
+			observed = append(observed, at)
+		}
+	}
+	tolerance := axis.Tolerance(observed)
+	mode := axis.ClassifyWithin(observed, tolerance)
+	if mode == "grid" {
+		for _, at := range observed {
+			nominal, _ := axis.NominalWithin(at, tolerance)
+			if nominal.Format(time.DateOnly) != day {
+				mode = "events"
+				break
+			}
+		}
+	}
 	slots := make([]DaySlot, 0, len(ordered))
 	for _, key := range ordered {
 		status := "unknown"
@@ -881,7 +901,15 @@ func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, erro
 				status = "missing"
 			}
 		}
-		slots = append(slots, DaySlot{Slot: key, Status: status, Official: official, Local: local})
+		slot := DaySlot{Slot: key, Status: status, Official: official, Local: local}
+		if mode == "grid" {
+			if at, err := time.Parse(time.RFC3339Nano, key); err == nil {
+				if nominal, ok := axis.NominalWithin(at, tolerance); ok {
+					slot.NominalSlot = nominal.Format(time.RFC3339)
+				}
+			}
+		}
+		slots = append(slots, slot)
 	}
 	if len(slots) == 0 && officialDay != nil && officialDay.State == "official_missing" {
 		slots = append(slots, DaySlot{Slot: day + "T00:00:00Z", Status: "official_missing", Official: []OfficialSlot{}, Local: []LocalSlot{}})
@@ -889,8 +917,8 @@ func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, erro
 	var indexing int
 	_ = s.db.QueryRowContext(ctx, `SELECT count(*) FROM official_work WHERE product_key=? AND day=?`, product, day).Scan(&indexing)
 	return DayResponse{
-		Product: product, Day: day, AreaType: productInfo.AreaType, MatchToleranceSeconds: int(profile.MatchTolerance / time.Second),
-		CadenceMinutes: profile.CadenceMinutes, TimelineMode: profile.TimelineMode,
+		Product: product, Day: day, AreaType: productInfo.AreaType, MatchToleranceSeconds: int(tolerance / time.Second),
+		CadenceMinutes: profile.CadenceMinutes, TimelineMode: mode,
 		OfficialGapCount: summaryOfficialGap(ctx, s.db, product, day), OfficialDay: officialDay,
 		SummaryBasis: profile.SummaryBasis, Indexing: indexing, Slots: slots,
 	}, nil
@@ -996,19 +1024,20 @@ func (s *Store) reconcileLocalSlotsTx(ctx context.Context, tx *sql.Tx, product, 
 }
 
 func (s *Store) recomputeDayTx(ctx context.Context, tx *sql.Tx, product, day, now string) error {
-	var officialState, cadence, areaType, dataType string
+	var officialState, sourceID, cadence, areaType, dataType, instrument string
 	err := tx.QueryRowContext(ctx, `
-		SELECT d.state,p.cadence,p.area_type,p.data_type
+		SELECT d.state,p.source_id,p.cadence,p.area_type,p.data_type,p.instrument
 		FROM official_days d JOIN products p ON p.product_key=d.product_key
-		WHERE d.product_key=? AND d.day=?`, product, day).Scan(&officialState, &cadence, &areaType, &dataType)
+		WHERE d.product_key=? AND d.day=?`, product, day).Scan(&officialState, &sourceID, &cadence, &areaType, &dataType, &instrument)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		return err
 	}
-	productInfo := model.Product{ProductKey: product, Cadence: cadence, AreaType: areaType, DataType: dataType}
+	productInfo := model.Product{ProductKey: product, SourceID: sourceID, Cadence: cadence, AreaType: areaType, DataType: dataType, Instrument: instrument}
 	profile := ProfileFor(productInfo)
+	axis := slotaxis.Resolve(sourceID, product, cadence)
 	rows, err := tx.QueryContext(ctx, `
 		WITH official AS (
 		  SELECT slot_ts,count(DISTINCT filename) expected
@@ -1042,9 +1071,18 @@ func (s *Store) recomputeDayTx(ctx context.Context, tx *sql.Tx, product, day, no
 		slots = append(slots, item)
 	}
 	rows.Close()
+	observed := make([]time.Time, 0, len(slots))
+	for _, item := range slots {
+		if at, err := time.Parse(time.RFC3339Nano, item.ts); err == nil {
+			observed = append(observed, at)
+		}
+	}
+	tolerance := axis.Tolerance(observed)
+	mode := axis.ClassifyWithin(observed, tolerance)
 	officialCount := len(slots)
 	localOK, missing, errorCount, processingCount := 0, 0, 0, 0
-	hourlyOfficial, hourlyOK := 0, 0
+	hourly := make(map[time.Time]bool)
+	nominalSlots := make(map[time.Time]struct{})
 	for _, item := range slots {
 		complete := item.expected > 0 && item.local >= item.expected
 		if item.errors > 0 && !complete {
@@ -1056,16 +1094,31 @@ func (s *Store) recomputeDayTx(ctx context.Context, tx *sql.Tx, product, day, no
 		} else {
 			missing++
 		}
-		if profile.HourlyBaseline && nearTopOfHour(item.ts, profile.MatchTolerance) {
-			hourlyOfficial++
-			if complete {
-				hourlyOK++
+		if mode == "grid" {
+			at, err := time.Parse(time.RFC3339Nano, item.ts)
+			if err != nil {
+				continue
+			}
+			nominal, ok := axis.NominalWithin(at, tolerance)
+			if !ok || nominal.Format(time.DateOnly) != day {
+				continue
+			}
+			nominalSlots[nominal] = struct{}{}
+			if profile.HourlyBaseline && nominal.Minute() == 0 {
+				previous, seen := hourly[nominal]
+				hourly[nominal] = complete && (!seen || previous)
 			}
 		}
 	}
+	hourlyOfficial, hourlyOK := len(hourly), 0
+	for _, complete := range hourly {
+		if complete {
+			hourlyOK++
+		}
+	}
 	officialGap := 0
-	if profile.ExpectedPerDay > 0 && officialCount < profile.ExpectedPerDay {
-		officialGap = profile.ExpectedPerDay - officialCount
+	if mode == "grid" && profile.ExpectedPerDay > 0 && len(nominalSlots) < profile.ExpectedPerDay {
+		officialGap = profile.ExpectedPerDay - len(nominalSlots)
 	}
 	hourlyGap := 0
 	if profile.HourlyBaseline && hourlyOfficial < 24 {
@@ -1112,41 +1165,23 @@ type Profile struct {
 	CadenceMinutes int
 	ExpectedPerDay int
 	HourlyBaseline bool
-	MatchTolerance time.Duration
-	TimelineMode   string
 	SummaryBasis   string
 }
 
 func ProfileFor(product model.Product) Profile {
-	profile := Profile{MatchTolerance: 60 * time.Second, TimelineMode: "events", SummaryBasis: "all_official_slots"}
-	if strings.HasSuffix(product.Cadence, "m") {
-		if minutes, err := time.ParseDuration(product.Cadence); err == nil && minutes > 0 {
-			profile.CadenceMinutes = int(minutes / time.Minute)
-		}
-	}
+	axis := slotaxis.Resolve(product.SourceID, product.ProductKey, product.Cadence)
+	profile := Profile{SummaryBasis: "all_official_slots", CadenceMinutes: axis.CadenceMinutes}
 	if profile.CadenceMinutes > 0 && 1440%profile.CadenceMinutes == 0 {
 		profile.ExpectedPerDay = 1440 / profile.CadenceMinutes
-		profile.TimelineMode = "grid"
 	}
 	area := strings.ToUpper(strings.TrimSpace(product.AreaType))
 	name := strings.ToUpper(product.DataType)
 	if area == "DISK" || strings.Contains(name, "RADF") || strings.Contains(name, "CMIPF") ||
 		strings.Contains(name, "FLDK") || (strings.Contains(strings.ToUpper(product.Instrument), "FCI") && area == "DISK") {
 		profile.HourlyBaseline = true
-		profile.MatchTolerance = 3 * time.Minute
 		profile.SummaryBasis = "all_with_hourly_disk_fallback"
 	}
 	return profile
-}
-
-func nearTopOfHour(raw string, tolerance time.Duration) bool {
-	at, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return false
-	}
-	minute := time.Duration(at.Minute())*time.Minute + time.Duration(at.Second())*time.Second + time.Duration(at.Nanosecond())
-	toNext := time.Hour - minute
-	return minute <= tolerance || toNext <= tolerance
 }
 
 func summaryOfficialGap(ctx context.Context, db *sql.DB, product, day string) int {

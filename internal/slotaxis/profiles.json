@@ -1,0 +1,6 @@
+[
+  {"source_prefix":"goes","product_pattern":"^ABI-L1b-RadF$","cadence_minutes":10,"base_tolerance_seconds":60,"max_tolerance_seconds":180},
+  {"source_prefix":"goes","product_pattern":"^ABI-L1b-RadC$","cadence_minutes":5,"base_tolerance_seconds":45,"max_tolerance_seconds":120},
+  {"source_prefix":"goes","product_pattern":"^ABI-L1b-RadM$","cadence_minutes":1,"base_tolerance_seconds":10,"max_tolerance_seconds":25},
+  {"source_prefix":"himawari","product_pattern":"^AHI-L1b-FLDK$","cadence_minutes":10,"base_tolerance_seconds":45,"max_tolerance_seconds":120}
+]

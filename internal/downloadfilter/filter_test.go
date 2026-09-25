@@ -3,7 +3,6 @@ package downloadfilter
 import (
 	"reflect"
 	"testing"
-	"time"
 )
 
 func TestGOESBandAndHourlySelection(t *testing.T) {
@@ -24,21 +23,6 @@ func TestGOESBandAndHourlySelection(t *testing.T) {
 	} {
 		if got := s.MatchesAsset("goes18", "goes18:ABI-L1b-RadF", tc.name); got != tc.want {
 			t.Errorf("%s matched=%v", tc.name, got)
-		}
-	}
-	for _, tc := range []struct {
-		scan string
-		want bool
-	}{
-		{"2023-06-01T00:00:20Z", true}, {"2023-06-01T00:10:20Z", false},
-		{"2023-06-01T12:00:00Z", true}, {"2023-06-01T12:01:00Z", false},
-	} {
-		tm, err := time.Parse(time.RFC3339, tc.scan)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := s.MatchesScan(tm); got != tc.want {
-			t.Errorf("%s matched=%v", tc.scan, got)
 		}
 	}
 }
