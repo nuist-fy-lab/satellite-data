@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=2">
+  <link rel="stylesheet" href="/styles.css?v=3">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <aside class="sidebar" aria-label="功能导航">
@@ -124,8 +124,50 @@
     </section>
 
     <section class="view" id="monitor-view">
-      <header class="simple-header"><div><div class="brand">运行监控</div><div class="subbrand">下载速度、任务吞吐、Provider 延迟与错误率</div></div></header>
-      <div class="empty-panel">监控模块会沿用 NSMC Data 的轻量折线图与时间窗布局。</div>
+      <header class="simple-header monitor-header">
+        <div><div class="brand">链路监控</div><div class="subbrand">c2ln1 → Provider · TCP 443 延迟、抖动与丢包</div></div>
+        <div class="monitor-head-actions">
+          <span class="monitor-origin"><i></i><strong id="monitor-origin-name">c2ln1</strong><small>15 秒采样</small></span>
+          <button id="refresh-monitor" type="button">刷新</button>
+        </div>
+      </header>
+      <div class="monitor-window-tabs" id="monitor-window-tabs" role="group" aria-label="监控时间窗口">
+        <button type="button" data-monitor-window="1h" class="active">1h</button>
+        <button type="button" data-monitor-window="3h">3h</button>
+        <button type="button" data-monitor-window="6h">6h</button>
+        <button type="button" data-monitor-window="12h">12h</button>
+        <button type="button" data-monitor-window="1d">1d</button>
+        <button type="button" data-monitor-window="2d">2d</button>
+        <button type="button" data-monitor-window="1w">1w</button>
+      </div>
+      <div id="monitor-error" class="form-error"></div>
+      <div class="monitor-summary">
+        <article class="monitor-metric"><span>健康链路</span><strong id="monitor-healthy">—</strong><small id="monitor-link-count">等待采样</small></article>
+        <article class="monitor-metric"><span>中位延迟</span><strong id="monitor-latency">—</strong><small>TCP connect RTT</small></article>
+        <article class="monitor-metric"><span>平均抖动</span><strong id="monitor-jitter">—</strong><small>连续 RTT 差值</small></article>
+        <article class="monitor-metric"><span>平均丢包</span><strong id="monitor-loss">—</strong><small>4 次探测 / 样本</small></article>
+      </div>
+      <div id="monitor-links" class="monitor-link-grid"></div>
+      <section id="monitor-detail" class="monitor-detail hidden">
+        <div class="monitor-detail-head">
+          <div><span class="monitor-eyebrow">链路详情</span><strong id="monitor-detail-title">—</strong><small id="monitor-detail-target">—</small></div>
+          <span id="monitor-detail-state" class="monitor-state-pill">—</span>
+        </div>
+        <div class="monitor-chart-grid">
+          <article class="monitor-chart-card">
+            <header><span>Latency</span><strong id="monitor-detail-latency">—</strong></header>
+            <div id="monitor-latency-chart" class="monitor-chart" aria-label="延迟历史图"></div>
+          </article>
+          <article class="monitor-chart-card">
+            <header><span>Jitter</span><strong id="monitor-detail-jitter">—</strong></header>
+            <div id="monitor-jitter-chart" class="monitor-chart" aria-label="抖动历史图"></div>
+          </article>
+          <article class="monitor-chart-card">
+            <header><span>Packet loss</span><strong id="monitor-detail-loss">—</strong></header>
+            <div id="monitor-loss-chart" class="monitor-chart" aria-label="丢包历史图"></div>
+          </article>
+        </div>
+      </section>
     </section>
 
     <section class="view" id="access-view">
@@ -212,6 +254,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=10"></script>
+  <script type="module" src="/app.js?v=11"></script>
 </body>
 </html>

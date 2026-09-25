@@ -149,6 +149,22 @@ CREATE TABLE IF NOT EXISTS local_scan_state (
   fingerprint TEXT NOT NULL DEFAULT '',
   scanned_at TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS link_samples (
+  source_id TEXT NOT NULL,
+  sampled_at_ns INTEGER NOT NULL,
+  target_host TEXT NOT NULL,
+  resolved_ip TEXT NOT NULL DEFAULT '',
+  latency_ms REAL,
+  jitter_ms REAL,
+  loss_pct REAL NOT NULL,
+  success_count INTEGER NOT NULL,
+  attempt_count INTEGER NOT NULL,
+  last_error TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(source_id,sampled_at_ns)
+);
+CREATE INDEX IF NOT EXISTS link_samples_time_idx ON link_samples(sampled_at_ns);
+CREATE INDEX IF NOT EXISTS link_samples_source_time_idx ON link_samples(source_id,sampled_at_ns);
 `
 
 type Store struct {
@@ -236,6 +252,26 @@ type LocalFile struct {
 	MtimeNS  int64
 }
 
+type LinkSample struct {
+	SourceID     string    `json:"source_id"`
+	SampledAt    time.Time `json:"sampled_at"`
+	TargetHost   string    `json:"target_host"`
+	ResolvedIP   string    `json:"resolved_ip,omitempty"`
+	LatencyMS    *float64  `json:"latency_ms,omitempty"`
+	JitterMS     *float64  `json:"jitter_ms,omitempty"`
+	LossPct      float64   `json:"loss_pct"`
+	SuccessCount int       `json:"success_count"`
+	AttemptCount int       `json:"attempt_count"`
+	LastError    string    `json:"last_error,omitempty"`
+}
+
+type LinkPoint struct {
+	SampledAt time.Time `json:"sampled_at"`
+	LatencyMS *float64  `json:"latency_ms,omitempty"`
+	JitterMS  *float64  `json:"jitter_ms,omitempty"`
+	LossPct   float64   `json:"loss_pct"`
+}
+
 func Open(path string) (*Store, error) {
 	// busy_timeout is connection-local in SQLite. Put it in the DSN so every
 	// pooled connection receives the same wait policy; executing PRAGMA once on
@@ -261,6 +297,109 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+func (s *Store) RecordLinkSample(ctx context.Context, sample LinkSample) error {
+	var latency any
+	if sample.LatencyMS != nil {
+		latency = *sample.LatencyMS
+	}
+	var jitter any
+	if sample.JitterMS != nil {
+		jitter = *sample.JitterMS
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO link_samples(
+			source_id,sampled_at_ns,target_host,resolved_ip,latency_ms,jitter_ms,loss_pct,
+			success_count,attempt_count,last_error)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		sample.SourceID, sample.SampledAt.UTC().UnixNano(), sample.TargetHost, sample.ResolvedIP,
+		latency, jitter, sample.LossPct, sample.SuccessCount, sample.AttemptCount, sample.LastError)
+	return err
+}
+
+func (s *Store) LatestLinkSamples(ctx context.Context) ([]LinkSample, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT l.source_id,l.sampled_at_ns,l.target_host,l.resolved_ip,l.latency_ms,l.jitter_ms,l.loss_pct,
+		       l.success_count,l.attempt_count,l.last_error
+		FROM link_samples l
+		JOIN (
+			SELECT source_id,max(sampled_at_ns) sampled_at_ns
+			FROM link_samples
+			GROUP BY source_id
+		) latest
+		  ON latest.source_id=l.source_id AND latest.sampled_at_ns=l.sampled_at_ns
+		ORDER BY l.source_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]LinkSample, 0, 16)
+	for rows.Next() {
+		var item LinkSample
+		var sampledNS int64
+		var latency, jitter sql.NullFloat64
+		if err := rows.Scan(&item.SourceID, &sampledNS, &item.TargetHost, &item.ResolvedIP, &latency, &jitter,
+			&item.LossPct, &item.SuccessCount, &item.AttemptCount, &item.LastError); err != nil {
+			return nil, err
+		}
+		item.SampledAt = time.Unix(0, sampledNS).UTC()
+		if latency.Valid {
+			value := latency.Float64
+			item.LatencyMS = &value
+		}
+		if jitter.Valid {
+			value := jitter.Float64
+			item.JitterMS = &value
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) LinkSeries(ctx context.Context, since time.Time, bucket time.Duration) (map[string][]LinkPoint, error) {
+	if bucket <= 0 {
+		bucket = 15 * time.Second
+	}
+	bucketNS := bucket.Nanoseconds()
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT source_id,(sampled_at_ns / ?) * ? bucket_ns,
+		       avg(latency_ms),avg(jitter_ms),avg(loss_pct)
+		FROM link_samples
+		WHERE sampled_at_ns>=?
+		GROUP BY source_id,bucket_ns
+		ORDER BY source_id,bucket_ns`,
+		bucketNS, bucketNS, since.UTC().UnixNano())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]LinkPoint{}
+	for rows.Next() {
+		var sourceID string
+		var sampledNS int64
+		var latency, jitter sql.NullFloat64
+		var loss float64
+		if err := rows.Scan(&sourceID, &sampledNS, &latency, &jitter, &loss); err != nil {
+			return nil, err
+		}
+		item := LinkPoint{SampledAt: time.Unix(0, sampledNS).UTC(), LossPct: loss}
+		if latency.Valid {
+			value := latency.Float64
+			item.LatencyMS = &value
+		}
+		if jitter.Valid {
+			value := jitter.Float64
+			item.JitterMS = &value
+		}
+		out[sourceID] = append(out[sourceID], item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteLinkSamplesBefore(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM link_samples WHERE sampled_at_ns<?`, before.UTC().UnixNano())
+	return err
+}
 
 func (s *Store) RecoverOfficialWork(ctx context.Context) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)

@@ -17,6 +17,12 @@ const state = {
   dayState: new Map(),
   yearPoll: 0,
   dayPoll: 0,
+  monitor: {
+    window: localStorage.getItem('satellite-data-monitor-window') || '1h',
+    selected: localStorage.getItem('satellite-data-monitor-source') || 'earthcare',
+    payload: null,
+    poll: 0,
+  },
   access: {user: null, credentials: [], proxies: [], accounts: []},
   displayZone: localStorage.getItem('satellite-data-zone') === 'BJT' ? 'BJT' : 'UTC',
 };
@@ -68,6 +74,7 @@ function setSidebar(expanded, persist = false) {
 }
 
 function setView(id) {
+  if (id !== 'monitor-view') clearTimeout(state.monitor.poll);
   document.querySelectorAll('.view').forEach(node => node.classList.toggle('active', node.id === id));
   document.querySelectorAll('.nav-item').forEach(node => node.classList.toggle('active', node.dataset.view === id));
 }
@@ -500,6 +507,225 @@ function resetFilters() {
   loadCatalog();
 }
 
+function monitorNumber(object, key) {
+  const value = object?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function monitorValue(value, unit = '', digits = 0) {
+  if (!Number.isFinite(value)) return '—';
+  return value.toFixed(digits) + unit;
+}
+
+function monitorMean(values) {
+  const valid = values.filter(Number.isFinite);
+  if (!valid.length) return null;
+  return valid.reduce((sum, value) => sum + value, 0) / valid.length;
+}
+
+function monitorMedian(values) {
+  const valid = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!valid.length) return null;
+  const middle = Math.floor(valid.length / 2);
+  return valid.length % 2 ? valid[middle] : (valid[middle - 1] + valid[middle]) / 2;
+}
+
+function monitorTone(link) {
+  const latest = link?.latest;
+  if (!latest?.sampled_at) return 'stale';
+  const age = Date.now() - new Date(latest.sampled_at).getTime();
+  if (!Number.isFinite(age) || age > 90_000) return 'stale';
+  const loss = monitorNumber(latest, 'loss_pct');
+  const latency = monitorNumber(latest, 'latency_ms');
+  const jitter = monitorNumber(latest, 'jitter_ms');
+  if ((loss != null && loss >= 25) || (latency != null && latency >= 900)) return 'bad';
+  if ((loss != null && loss > 0) || (latency != null && latency >= 450) || (jitter != null && jitter >= 100)) return 'warn';
+  return 'ok';
+}
+
+function monitorToneLabel(tone) {
+  return {ok: '正常', warn: '波动', bad: '异常', stale: '待采样'}[tone] || tone;
+}
+
+function monitorClock(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '—';
+  if (state.displayZone === 'BJT') date.setUTCHours(date.getUTCHours() + 8);
+  return date.toISOString().slice(11, 16);
+}
+
+function monitorSpark(points = []) {
+  const values = points.map(point => monitorNumber(point, 'latency_ms')).filter(Number.isFinite);
+  if (values.length < 2) {
+    return '<svg viewBox="0 0 240 36" preserveAspectRatio="none"><line class="spark-base" x1="0" y1="30" x2="240" y2="30"/></svg>';
+  }
+  const width = 240;
+  const height = 36;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(1, max - min);
+  const coords = values.map((value, index) => {
+    const x = index * width / Math.max(1, values.length - 1);
+    const y = 29 - ((value - min) / span) * 23;
+    return [x, y];
+  });
+  const line = coords.map(([x, y], index) => (index ? 'L' : 'M') + x.toFixed(1) + ',' + y.toFixed(1)).join(' ');
+  const area = line + ' L' + width + ',32 L0,32 Z';
+  const last = coords[coords.length - 1];
+  return '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' +
+    '<line class="spark-base" x1="0" y1="30" x2="' + width + '" y2="30"/>' +
+    '<path class="spark-area" d="' + area + '"/>' +
+    '<path class="spark-line" d="' + line + '"/>' +
+    '<circle class="spark-last" cx="' + last[0].toFixed(1) + '" cy="' + last[1].toFixed(1) + '" r="2.3"/>' +
+    '</svg>';
+}
+
+function monitorChart(points, key, fixedMax = null) {
+  const entries = (points || []).map(point => ({
+    time: new Date(point.sampled_at).getTime(),
+    value: monitorNumber(point, key),
+  })).filter(item => Number.isFinite(item.time) && Number.isFinite(item.value));
+  if (!entries.length) return '<div class="pool-empty">等待历史样本</div>';
+  const width = 600;
+  const height = 148;
+  const left = 32;
+  const right = 8;
+  const top = 8;
+  const bottom = 21;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const t0 = entries[0].time;
+  const t1 = Math.max(t0 + 1, entries[entries.length - 1].time);
+  const observedMax = Math.max(...entries.map(item => item.value));
+  const maxValue = fixedMax ?? Math.max(1, observedMax * 1.15);
+  const bucketMS = Math.max(1, Number(state.monitor.payload?.bucket_seconds || 15) * 1000);
+  let path = '';
+  let previousTime = null;
+  let lastCoord = null;
+  for (const item of entries) {
+    const x = left + ((item.time - t0) / (t1 - t0)) * plotWidth;
+    const y = top + (1 - Math.min(maxValue, Math.max(0, item.value)) / maxValue) * plotHeight;
+    const command = previousTime != null && item.time - previousTime <= bucketMS * 2.5 ? 'L' : 'M';
+    path += command + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+    previousTime = item.time;
+    lastCoord = [x, y];
+  }
+  const grids = [0, .25, .5, .75, 1].map(ratio => {
+    const y = top + ratio * plotHeight;
+    return '<line class="chart-grid" x1="' + left + '" y1="' + y.toFixed(1) + '" x2="' + (width-right) + '" y2="' + y.toFixed(1) + '"/>';
+  }).join('');
+  const topLabel = fixedMax === 100 ? '100%' : Math.round(maxValue) + ' ms';
+  const startLabel = monitorClock(new Date(t0).toISOString());
+  const endLabel = monitorClock(new Date(t1).toISOString());
+  const dot = lastCoord
+    ? '<circle class="chart-dot" cx="' + lastCoord[0].toFixed(1) + '" cy="' + lastCoord[1].toFixed(1) + '" r="3"/>'
+    : '';
+  return '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' +
+    grids +
+    '<text class="chart-label" x="1" y="' + (top + 4) + '">' + esc(topLabel) + '</text>' +
+    '<text class="chart-label" x="' + left + '" y="' + (height - 4) + '">' + esc(startLabel) + '</text>' +
+    '<text class="chart-label" text-anchor="end" x="' + (width-right) + '" y="' + (height - 4) + '">' + esc(endLabel) + '</text>' +
+    '<path class="chart-line" d="' + path.trim() + '"/>' + dot + '</svg>';
+}
+
+function renderMonitorDetail(link) {
+  const node = $('#monitor-detail');
+  if (!link) {
+    node.classList.add('hidden');
+    return;
+  }
+  const tone = monitorTone(link);
+  const latest = link.latest || {};
+  node.classList.remove('hidden');
+  $('#monitor-detail-title').textContent = link.name;
+  $('#monitor-detail-target').textContent = 'c2ln1 → ' + link.target + ':' + link.port + (latest.resolved_ip ? ' · ' + latest.resolved_ip : '');
+  const stateNode = $('#monitor-detail-state');
+  stateNode.className = 'monitor-state-pill ' + tone;
+  stateNode.textContent = monitorToneLabel(tone);
+  const latencyValue = monitorNumber(latest, 'latency_ms');
+  const jitterValue = monitorNumber(latest, 'jitter_ms');
+  const lossValue = monitorNumber(latest, 'loss_pct');
+  $('#monitor-detail-latency').textContent = monitorValue(latencyValue, ' ms', 1);
+  $('#monitor-detail-jitter').textContent = monitorValue(jitterValue, ' ms', 1);
+  $('#monitor-detail-loss').textContent = monitorValue(lossValue, '%', lossValue != null && lossValue % 1 ? 1 : 0);
+  const latency = $('#monitor-latency-chart');
+  const jitter = $('#monitor-jitter-chart');
+  const loss = $('#monitor-loss-chart');
+  latency.className = 'monitor-chart latency';
+  jitter.className = 'monitor-chart jitter';
+  loss.className = 'monitor-chart loss';
+  latency.innerHTML = monitorChart(link.points, 'latency_ms');
+  jitter.innerHTML = monitorChart(link.points, 'jitter_ms');
+  loss.innerHTML = monitorChart(link.points, 'loss_pct', 100);
+}
+
+function renderMonitor() {
+  const payload = state.monitor.payload;
+  if (!payload) return;
+  $('#monitor-origin-name').textContent = payload.origin || 'c2ln1';
+  const links = payload.links || [];
+  if (!links.some(link => link.source_id === state.monitor.selected)) {
+    state.monitor.selected = links.find(link => link.source_id === 'earthcare')?.source_id || links[0]?.source_id || '';
+  }
+  localStorage.setItem('satellite-data-monitor-source', state.monitor.selected);
+  const tones = links.map(monitorTone);
+  const healthy = tones.filter(tone => tone === 'ok').length;
+  const latest = links.map(link => link.latest).filter(Boolean);
+  const medianLatency = monitorMedian(latest.map(item => monitorNumber(item, 'latency_ms')));
+  const meanJitter = monitorMean(latest.map(item => monitorNumber(item, 'jitter_ms')));
+  const meanLoss = monitorMean(latest.map(item => monitorNumber(item, 'loss_pct')));
+  $('#monitor-healthy').textContent = healthy + '/' + links.length;
+  $('#monitor-link-count').textContent = latest.length ? latest.length + ' 条已有样本' : '等待首轮采样';
+  $('#monitor-latency').textContent = monitorValue(medianLatency, ' ms', 0);
+  $('#monitor-jitter').textContent = monitorValue(meanJitter, ' ms', 1);
+  $('#monitor-loss').textContent = monitorValue(meanLoss, '%', meanLoss != null && meanLoss > 0 && meanLoss < 10 ? 1 : 0);
+
+  const grid = $('#monitor-links');
+  grid.innerHTML = links.map(link => {
+    const tone = monitorTone(link);
+    const current = link.latest || {};
+    const latencyValue = monitorNumber(current, 'latency_ms');
+    const jitterValue = monitorNumber(current, 'jitter_ms');
+    const lossValue = monitorNumber(current, 'loss_pct');
+    const latency = monitorValue(latencyValue, ' ms', 0);
+    const jitter = monitorValue(jitterValue, ' ms', 1);
+    const loss = monitorValue(lossValue, '%', lossValue != null && lossValue % 1 ? 1 : 0);
+    const target = link.target + (current.resolved_ip ? ' · ' + current.resolved_ip : '');
+    return '<button type="button" class="monitor-link-card' + (state.monitor.selected === link.source_id ? ' selected' : '') +
+      '" data-monitor-source="' + esc(link.source_id) + '" data-tone="' + tone + '">' +
+      '<div class="monitor-link-head">' +
+      '<div class="monitor-link-title"><strong><i></i>' + esc(link.name) + '</strong><small>' + esc(target) + '</small></div>' +
+      '<div class="monitor-link-primary"><strong>' + esc(latency) + '</strong><small>' + esc(monitorToneLabel(tone)) + '</small></div>' +
+      '</div><div class="monitor-link-meta">' +
+      '<span>Jitter <b>' + esc(jitter) + '</b></span><span>Loss <b>' + esc(loss) + '</b></span>' +
+      '</div><div class="monitor-spark">' + monitorSpark(link.points) + '</div></button>';
+  }).join('');
+  renderMonitorDetail(links.find(link => link.source_id === state.monitor.selected));
+}
+
+function syncMonitorWindowButtons() {
+  document.querySelectorAll('[data-monitor-window]').forEach(button => {
+    button.classList.toggle('active', button.dataset.monitorWindow === state.monitor.window);
+  });
+}
+
+async function loadMonitor(schedule = true) {
+  clearTimeout(state.monitor.poll);
+  syncMonitorWindowButtons();
+  try {
+    const payload = await json('/api/v1/monitor/links?window=' + encodeURIComponent(state.monitor.window));
+    state.monitor.payload = payload;
+    $('#monitor-error').textContent = '';
+    renderMonitor();
+  } catch (error) {
+    $('#monitor-error').textContent = '链路监控读取失败 · ' + error.message;
+  }
+  if (schedule && $('#monitor-view').classList.contains('active')) {
+    state.monitor.poll = setTimeout(() => loadMonitor(true), 15_000);
+  }
+}
+
 const accessKindLabels = {
   laads: 'LAADS', earthdata: 'Earthdata', earthcare: 'ESA MAAP', eumetsat: 'EUMETSAT', cloudsat: 'CloudSat DPC',
 };
@@ -888,6 +1114,7 @@ function bind() {
   document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', () => {
     setView(node.dataset.view);
     if (node.dataset.view === 'access-view') loadAccess();
+    if (node.dataset.view === 'monitor-view') loadMonitor(true);
   }));
   sourceEl.addEventListener('change', () => { persistFilters(); loadCatalog(); });
   satelliteEl.addEventListener('change', () => { rebuildFilters('satellite'); persistFilters(); });
@@ -900,12 +1127,28 @@ function bind() {
     localStorage.setItem('satellite-data-zone', state.displayZone);
     closeDetail();
     renderCalendar();
+    if (state.monitor.payload) renderMonitor();
   });
   $('#reset-filters').addEventListener('click', resetFilters);
   $('#query-month').addEventListener('click', queryMonth);
   $('#clear-calendar').addEventListener('click', () => loadYear(true));
   $('#close-detail').addEventListener('click', closeDetail);
   $('#refresh-sources').addEventListener('click', loadSources);
+  $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
+  $('#monitor-window-tabs').addEventListener('click', event => {
+    const button = event.target.closest('[data-monitor-window]');
+    if (!button) return;
+    state.monitor.window = button.dataset.monitorWindow;
+    localStorage.setItem('satellite-data-monitor-window', state.monitor.window);
+    loadMonitor(true);
+  });
+  $('#monitor-links').addEventListener('click', event => {
+    const card = event.target.closest('[data-monitor-source]');
+    if (!card) return;
+    state.monitor.selected = card.dataset.monitorSource;
+    localStorage.setItem('satellite-data-monitor-source', state.monitor.selected);
+    renderMonitor();
+  });
   $('#access-login-form').addEventListener('submit', loginAccess);
   $('#refresh-access').addEventListener('click', loadAccess);
   $('#logout-access').addEventListener('click', logoutAccess);

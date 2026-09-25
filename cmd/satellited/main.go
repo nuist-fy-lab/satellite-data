@@ -20,6 +20,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/httpapi"
 	"github.com/nuist-fy-lab/satellite-data/internal/indexer"
+	"github.com/nuist-fy-lab/satellite-data/internal/linkmon"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
 
@@ -58,6 +59,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	linkmon.New(store).Run(ctx)
 	archiveIndexer := indexer.New(registry, store, *archiveRoot)
 	archiveIndexer.Run(ctx)
 	downloaderClient := downloader.New(runtimeConfig.DownloaderSocket)

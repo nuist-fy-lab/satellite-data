@@ -13,6 +13,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
+	"github.com/nuist-fy-lab/satellite-data/internal/linkmon"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
@@ -52,6 +53,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.download)
 	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
+	mux.HandleFunc("GET /api/v1/monitor/links", s.linkMonitor)
 	mux.HandleFunc("POST /api/v1/access/login", s.accessLogin)
 	mux.HandleFunc("POST /api/v1/access/logout", s.accessLogout)
 	mux.HandleFunc("GET /api/v1/access/session", s.accessSession)
@@ -73,6 +75,81 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	}
 	mux.Handle("GET /", http.FileServerFS(static))
 	return withHeaders(mux)
+}
+
+type monitorWindow struct {
+	duration time.Duration
+	bucket   time.Duration
+}
+
+var monitorWindows = map[string]monitorWindow{
+	"1h":  {duration: time.Hour, bucket: 15 * time.Second},
+	"3h":  {duration: 3 * time.Hour, bucket: 30 * time.Second},
+	"6h":  {duration: 6 * time.Hour, bucket: time.Minute},
+	"12h": {duration: 12 * time.Hour, bucket: 2 * time.Minute},
+	"1d":  {duration: 24 * time.Hour, bucket: 5 * time.Minute},
+	"2d":  {duration: 48 * time.Hour, bucket: 10 * time.Minute},
+	"1w":  {duration: 7 * 24 * time.Hour, bucket: 30 * time.Minute},
+}
+
+func (s *Server) linkMonitor(w http.ResponseWriter, r *http.Request) {
+	windowName := strings.TrimSpace(r.URL.Query().Get("window"))
+	if windowName == "" {
+		windowName = "1h"
+	}
+	window, ok := monitorWindows[windowName]
+	if !ok {
+		writeError(w, http.StatusBadRequest, errors.New("unsupported monitor window"))
+		return
+	}
+	latest, err := s.store.LatestLinkSamples(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	series, err := s.store.LinkSeries(r.Context(), time.Now().UTC().Add(-window.duration), window.bucket)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	latestBySource := make(map[string]state.LinkSample, len(latest))
+	for _, item := range latest {
+		latestBySource[item.SourceID] = item
+	}
+	type link struct {
+		SourceID string            `json:"source_id"`
+		Name     string            `json:"name"`
+		Target   string            `json:"target"`
+		Port     int               `json:"port"`
+		Latest   *state.LinkSample `json:"latest,omitempty"`
+		Points   []state.LinkPoint `json:"points"`
+	}
+	items := make([]link, 0, len(linkmon.Targets()))
+	for _, target := range linkmon.Targets() {
+		item := link{
+			SourceID: target.SourceID,
+			Name:     target.Name,
+			Target:   target.Host,
+			Port:     target.Port,
+			Points:   series[target.SourceID],
+		}
+		if current, exists := latestBySource[target.SourceID]; exists {
+			value := current
+			item.Latest = &value
+		}
+		if item.Points == nil {
+			item.Points = []state.LinkPoint{}
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"origin":                  "c2ln1",
+		"window":                  windowName,
+		"bucket_seconds":          int(window.bucket.Seconds()),
+		"sample_interval_seconds": 15,
+		"generated_at":            time.Now().UTC(),
+		"links":                   items,
+	})
 }
 
 func (s *Server) accessLogin(w http.ResponseWriter, r *http.Request) {
