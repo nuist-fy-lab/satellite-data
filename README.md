@@ -83,4 +83,10 @@ satellite query list \
 
 Project builds and tests run only in GitHub Actions. Development machines and production data nodes are used for source editing, configuration, deployment and post-deployment health checks, not project builds/tests.
 
+On the data node, the user-level units are `satellited.service` and
+`satellite-data-downloader.service`. Check the exact unit names with
+`systemctl --user list-unit-files '*satellite*'` before diagnosing a service;
+`systemctl --user show` can report `inactive` for a unit that does not exist.
+There is no `satellite-downloader.service` unit.
+
 Linux deployment artifacts are built with `CGO_ENABLED=0` and `GOAMD64=v1` so the same CI artifact can run on older HPC userspace distributions without inheriting the GitHub runner's glibc requirement.
