@@ -19,7 +19,6 @@ import (
 const (
 	apiBase        = "https://api.eumetsat.int"
 	searchEndpoint = apiBase + "/data/search-products/1.0.0/os"
-	downloadBase   = apiBase + "/data/download/1.0.0/collections"
 	browseCatalog  = apiBase + "/data/browse/1.0.0/collections"
 )
 
@@ -143,7 +142,7 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 			"pi":      {collectionID},
 			"si":      {strconv.Itoa(startIndex)},
 			"c":       {strconv.Itoa(pageSize)},
-			"set":     {"brief"},
+			"set":     {"full"},
 			"dtstart": {q.Start.UTC().Format(time.RFC3339)},
 			"dtend":   {q.End.UTC().Format(time.RFC3339)},
 			"sort":    {"start,time,1"},
@@ -173,7 +172,13 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 				continue
 			}
 			productID := feature.ID
-			downloadURL := downloadBase + "/" + url.PathEscape(collectionID) + "/products/" + url.PathEscape(productID)
+			downloadURL, mediaType, ok := productDownloadLink(feature.Properties)
+			if !ok {
+				continue
+			}
+			if mediaType == "" {
+				mediaType = "application/zip"
+			}
 			out = append(out, model.Granule{
 				ID:           "mtg:" + productID,
 				SourceID:     "mtg",
@@ -183,10 +188,10 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 				Assets: []model.Asset{
 					{
 						ID:        productID,
-						Name:      productID + ".zip",
+						Name:      productAssetName(productID, mediaType),
 						URL:       downloadURL,
 						AuthRef:   "eumetsat",
-						MediaType: "application/zip",
+						MediaType: mediaType,
 						Metadata: map[string]string{
 							"container": "EUMETSAT Data Store SIP",
 						},
@@ -205,6 +210,39 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
 	return out, nil
+}
+
+func productDownloadLink(properties map[string]any) (string, string, bool) {
+	links, ok := properties["links"].(map[string]any)
+	if !ok {
+		return "", "", false
+	}
+	data, ok := links["data"].([]any)
+	if !ok {
+		return "", "", false
+	}
+	for _, raw := range data {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		href, _ := item["href"].(string)
+		if !strings.HasPrefix(href, apiBase+"/data/download/") {
+			continue
+		}
+		mediaType, _ := item["mediaType"].(string)
+		return href, mediaType, true
+	}
+	return "", "", false
+}
+
+func productAssetName(productID, mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "application/zip", "application/x-zip-compressed":
+		return productID + ".zip"
+	default:
+		return productID
+	}
 }
 
 func (p *Provider) knownCollection(ctx context.Context, id string) bool {

@@ -32,3 +32,21 @@ func TestMTGCatalogClassification(t *testing.T) {
 		t.Fatalf("area=%q", got)
 	}
 }
+
+func TestProductDownloadLinkUsesOfficialHref(t *testing.T) {
+	want := "https://api.eumetsat.int/data/download/1.0.0/collections/EO%3AEUM%3ADAT%3A0678/products/W_XX-EUMETSAT-Darmstadt%2CIMG%2BSAT"
+	properties := map[string]any{
+		"links": map[string]any{
+			"data": []any{
+				map[string]any{
+					"href":      want,
+					"mediaType": "application/zip",
+				},
+			},
+		},
+	}
+	href, mediaType, ok := productDownloadLink(properties)
+	if !ok || href != want || mediaType != "application/zip" {
+		t.Fatalf("href=%q mediaType=%q ok=%v", href, mediaType, ok)
+	}
+}
