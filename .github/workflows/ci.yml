@@ -48,4 +48,5 @@ jobs:
         with:
           name: satellite-data-downloader-linux-amd64
           path: dist/
+          retention-days: 1
 
