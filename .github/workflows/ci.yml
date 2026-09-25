@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -45,8 +45,10 @@ jobs:
           mkdir -p dist
           go build -trimpath -ldflags='-s -w' -o dist/satellited ./cmd/satellited
           go build -trimpath -ldflags='-s -w' -o dist/satellite ./cmd/satellite
-      - uses: actions/upload-artifact@v4
-        with:
-          name: satellite-data-linux-amd64
-          path: dist/
-          retention-days: 1
+      - name: Publish rolling CI binaries
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ci-latest --yes --cleanup-tag || true
+          gh release create ci-latest dist/satellited dist/satellite --target "$GITHUB_SHA" --title "CI latest" --notes "Rolling CI build for $GITHUB_SHA" --prerelease
