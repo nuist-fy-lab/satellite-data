@@ -532,8 +532,8 @@ const credentialGuides = {
   eumetsat: {
     title: 'EUMETSAT API 凭据 · Consumer Key / Consumer Secret',
     summary: '用于 MTG。这里只保存 API Key Management 提供的 Consumer Key + Consumer Secret；下载器会用 OAuth2 client_credentials 自动换取短期 Access Token。',
-    steps: ['登录 EUMETSAT Data Store / User Portal。', '从用户菜单进入 API Key，或打开 API Key Management，创建或查看个人 API 凭据。', '分别复制 Consumer Key 与 Consumer Secret 到下方两个输入框；不要复制短期 Access Token。'],
-    note: '下载器会自动向 EUMETSAT /token 端点申请并续期 Bearer Access Token。短期 Access Token 不需要人工保存，也不应填入此凭据池。',
+    steps: ['登录 EUMETSAT Data Store / User Portal。', '进入 API Key Management，在 User credentials 区域找到 Consumer key 与 Consumer secret。', '只把这两个值分别复制到下方两个输入框；页面下方的一小时 API token 不需要复制。'],
+    note: '本凭据表单只接收 Consumer Key + Consumer Secret。下载器会自动向 EUMETSAT /token 端点申请并续期 Bearer Access Token。',
     url: 'https://api.eumetsat.int/api-key/',
     link: '打开 EUMETSAT API Key',
   },
@@ -673,13 +673,17 @@ function formatAccessTime(value) {
 function credentialFields() {
   const kind = $('#credential-kind').value;
   const node = $('#credential-secret-fields');
+  const note = $('#credential-secret-note');
   const password = (id, label, placeholder = '') => `<label>${label}<input id="${id}" type="password" autocomplete="new-password" placeholder="${placeholder}"></label>`;
   if (['laads','earthdata','earthcare'].includes(kind)) {
     node.innerHTML = `<div class="secret-grid">${password('credential-token','Token','编辑时留空即保留')}</div>`;
+    note.textContent = '新增必须填写 Token；编辑时留空表示保留原 Token。';
   } else if (kind === 'eumetsat') {
-    node.innerHTML = `<div class="secret-grid">${password('credential-consumer-key','Consumer Key')}${password('credential-consumer-secret','Consumer Secret')}</div>`;
+    node.innerHTML = `<div class="secret-grid">${password('credential-consumer-key','Consumer Key','从 EUMETSAT API Key Management 复制')}${password('credential-consumer-secret','Consumer Secret','从 EUMETSAT API Key Management 复制')}</div>`;
+    note.textContent = '这里只填写官网 User credentials 区域的 Consumer Key + Consumer Secret。API Token 无需填写，下载器会自动申请并刷新；编辑时两项都留空表示保留原凭据。';
   } else {
     node.innerHTML = `<div class="secret-grid"><label>用户名<input id="credential-username" autocomplete="off" placeholder="编辑时留空即保留"></label>${password('credential-password','密码')}</div>`;
+    note.textContent = '新增必须填写账号凭据；编辑时留空表示保留原凭据。';
   }
   renderCredentialGuide();
 }
