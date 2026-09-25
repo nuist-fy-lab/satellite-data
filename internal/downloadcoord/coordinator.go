@@ -32,7 +32,7 @@ func New(registry *provider.Registry, store *state.Store, client *downloader.Cli
 }
 
 func (c *Coordinator) Run(ctx context.Context) {
-	for _, providerID := range []string{"goes", "modis", "viirs", "mtg", "earthcare", "calipso", "cloudsat"} {
+	for _, providerID := range []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "earthcare", "calipso", "cloudsat"} {
 		providerID := providerID
 		c.wg.Add(1)
 		go func() {
@@ -54,7 +54,7 @@ func ProviderForSource(sourceID string) (string, bool) {
 	case "modis", "viirs", "mtg", "earthcare", "calipso", "cloudsat":
 		return sourceID, true
 	case "himawari8", "himawari9":
-		return "", false
+		return sourceID, true
 	default:
 		return "", false
 	}
@@ -189,7 +189,7 @@ func (c *Coordinator) refreshRequest(ctx context.Context, request state.Download
 
 func discoveryChunk(providerID string) time.Duration {
 	switch providerID {
-	case "goes":
+	case "goes", "himawari8", "himawari9":
 		return time.Hour
 	case "mtg":
 		return 3 * time.Hour

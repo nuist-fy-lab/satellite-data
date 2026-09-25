@@ -14,8 +14,8 @@ func TestProviderForSource(t *testing.T) {
 	if got, ok := ProviderForSource("viirs"); !ok || got != "viirs" {
 		t.Fatalf("viirs => %q ok=%v", got, ok)
 	}
-	if _, ok := ProviderForSource("himawari9"); ok {
-		t.Fatal("himawari9 should be paused")
+	if got, ok := ProviderForSource("himawari9"); !ok || got != "himawari9" {
+		t.Fatalf("himawari9 => %q ok=%v", got, ok)
 	}
 }
 

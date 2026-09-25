@@ -402,10 +402,6 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	providerID, ok := downloadcoord.ProviderForSource(payload.Source)
 	if !ok {
-		if payload.Source == "himawari8" || payload.Source == "himawari9" {
-			writeError(w, http.StatusConflict, errors.New("Himawari-8/9 downloads are temporarily paused on c2ln1"))
-			return
-		}
 		writeError(w, http.StatusBadRequest, errors.New("source does not have a downloader pipeline"))
 		return
 	}
