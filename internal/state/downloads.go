@@ -3,12 +3,14 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
+	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
 )
 
 const downloadSchema = `
@@ -48,24 +50,25 @@ ON download_request_tasks(downloader_task_id,request_id);
 `
 
 type DownloadRequest struct {
-	ID                 int64     `json:"id"`
-	SourceID           string    `json:"source_id"`
-	ProviderID         string    `json:"provider_id"`
-	CollectionID       string    `json:"collection_id"`
-	Start              time.Time `json:"start"`
-	End                time.Time `json:"end"`
-	Cursor             time.Time `json:"cursor"`
-	State              string    `json:"state"`
-	GranulesDiscovered int       `json:"granules_discovered"`
-	AssetsQueued       int       `json:"assets_queued"`
-	FilesDone          int       `json:"files_done"`
-	FilesFailed        int       `json:"files_failed"`
-	FilesWaitingAuth   int       `json:"files_waiting_auth"`
-	FailureCount       int       `json:"failure_count"`
-	LastError          string    `json:"last_error,omitempty"`
-	RequestedAt        time.Time `json:"requested_at"`
-	CompletedAt        time.Time `json:"completed_at,omitempty"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                 int64                    `json:"id"`
+	SourceID           string                   `json:"source_id"`
+	ProviderID         string                   `json:"provider_id"`
+	CollectionID       string                   `json:"collection_id"`
+	Selection          downloadfilter.Selection `json:"selection"`
+	Start              time.Time                `json:"start"`
+	End                time.Time                `json:"end"`
+	Cursor             time.Time                `json:"cursor"`
+	State              string                   `json:"state"`
+	GranulesDiscovered int                      `json:"granules_discovered"`
+	AssetsQueued       int                      `json:"assets_queued"`
+	FilesDone          int                      `json:"files_done"`
+	FilesFailed        int                      `json:"files_failed"`
+	FilesWaitingAuth   int                      `json:"files_waiting_auth"`
+	FailureCount       int                      `json:"failure_count"`
+	LastError          string                   `json:"last_error,omitempty"`
+	RequestedAt        time.Time                `json:"requested_at"`
+	CompletedAt        time.Time                `json:"completed_at,omitempty"`
+	UpdatedAt          time.Time                `json:"updated_at"`
 }
 
 type DownloaderTaskRef struct {
@@ -76,6 +79,30 @@ type DownloaderTaskRef struct {
 
 func initDownloadSchema(db *sql.DB) error {
 	_, err := db.Exec(downloadSchema)
+	if err != nil {
+		return err
+	}
+	rows, err := db.Query(`PRAGMA table_info(download_requests)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, dataType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		found = found || name == "selection_json"
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil || found {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE download_requests ADD COLUMN selection_json TEXT NOT NULL DEFAULT '{}'`)
 	return err
 }
 
@@ -89,6 +116,10 @@ func (s *Store) RecoverDownloadRequests(ctx context.Context) error {
 }
 
 func (s *Store) EnqueueDownloadRequest(ctx context.Context, sourceID, providerID, collectionID string, start, end time.Time) (DownloadRequest, error) {
+	return s.EnqueueSelectedDownloadRequest(ctx, sourceID, providerID, collectionID, start, end, downloadfilter.Selection{})
+}
+
+func (s *Store) EnqueueSelectedDownloadRequest(ctx context.Context, sourceID, providerID, collectionID string, start, end time.Time, selection downloadfilter.Selection) (DownloadRequest, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	providerID = strings.TrimSpace(providerID)
 	collectionID = strings.TrimSpace(collectionID)
@@ -98,12 +129,20 @@ func (s *Store) EnqueueDownloadRequest(ctx context.Context, sourceID, providerID
 	if start.IsZero() || end.IsZero() || !end.After(start) {
 		return DownloadRequest{}, errors.New("end must be after start")
 	}
+	selection, err := selection.Normalize(sourceID, collectionID)
+	if err != nil {
+		return DownloadRequest{}, err
+	}
+	encoded, err := json.Marshal(selection)
+	if err != nil {
+		return DownloadRequest{}, err
+	}
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO download_requests(
-		 source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,state,requested_at,updated_at)
-		VALUES(?,?,?,?,?,?,'pending',?,?)`,
-		sourceID, providerID, collectionID, formatTime(start), formatTime(end), formatTime(start), formatTime(now), formatTime(now))
+		 source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,'pending',?,?)`,
+		sourceID, providerID, collectionID, formatTime(start), formatTime(end), formatTime(start), string(encoded), formatTime(now), formatTime(now))
 	if err != nil {
 		return DownloadRequest{}, err
 	}
@@ -315,19 +354,22 @@ func (s *Store) UpdateDownloadTransferState(ctx context.Context, requestID int64
 const downloadRequestSelect = `
 SELECT id,source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,state,
        granules_discovered,assets_queued,files_done,files_failed,files_waiting_auth,
-       failure_count,last_error,requested_at,completed_at,updated_at
+       failure_count,last_error,requested_at,completed_at,updated_at,selection_json
 FROM download_requests`
 
 func scanDownloadRequest(scanner interface{ Scan(...any) error }) (DownloadRequest, error) {
 	var item DownloadRequest
-	var start, end, cursor, requested, completed, updated string
+	var start, end, cursor, requested, completed, updated, selectionJSON string
 	err := scanner.Scan(
 		&item.ID, &item.SourceID, &item.ProviderID, &item.CollectionID,
 		&start, &end, &cursor, &item.State, &item.GranulesDiscovered, &item.AssetsQueued,
 		&item.FilesDone, &item.FilesFailed, &item.FilesWaitingAuth, &item.FailureCount,
-		&item.LastError, &requested, &completed, &updated,
+		&item.LastError, &requested, &completed, &updated, &selectionJSON,
 	)
 	if err != nil {
+		return DownloadRequest{}, err
+	}
+	if err := json.Unmarshal([]byte(selectionJSON), &item.Selection); err != nil {
 		return DownloadRequest{}, err
 	}
 	item.Start = parseDownloadTime(start)

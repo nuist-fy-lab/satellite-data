@@ -38,6 +38,8 @@ func main() {
 		err = c.query(args[2:])
 	case "download create":
 		err = c.downloadCreate(args[2:])
+	case "download submit":
+		err = c.downloadSubmit(args[2:])
 	case "download list":
 		err = c.downloadList(args[2:])
 	case "download status":
@@ -55,10 +57,14 @@ func main() {
 }
 
 type downloadRequest struct {
-	ID                 int64     `json:"id"`
-	SourceID           string    `json:"source_id"`
-	ProviderID         string    `json:"provider_id"`
-	CollectionID       string    `json:"collection_id"`
+	ID           int64  `json:"id"`
+	SourceID     string `json:"source_id"`
+	ProviderID   string `json:"provider_id"`
+	CollectionID string `json:"collection_id"`
+	Selection    struct {
+		Band  int      `json:"band"`
+		Times []string `json:"times"`
+	} `json:"selection"`
 	Start              time.Time `json:"start"`
 	End                time.Time `json:"end"`
 	Cursor             time.Time `json:"cursor"`
@@ -69,6 +75,67 @@ type downloadRequest struct {
 	FilesFailed        int       `json:"files_failed"`
 	FilesWaitingAuth   int       `json:"files_waiting_auth"`
 	LastError          string    `json:"last_error,omitempty"`
+}
+
+type repeatedTimes []string
+
+func (r *repeatedTimes) String() string { return strings.Join(*r, ",") }
+func (r *repeatedTimes) Set(value string) error {
+	*r = append(*r, value)
+	return nil
+}
+
+// Submit uses inclusive UTC calendar dates, matching nsmc-lab job create.
+func (c *client) downloadSubmit(args []string) error {
+	set := flag.NewFlagSet("download submit", flag.ContinueOnError)
+	source := set.String("source", "", "source id")
+	collection := set.String("collection", "", "collection id")
+	start := set.String("start", "", "first UTC date YYYY-MM-DD (inclusive)")
+	end := set.String("end", "", "last UTC date YYYY-MM-DD (inclusive)")
+	band := set.Int("band", 0, "GOES ABI band (1-16)")
+	hourly := set.Bool("hourly", false, "select every UTC hour at HH:00")
+	jsonOutput := set.Bool("json", false, "print JSON")
+	var times repeatedTimes
+	set.Var(&times, "time", "UTC scan time HH:MM; repeatable")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if set.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	if *source == "" || *collection == "" {
+		return errors.New("--source and --collection are required")
+	}
+	first, err := time.Parse(time.DateOnly, *start)
+	if err != nil || first.Format(time.DateOnly) != *start {
+		return errors.New("--start must be YYYY-MM-DD")
+	}
+	last, err := time.Parse(time.DateOnly, *end)
+	if err != nil || last.Format(time.DateOnly) != *end || last.Before(first) {
+		return errors.New("--end must be YYYY-MM-DD and not before --start")
+	}
+	if *hourly && len(times) > 0 {
+		return errors.New("use --hourly or --time, not both")
+	}
+	if *hourly {
+		for hour := 0; hour < 24; hour++ {
+			times = append(times, fmt.Sprintf("%02d:00", hour))
+		}
+	}
+	var payload struct {
+		Download downloadRequest `json:"download"`
+	}
+	if err := c.post("/api/v1/downloads", map[string]any{
+		"source": *source, "collection": *collection, "start": *start,
+		"end": last.AddDate(0, 0, 1).Format(time.DateOnly), "band": *band, "times": times,
+	}, &payload); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(payload.Download)
+	}
+	printDownload(payload.Download)
+	return nil
 }
 
 func (c *client) downloadCreate(args []string) error {
@@ -166,9 +233,9 @@ func (c *client) downloadProviders() error {
 }
 
 func printDownload(item downloadRequest) {
-	fmt.Printf("#%-5d %-11s %-10s files=%d/%d failed=%d auth=%d cursor=%s %s\n",
+	fmt.Printf("#%-5d %-11s %-10s files=%d/%d failed=%d auth=%d cursor=%s band=%d times=%d %s\n",
 		item.ID, item.SourceID, item.State, item.FilesDone, item.AssetsQueued,
-		item.FilesFailed, item.FilesWaitingAuth, item.Cursor.Format(time.RFC3339), item.CollectionID)
+		item.FilesFailed, item.FilesWaitingAuth, item.Cursor.Format(time.RFC3339), item.Selection.Band, len(item.Selection.Times), item.CollectionID)
 	if item.LastError != "" {
 		fmt.Printf("  error: %s\n", item.LastError)
 	}
@@ -297,6 +364,7 @@ func usage() {
   satellite catalog list --source goes18
   satellite query list --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22T09:00:00Z --end 2026-09-22T10:00:00Z [--json]
   satellite download create --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22 --end 2026-09-23 [--json]
+  satellite download submit --source goes18 --collection goes18:ABI-L1b-RadF --start 2023-06-01 --end 2023-06-30 --band 6 --hourly [--json]
   satellite download list [--limit 50] [--json]
   satellite download status --id 1 [--json]
   satellite download providers

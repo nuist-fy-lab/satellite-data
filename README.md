@@ -75,9 +75,24 @@ satellite query list \
   --collection goes18:ABI-L1b-RadF \
   --start 2026-09-22T09:00:00Z \
   --end 2026-09-22T10:00:00Z
+satellite download submit \
+  --source goes18 --collection goes18:ABI-L1b-RadF \
+  --start 2023-06-01 --end 2023-06-30 --band 6 --hourly
+satellite download status --id 1 --json
 ```
 
 `SATELLITE_SERVER` selects the API endpoint. Provider credentials are never stored in the CLI.
+`download submit` takes inclusive UTC dates and supports repeatable `--time HH:MM` or `--hourly`.
+Times select the UTC minute of a granule's scan start; the hourly shortcut selects
+all 24 `HH:00` minutes each day. `--band` is available only for products with
+a configured band-to-filename profile. A request is persistent and may discover
+and transfer files asynchronously; inspect `download status` before treating it
+as complete. The existing `download create` command retains its exclusive end.
+The download page uses the same API with a normalized provider catalogue. Band
+profiles for GOES ABI and Himawari AHI full-disk live in
+`internal/downloadfilter/profiles.json`; other provider metadata
+comes from their existing catalogue adapters. Download transfer and archive
+promotion remain in the separate downloader service.
 
 ## Verification policy
 

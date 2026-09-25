@@ -119,8 +119,17 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 		return err
 	}
 	refs := make([]state.DownloaderTaskRef, 0, len(granules))
+	selected := 0
 	for _, granule := range granules {
+		if !request.Selection.MatchesScan(granule.Start) {
+			continue
+		}
+		matched := false
 		for _, asset := range granule.Assets {
+			if !request.Selection.MatchesAsset(request.SourceID, request.CollectionID, asset.Name) {
+				continue
+			}
+			matched = true
 			spec := downloader.TaskSpec{
 				SourceID:     request.ProviderID,
 				CollectionID: request.CollectionID,
@@ -140,8 +149,11 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 			}
 			refs = append(refs, state.DownloaderTaskRef{ID: task.ID, Key: task.Key, Filename: task.Name})
 		}
+		if matched {
+			selected++
+		}
 	}
-	return c.store.AdvanceDownloadRequest(ctx, request.ID, chunkEnd, len(granules), refs, !chunkEnd.Before(request.End))
+	return c.store.AdvanceDownloadRequest(ctx, request.ID, chunkEnd, selected, refs, !chunkEnd.Before(request.End))
 }
 
 func (c *Coordinator) monitorLoop(ctx context.Context) {

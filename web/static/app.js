@@ -23,7 +23,7 @@ const state = {
     payload: null,
     poll: 0,
   },
-	 downloads: {poll: 0},
+  downloads: {poll: 0, catalog: [], source: '', loading: 0},
   access: {user: null, credentials: [], proxies: [], accounts: []},
   displayZone: localStorage.getItem('satellite-data-zone') === 'BJT' ? 'BJT' : 'UTC',
 };
@@ -724,6 +724,118 @@ const downloadStates = {
   verifying: '校验中', waiting_auth: '等待授权', done: '已完成', failed: '失败',
 };
 
+const dlStages = [
+  ['satellite', '卫星', p => p.satellite],
+  ['instrument', '传感器', p => p.instrument],
+  ['level', '级别', p => p.level],
+  ['area', '区域', p => p.area_type || p.metadata?.area_type || ''],
+];
+
+function downloadSelect(id, values, placeholder) {
+  const node = $('#dl-' + id), old = node.value;
+  node.replaceChildren(new Option(placeholder, ''));
+  for (const value of values) node.add(new Option(value, value));
+  if (values.includes(old)) node.value = old;
+}
+
+function refreshDownloadFilters(changed = 'source') {
+  let items = state.downloads.catalog;
+  for (const [id, label, field] of dlStages) {
+    if (changed === 'source' || dlStages.some(([earlier]) => earlier === changed && dlStages.findIndex(([current]) => current === earlier) < dlStages.findIndex(([current]) => current === id))) {
+      downloadSelect(id, uniqueSorted(items.map(field)), '全部' + label);
+    }
+    const chosen = $('#dl-' + id).value;
+    if (chosen) items = items.filter(item => field(item) === chosen);
+  }
+  if (changed !== 'product' && changed !== 'band' && changed !== 'resolution') {
+    const node = $('#dl-product'), old = node.value;
+    node.replaceChildren(new Option('选择产品', ''));
+    for (const item of items) node.add(new Option(item.display_name || item.data_type || item.product_key, item.product_key));
+    if (items.some(item => item.product_key === old)) node.value = old;
+  }
+  const product = state.downloads.catalog.find(item => item.product_key === $('#dl-product').value);
+  const bands = product?.bands || [];
+  const band = $('#dl-band');
+  const resolutionNode = $('#dl-resolution');
+  if (changed !== 'resolution') {
+    const values = uniqueSorted(bands.map(item => item.resolution).concat(product?.resolution || []));
+    downloadSelect('resolution', values, values.length ? '全部分辨率' : '未标注分辨率');
+    if (!bands.length && values.length === 1) resolutionNode.value = values[0];
+    if (changed === 'band' && Number(band.value)) {
+      resolutionNode.value = bands.find(item => item.number === Number(band.value))?.resolution || '';
+    }
+  }
+  if (changed !== 'band') {
+    const old = band.value;
+    band.replaceChildren(new Option('全部波段', '0'));
+    const eligible = bands.filter(item => !resolutionNode.value || item.resolution === resolutionNode.value);
+    for (const item of eligible) band.add(new Option(`C${String(item.number).padStart(2, '0')} · ${item.wavelength}`, String(item.number)));
+    band.value = eligible.some(item => String(item.number) === old) ? old : '0';
+  }
+  band.disabled = bands.length === 0;
+}
+
+async function loadDownloadCatalog() {
+  const source = $('#dl-source').value;
+  const ticket = ++state.downloads.loading;
+  state.downloads.catalog = [];
+  $('#dl-submit-status').textContent = '';
+  refreshDownloadFilters();
+  if (!source) return;
+  try {
+    const catalog = await json('/api/v1/downloads/catalog?source=' + encodeURIComponent(source));
+    if (ticket !== state.downloads.loading) return;
+    state.downloads.catalog = catalog.products || [];
+    state.downloads.source = source;
+    refreshDownloadFilters();
+  } catch (error) {
+    if (ticket === state.downloads.loading) $('#dl-submit-status').textContent = '产品目录读取失败：' + error.message;
+  }
+}
+
+function initializeDownloadSubmit() {
+  const node = $('#dl-source'), old = node.value;
+  node.replaceChildren(new Option('选择数据源', ''));
+  for (const source of state.sources.filter(item => item.capabilities?.includes('download'))) node.add(new Option(source.name, source.id));
+  if ([...node.options].some(option => option.value === old)) node.value = old;
+  if (node.value && node.value !== state.downloads.source) loadDownloadCatalog();
+}
+
+function downloadTimes() {
+  const mode = $('#dl-time-mode').value;
+  if (mode === 'all') return [];
+  if (mode === 'hourly') return Array.from({length: 24}, (_, hour) => `${String(hour).padStart(2, '0')}:00`);
+  if (mode === 'synoptic') return ['00:00', '06:00', '12:00', '18:00'];
+  const times = $('#dl-custom').value.split(/[\s,，;；]+/).filter(Boolean);
+  if (!times.length || times.some(value => !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value))) throw new Error('自定义时次须为 HH:MM，至少填一个');
+  return [...new Set(times)].sort();
+}
+
+async function submitDownload(event) {
+  event.preventDefault();
+  const status = $('#dl-submit-status'), button = $('#dl-submit');
+  const product = state.downloads.catalog.find(item => item.product_key === $('#dl-product').value);
+  if (!product || product.source_id !== $('#dl-source').value) { status.textContent = '请选择产品'; return; }
+  const start = $('#dl-start').value, end = $('#dl-end').value;
+  if (end < start) { status.textContent = '结束日期不能早于开始日期'; return; }
+  let times;
+  try { times = downloadTimes(); } catch (error) { status.textContent = error.message; return; }
+  const nextDay = new Date(end + 'T00:00:00Z');
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+  button.disabled = true;
+  status.textContent = '正在提交…';
+  try {
+    const payload = await json('/api/v1/downloads', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source: product.source_id, collection: product.product_key, start,
+        end: nextDay.toISOString().slice(0, 10), band: Number($('#dl-band').value) || 0, times}),
+    });
+    status.textContent = '已提交 #' + payload.download.id;
+    loadDownloads(true);
+  } catch (error) { status.textContent = '提交失败：' + error.message; }
+  finally { button.disabled = false; }
+}
+
 function downloadRate(value) {
   const rate = Math.max(0, Number(value) || 0);
   if (rate < 1024) return Math.round(rate) + ' B/s';
@@ -752,7 +864,9 @@ async function loadDownloads(schedule = true) {
   $('#download-requests').innerHTML = items.map(item => '<div class="download-request">' +
     '<strong>#' + esc(item.id) + ' · ' + esc(item.collection_id) + '</strong>' +
     '<span>' + esc(downloadStates[item.state] || item.state) + ' · ' + esc(item.files_done) + '/' + esc(item.assets_queued) + ' 文件</span>' +
-    '<span>' + esc(String(item.start).slice(0, 16)) + ' - ' + esc(String(item.end).slice(0, 16)) + ' UTC</span>' +
+    '<span>' + esc(String(item.start).slice(0, 16)) + ' - ' + esc(String(item.end).slice(0, 16)) + ' UTC · ' +
+    esc(item.selection?.band ? `C${String(item.selection.band).padStart(2, '0')}` : '全波段') + ' · ' +
+    esc(item.selection?.times?.length ? item.selection.times.length + ' 时次/天' : '全部时次') + '</span>' +
     (item.last_error ? '<small title="' + esc(item.last_error) + '">' + esc(item.last_error) + '</small>' : '') +
     '</div>').join('') || '<div class="pool-empty">暂无下载任务</div>';
   if (schedule && $('#downloads-view').classList.contains('active')) {
@@ -1193,6 +1307,13 @@ function bind() {
   $('#refresh-sources').addEventListener('click', loadSources);
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
   $('#refresh-downloads').addEventListener('click', () => loadDownloads(true));
+  $('#dl-source').addEventListener('change', loadDownloadCatalog);
+  for (const [id] of dlStages) $('#dl-' + id).addEventListener('change', () => refreshDownloadFilters(id));
+  $('#dl-product').addEventListener('change', () => refreshDownloadFilters('product'));
+  $('#dl-band').addEventListener('change', () => refreshDownloadFilters('band'));
+  $('#dl-resolution').addEventListener('change', () => refreshDownloadFilters('resolution'));
+  $('#dl-time-mode').addEventListener('change', () => $('#dl-custom-field').classList.toggle('hidden', $('#dl-time-mode').value !== 'custom'));
+  $('#download-submit-form').addEventListener('submit', submitDownload);
   $('#monitor-window-tabs').addEventListener('click', event => {
     const button = event.target.closest('[data-monitor-window]');
     if (!button) return;
@@ -1246,6 +1367,7 @@ async function boot() {
   bind();
   await health();
   await loadSources();
+  initializeDownloadSubmit();
 }
 
 boot();

@@ -115,6 +115,24 @@
 
     <section class="view" id="downloads-view">
       <header class="simple-header"><div><div class="brand">下载任务</div><div class="subbrand">队列、速度、重试和归档状态</div></div><button id="refresh-downloads" type="button">刷新</button></header>
+      <section class="download-section">
+        <h2>提交下载</h2>
+        <form id="download-submit-form" class="download-submit-form">
+          <label>数据源<select id="dl-source" required></select></label>
+          <label>卫星<select id="dl-satellite"></select></label>
+          <label>传感器<select id="dl-instrument"></select></label>
+          <label>L 级别<select id="dl-level"></select></label>
+          <label>区域<select id="dl-area"></select></label>
+          <label>产品<select id="dl-product" required></select></label>
+          <label>分辨率<select id="dl-resolution"></select></label>
+          <label>波段<select id="dl-band"></select></label>
+          <label>开始日期（UTC）<input id="dl-start" type="date" required></label>
+          <label>结束日期（UTC，含当天）<input id="dl-end" type="date" required></label>
+          <label>时次（UTC）<select id="dl-time-mode"><option value="all">全部时次</option><option value="hourly">每小时整点</option><option value="synoptic">00 / 06 / 12 / 18</option><option value="custom">自定义</option></select></label>
+          <label id="dl-custom-field" class="hidden">自定义时次（HH:MM）<input id="dl-custom" placeholder="00:00, 12:00"></label>
+          <div class="download-submit-actions"><button id="dl-submit" type="submit">提交下载</button><span id="dl-submit-status" role="status"></span></div>
+        </form>
+      </section>
       <div id="downloads-error" class="form-error"></div>
       <section class="download-section"><h2>Provider 传输</h2><div id="download-providers" class="download-list"></div></section>
       <section class="download-section"><h2>最近请求</h2><div id="download-requests" class="download-list"></div></section>

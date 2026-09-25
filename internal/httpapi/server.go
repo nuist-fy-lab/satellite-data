@@ -13,6 +13,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
+	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
 	"github.com/nuist-fy-lab/satellite-data/internal/linkmon"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
@@ -51,6 +52,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/search", s.search)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
+	mux.HandleFunc("GET /api/v1/downloads/catalog", s.downloadCatalog)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.download)
 	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
 	mux.HandleFunc("GET /api/v1/monitor/links", s.linkMonitor)
@@ -370,10 +372,12 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	var payload struct {
-		Source     string `json:"source"`
-		Collection string `json:"collection"`
-		Start      string `json:"start"`
-		End        string `json:"end"`
+		Source     string   `json:"source"`
+		Collection string   `json:"collection"`
+		Start      string   `json:"start"`
+		End        string   `json:"end"`
+		Band       int      `json:"band"`
+		Times      []string `json:"times"`
 	}
 	if err := decoder.Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid download request JSON"))
@@ -405,7 +409,12 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("source does not have a downloader pipeline"))
 		return
 	}
-	request, err := s.store.EnqueueDownloadRequest(r.Context(), payload.Source, providerID, payload.Collection, start, end)
+	selection, err := (downloadfilter.Selection{Band: payload.Band, Times: payload.Times}).Normalize(payload.Source, payload.Collection)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	request, err := s.store.EnqueueSelectedDownloadRequest(r.Context(), payload.Source, providerID, payload.Collection, start, end, selection)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -426,6 +435,34 @@ func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"downloads": items})
+}
+
+// Catalog keeps selection metadata in the control plane; the downloader sees
+// only concrete assets and never needs to know about satellites or bands.
+func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	if _, err := s.registry.Provider(source); err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	products, err := s.store.Products(r.Context(), source)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	type option struct {
+		model.Product
+		Bands []downloadfilter.Band `json:"bands"`
+	}
+	items := make([]option, 0, len(products))
+	for _, product := range products {
+		item := option{Product: product, Bands: []downloadfilter.Band{}}
+		if profile := downloadfilter.ForProduct(product.SourceID, product.ProductKey); profile != nil {
+			item.Bands = profile.Bands
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"products": items})
 }
 
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
