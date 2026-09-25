@@ -31,8 +31,8 @@ satellite-data discovery
 
 Every provider has its own worker pools and retry clock. A slow or broken
 provider cannot consume another provider's transfer or verification slots.
-Himawari-8/9 are intentionally disabled for now because the current c2ln1 ->
-NOAA S3 path is unstable.
+Himawari-8/9 use independent single-transfer/single-verifier pools by default
+so their segmented AHI full-disk objects cannot starve other providers.
 
 Network transfer and integrity verification are separate stages. A completed
 network transfer is durably checkpointed as `verifying`, then the network worker
@@ -52,7 +52,7 @@ Discovery may be public even when science-file transfer is not.
 | EarthCARE | ESA MAAP bearer access token |
 | CALIPSO | NASA Earthdata bearer token |
 | CloudSat | CloudSat DPC THREDDS username + password |
-| Himawari-8/9 | anonymous, currently disabled |
+| Himawari-8/9 | anonymous |
 
 Credentials are read only by the downloader process. They are never accepted in
 task JSON, stored in SQLite, or returned by status APIs.

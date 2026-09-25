@@ -32,8 +32,8 @@ func Load() Config {
 	state := filepath.Join(home, ".local", "state", "satellite-data-downloader")
 	providers := []Provider{
 		provider("goes", true, 4, 2, 3*time.Minute, ""),
-		provider("himawari8", false, 1, 1, 3*time.Minute, ""),
-		provider("himawari9", false, 1, 1, 3*time.Minute, ""),
+		provider("himawari8", true, 1, 1, 3*time.Minute, ""),
+		provider("himawari9", true, 1, 1, 3*time.Minute, ""),
 		provider("modis", true, 4, 2, 5*time.Minute, "laads"),
 		provider("viirs", true, 4, 2, 5*time.Minute, "laads"),
 		provider("mtg", true, 2, 1, 10*time.Minute, "eumetsat"),
