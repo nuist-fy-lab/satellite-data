@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -44,9 +44,11 @@ jobs:
         run: |
           mkdir -p dist
           go build -trimpath -ldflags='-s -w' -o dist/satellite-data-downloader ./cmd/satellite-data-downloader
-      - uses: actions/upload-artifact@v4
-        with:
-          name: satellite-data-downloader-linux-amd64
-          path: dist/
-          retention-days: 1
+      - name: Publish rolling CI binary
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ci-latest --yes --cleanup-tag || true
+          gh release create ci-latest dist/satellite-data-downloader --target "$GITHUB_SHA" --title "CI latest" --notes "Rolling CI build for $GITHUB_SHA" --prerelease
 

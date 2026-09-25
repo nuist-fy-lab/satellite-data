@@ -31,7 +31,7 @@ func Build(kind string, secret Secret, client *http.Client) (Authorizer, error) 
 	case "earthdata":
 		return bearer(secret.Token, "NASA Earthdata bearer token"), nil
 	case "earthcare":
-		return bearer(secret.Token, "ESA MAAP access token"), nil
+		return &earthcareToken{client: client, offline: strings.TrimSpace(secret.Token)}, nil
 	case "cloudsat":
 		return &basic{username: strings.TrimSpace(secret.Username), password: secret.Password}, nil
 	case "eumetsat":
@@ -60,7 +60,7 @@ func NewRegistry(client *http.Client) *Registry {
 	return &Registry{items: map[string]Authorizer{
 		"laads":     bearer(os.Getenv("SATDOWN_LAADS_TOKEN"), "LAADS download token"),
 		"earthdata": bearer(os.Getenv("SATDOWN_EARTHDATA_TOKEN"), "NASA Earthdata bearer token"),
-		"earthcare": bearer(os.Getenv("SATDOWN_EARTHCARE_TOKEN"), "ESA MAAP access token"),
+		"earthcare": &earthcareToken{client: client, offline: strings.TrimSpace(os.Getenv("SATDOWN_EARTHCARE_TOKEN"))},
 		"cloudsat":  &basic{username: strings.TrimSpace(os.Getenv("SATDOWN_CLOUDSAT_USERNAME")), password: os.Getenv("SATDOWN_CLOUDSAT_PASSWORD")},
 		"eumetsat": &eumetsatToken{
 			client: client,
@@ -97,9 +97,87 @@ func (r *Registry) Configured(ref string) bool {
 		return value.username != "" && value.password != ""
 	case *eumetsatToken:
 		return value.key != "" && value.secret != ""
+	case *earthcareToken:
+		return value.offline != ""
 	default:
 		return false
 	}
+}
+
+const (
+	earthcareTokenEndpoint = "https://iam.maap.eo.esa.int/realms/esa-maap/protocol/openid-connect/token"
+	earthcareClientID      = "offline-token"
+	earthcareClientSecret  = "p1eL7uonXs6MDxtGbgKdPVRAmnGxHpVE"
+)
+
+type earthcareToken struct {
+	client  *http.Client
+	offline string
+
+	mu        sync.Mutex
+	access    string
+	expiresAt time.Time
+}
+
+func (e *earthcareToken) Authorize(ctx context.Context, req *http.Request) error {
+	token, err := e.token(ctx)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return nil
+}
+
+func (e *earthcareToken) token(ctx context.Context) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.offline == "" {
+		return "", &CredentialError{Detail: "ESA MAAP offline token is not configured"}
+	}
+	if e.access != "" && time.Until(e.expiresAt) > time.Minute {
+		return e.access, nil
+	}
+	form := url.Values{
+		"client_id":     {earthcareClientID},
+		"client_secret": {earthcareClientSecret},
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {e.offline},
+		"scope":         {"offline_access openid"},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, earthcareTokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	client := e.client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusBadRequest {
+			return "", &CredentialError{Detail: "ESA MAAP offline token was rejected"}
+		}
+		return "", errors.New("ESA MAAP token exchange failed: " + resp.Status)
+	}
+	var payload struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int64  `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	if payload.AccessToken == "" || payload.ExpiresIn <= 0 {
+		return "", errors.New("ESA MAAP token exchange response is incomplete")
+	}
+	e.access = payload.AccessToken
+	e.expiresAt = time.Now().Add(time.Duration(payload.ExpiresIn) * time.Second)
+	return e.access, nil
 }
 
 type bearerAuth struct {
