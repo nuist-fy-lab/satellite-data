@@ -51,31 +51,4 @@ jobs:
             fi
           done < "$artifacts_file"
 
-      - name: Keep only the most recently used Actions cache
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-
-          caches_file="$(mktemp)"
-          trap 'rm -f "$caches_file"' EXIT
-
-          gh api --paginate "/repos/${REPO}/actions/caches?per_page=100" \
-            --jq '.actions_caches[] | [(.id | tostring), (.last_accessed_at // ""), .key] | @tsv' \
-            > "$caches_file"
-
-          [[ -s "$caches_file" ]] || exit 0
-
-          latest_cache_id="$(
-            sort -t $'\t' -k2,2r "$caches_file" | head -n 1 | cut -f 1
-          )"
-
-          while IFS=$'\t' read -r id last_accessed key; do
-            [[ -n "$id" ]] || continue
-            if [[ "$id" != "$latest_cache_id" ]]; then
-              gh api --method DELETE "/repos/${REPO}/actions/caches/${id}"
-            fi
-          done < "$caches_file"
 
