@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,10 +24,24 @@ import (
 var contentRangePattern = regexp.MustCompile(`(?i)^bytes\s+(\d+)-(\d+)/(\d+|\*)$`)
 
 type HTTPError struct {
-	Status int
+	Status     int
+	RetryAfter time.Duration
 }
 
 func (e *HTTPError) Error() string { return fmt.Sprintf("download returned HTTP %d", e.Status) }
+
+func parseRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		return min(time.Duration(seconds)*time.Second, time.Hour)
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(at); delay > 0 {
+			return min(delay, time.Hour)
+		}
+	}
+	return 0
+}
 
 type IntegrityError struct {
 	Detail string
@@ -60,7 +75,22 @@ func NewHTTP(timeoutClient *http.Client) *HTTP {
 	return &HTTP{client: timeoutClient}
 }
 
-func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot string, authorizer auth.Authorizer) (DownloadResult, error) {
+type partIdentity struct {
+	URLHash string `json:"url_hash"`
+	ETag    string `json:"etag"`
+	Size    int64  `json:"size"`
+}
+
+func strongETag(value string) bool {
+	return strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) && len(value) >= 2
+}
+
+func urlHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot string, authorizer auth.Authorizer, onProgress ...func(int64)) (DownloadResult, error) {
 	name, err := safeName(task.Name)
 	if err != nil {
 		return DownloadResult{}, err
@@ -73,6 +103,7 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 		return DownloadResult{}, err
 	}
 	partPath := filepath.Join(dir, name+".part")
+	metaPath := partPath + ".json"
 	readyPath := filepath.Join(dir, name+".downloaded")
 
 	if info, err := os.Stat(readyPath); err == nil {
@@ -93,35 +124,67 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 		return DownloadResult{}, err
 	}
 	if task.Size > 0 && resumeFrom > task.Size {
-		if err := os.Remove(partPath); err != nil {
+		if err := discardPart(partPath, metaPath); err != nil {
 			return DownloadResult{}, err
 		}
 		resumeFrom = 0
 	}
+	var identity partIdentity
+	if resumeFrom > 0 {
+		data, err := os.ReadFile(metaPath)
+		if err != nil || json.Unmarshal(data, &identity) != nil || !strongETag(identity.ETag) ||
+			identity.URLHash != urlHash(task.URL) || (task.Size > 0 && identity.Size != task.Size) ||
+			(strongETag(task.ETag) && identity.ETag != task.ETag) {
+			if err := discardPart(partPath, metaPath); err != nil {
+				return DownloadResult{}, err
+			}
+			resumeFrom = 0
+		}
+	}
 
-	resp, err := h.request(ctx, task.URL, resumeFrom, authorizer)
+	resp, err := h.request(ctx, task.URL, resumeFrom, identity.ETag, authorizer)
 	if err != nil {
 		return DownloadResult{}, err
 	}
-	if resumeFrom > 0 && resp.StatusCode == http.StatusOK {
+	if resumeFrom > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		_ = resp.Body.Close()
+		if err := discardPart(partPath, metaPath); err != nil {
+			return DownloadResult{}, err
+		}
 		resumeFrom = 0
-		resp, err = h.request(ctx, task.URL, 0, authorizer)
+		resp, err = h.request(ctx, task.URL, 0, "", authorizer)
 		if err != nil {
 			return DownloadResult{}, err
 		}
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return DownloadResult{}, &HTTPError{Status: resp.StatusCode}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return DownloadResult{}, &HTTPError{Status: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
+	}
+	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return DownloadResult{}, &IntegrityError{Detail: "origin returned encoded content for a byte-range download"}
+	}
+	if strongETag(task.ETag) && resp.Header.Get("ETag") != "" && resp.Header.Get("ETag") != task.ETag {
+		return DownloadResult{}, &IntegrityError{Detail: "origin ETag does not match catalog"}
 	}
 
 	remoteSize := task.Size
 	appendMode := resumeFrom > 0 && resp.StatusCode == http.StatusPartialContent
+	var rangeEnd int64
 	if resp.StatusCode == http.StatusPartialContent {
-		start, _, total, ok := parseContentRange(resp.Header.Get("Content-Range"))
-		if !ok || start != resumeFrom {
+		start, end, total, ok := parseContentRange(resp.Header.Get("Content-Range"))
+		if !ok || start != resumeFrom || (resp.ContentLength >= 0 && resp.ContentLength != end-start+1) {
 			return DownloadResult{}, &IntegrityError{Detail: "origin returned a mismatched Content-Range"}
+		}
+		if appendMode && resp.Header.Get("ETag") != identity.ETag {
+			if err := discardPart(partPath, metaPath); err != nil {
+				return DownloadResult{}, err
+			}
+			return DownloadResult{}, &IntegrityError{Detail: "origin changed ETag while resuming"}
+		}
+		rangeEnd = end
+		if total == 0 && task.Size == 0 {
+			return DownloadResult{}, &IntegrityError{Detail: "origin did not specify complete object length"}
 		}
 		if total > 0 {
 			if remoteSize > 0 && total != remoteSize {
@@ -130,7 +193,26 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 			remoteSize = total
 		}
 	} else if resp.ContentLength >= 0 {
+		if remoteSize > 0 && remoteSize != resp.ContentLength {
+			return DownloadResult{}, &IntegrityError{Detail: "origin Content-Length does not match catalog"}
+		}
 		remoteSize = resp.ContentLength
+	}
+	if !appendMode {
+		if err := discardPart(partPath, metaPath); err != nil {
+			return DownloadResult{}, err
+		}
+		identity = partIdentity{URLHash: urlHash(task.URL), ETag: resp.Header.Get("ETag"), Size: remoteSize}
+		data, err := json.Marshal(identity)
+		if err != nil {
+			return DownloadResult{}, err
+		}
+		if err := os.WriteFile(metaPath+".tmp", data, 0o600); err != nil {
+			return DownloadResult{}, err
+		}
+		if err := os.Rename(metaPath+".tmp", metaPath); err != nil {
+			return DownloadResult{}, err
+		}
 	}
 
 	flags := os.O_CREATE | os.O_WRONLY
@@ -143,7 +225,11 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 	if err != nil {
 		return DownloadResult{}, err
 	}
-	_, copyErr := io.CopyBuffer(handle, resp.Body, make([]byte, 1<<20))
+	var destination io.Writer = handle
+	if len(onProgress) > 0 && onProgress[0] != nil {
+		destination = progressWriter{Writer: handle, report: onProgress[0]}
+	}
+	_, copyErr := io.CopyBuffer(destination, resp.Body, make([]byte, 1<<20))
 	syncErr := handle.Sync()
 	closeErr := handle.Close()
 	if copyErr != nil {
@@ -162,21 +248,48 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 	if remoteSize > 0 && info.Size() != remoteSize {
 		return DownloadResult{}, &IntegrityError{Detail: fmt.Sprintf("downloaded size %d does not match expected size %d", info.Size(), remoteSize)}
 	}
+	if resp.StatusCode == http.StatusPartialContent && info.Size() != rangeEnd+1 {
+		return DownloadResult{}, &IntegrityError{Detail: "partial response did not cover the complete requested range"}
+	}
 	if err := os.Rename(partPath, readyPath); err != nil {
 		return DownloadResult{}, err
 	}
+	_ = os.Remove(metaPath)
 	_ = syncDir(dir)
 	return DownloadResult{Path: readyPath, Size: info.Size()}, nil
 }
 
-func (h *HTTP) request(ctx context.Context, locator string, resumeFrom int64, authorizer auth.Authorizer) (*http.Response, error) {
+type progressWriter struct {
+	io.Writer
+	report func(int64)
+}
+
+func (w progressWriter) Write(data []byte) (int, error) {
+	n, err := w.Writer.Write(data)
+	w.report(int64(n))
+	return n, err
+}
+
+func discardPart(partPath, metaPath string) error {
+	if err := os.Remove(partPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Remove(metaPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (h *HTTP) request(ctx context.Context, locator string, resumeFrom int64, etag string, authorizer auth.Authorizer) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, locator, nil)
 	if err != nil {
 		return nil, err
 	}
 	if resumeFrom > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeFrom))
+		req.Header.Set("If-Range", etag)
 	}
+	req.Header.Set("Accept-Encoding", "identity")
 	if authorizer != nil {
 		if err := authorizer.Authorize(ctx, req); err != nil {
 			return nil, err

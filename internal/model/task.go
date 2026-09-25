@@ -39,6 +39,9 @@ type ProviderStatus struct {
 	Enabled             bool           `json:"enabled"`
 	TransferConcurrency int            `json:"transfer_concurrency"`
 	VerifyConcurrency   int            `json:"verify_concurrency"`
+	AdaptiveConcurrency int            `json:"adaptive_concurrency"`
+	ActiveTransfers     int            `json:"active_transfers"`
+	BytesPerSecond      float64        `json:"bytes_per_second"`
 	AuthRef             string         `json:"auth_ref,omitempty"`
 	AuthConfigured      bool           `json:"auth_configured"`
 	States              map[string]int `json:"states"`

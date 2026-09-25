@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,8 +28,60 @@ type Runtime struct {
 	store    *store.Store
 	access   *access.Manager
 	provider map[string]config.Provider
+	flows    map[string]*providerFlow
 	events   *archiveevent.Notifier
 	wg       sync.WaitGroup
+}
+
+type providerFlow struct {
+	sync.Mutex
+	limit, active, successes int
+	bytes, lastBytes         int64
+	lastSample               time.Time
+	rate                     float64
+}
+
+func (f *providerFlow) start() bool {
+	f.Lock()
+	defer f.Unlock()
+	if f.active >= f.limit {
+		return false
+	}
+	f.active++
+	return true
+}
+
+func (f *providerFlow) finish(success, congested bool, ceiling int) {
+	f.Lock()
+	defer f.Unlock()
+	f.active--
+	if congested {
+		f.limit = max(1, f.limit/2)
+		f.successes = 0
+	} else if success && f.limit < ceiling {
+		f.successes++
+		if f.successes >= 8 {
+			f.limit++
+			f.successes = 0
+		}
+	}
+}
+
+func (f *providerFlow) addBytes(n int64) {
+	f.Lock()
+	f.bytes += n
+	f.Unlock()
+}
+
+func (f *providerFlow) snapshot() (limit, active int, rate float64) {
+	f.Lock()
+	defer f.Unlock()
+	now := time.Now()
+	if !f.lastSample.IsZero() && now.Sub(f.lastSample) >= time.Second {
+		f.rate = float64(f.bytes-f.lastBytes) / now.Sub(f.lastSample).Seconds()
+		f.lastSample, f.lastBytes = now, f.bytes
+	}
+	return f.limit, f.active, f.rate
 }
 
 func New(cfg config.Config, state *store.Store, accessManager *access.Manager) (*Runtime, error) {
@@ -35,6 +89,7 @@ func New(cfg config.Config, state *store.Store, accessManager *access.Manager) (
 		return nil, errors.New("pipeline requires store and access manager")
 	}
 	providers := make(map[string]config.Provider, len(cfg.Providers))
+	flows := make(map[string]*providerFlow, len(cfg.Providers))
 	for _, item := range cfg.Providers {
 		if strings.TrimSpace(item.SourceID) == "" {
 			return nil, errors.New("provider source id is empty")
@@ -43,9 +98,10 @@ func New(cfg config.Config, state *store.Store, accessManager *access.Manager) (
 			return nil, fmt.Errorf("duplicate provider %q", item.SourceID)
 		}
 		providers[item.SourceID] = item
+		flows[item.SourceID] = &providerFlow{limit: max(1, item.TransferConcurrency), lastSample: time.Now()}
 	}
 	return &Runtime{
-		cfg: cfg, store: state, access: accessManager, provider: providers,
+		cfg: cfg, store: state, access: accessManager, provider: providers, flows: flows,
 		events: archiveevent.New(cfg.ArchiveEventSocket),
 	}, nil
 }
@@ -90,9 +146,11 @@ func (r *Runtime) ProviderStatuses(ctx context.Context) ([]model.ProviderStatus,
 		if err != nil {
 			return nil, err
 		}
+		limit, active, rate := r.flows[item.SourceID].snapshot()
 		out = append(out, model.ProviderStatus{
 			SourceID: item.SourceID, Enabled: item.Enabled,
 			TransferConcurrency: item.TransferConcurrency, VerifyConcurrency: item.VerifyConcurrency,
+			AdaptiveConcurrency: limit, ActiveTransfers: active, BytesPerSecond: rate,
 			AuthRef: item.AuthRef, AuthConfigured: r.access.Configured(ctx, item.SourceID, item.AuthRef), States: counts,
 		})
 	}
@@ -129,6 +187,7 @@ func (r *Runtime) ValidateTask(spec model.TaskSpec) error {
 func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, worker int) {
 	poll := time.NewTimer(0)
 	defer poll.Stop()
+	flow := r.flows[provider.SourceID]
 	for {
 		select {
 		case <-ctx.Done():
@@ -140,18 +199,25 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 				slog.Warn("release provider auth wait", "provider", provider.SourceID, "worker", worker, "error", err)
 			}
 		}
+		if !flow.start() {
+			poll.Reset(150 * time.Millisecond)
+			continue
+		}
 		task, ok, err := r.store.ClaimTransfer(ctx, provider.SourceID)
 		if err != nil {
+			flow.finish(false, false, provider.TransferConcurrency)
 			slog.Warn("claim provider transfer", "provider", provider.SourceID, "worker", worker, "error", err)
 			poll.Reset(500 * time.Millisecond)
 			continue
 		}
 		if !ok {
+			flow.finish(false, false, provider.TransferConcurrency)
 			poll.Reset(150 * time.Millisecond)
 			continue
 		}
 		route, err := r.access.Resolve(ctx, provider.SourceID, provider.AuthRef, provider.RequestTimeout)
 		if err != nil {
+			flow.finish(false, false, provider.TransferConcurrency)
 			if errors.Is(err, access.ErrNoRoute) {
 				_ = r.store.WaitForAuth(context.WithoutCancel(ctx), task.ID, fmt.Errorf("%s access route is not configured", provider.SourceID))
 			} else {
@@ -161,13 +227,15 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 			continue
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, provider.RequestTimeout)
-		result, err := route.Transfer.Download(requestCtx, task, r.cfg.DownloadRoot, route.Authorizer)
+		result, err := route.Transfer.Download(requestCtx, task, r.cfg.DownloadRoot, route.Authorizer, flow.addBytes)
 		cancel()
 		if err != nil {
+			flow.finish(false, isCongestion(err), provider.TransferConcurrency)
 			r.handleTransferError(ctx, provider, task, route, err)
 			poll.Reset(25 * time.Millisecond)
 			continue
 		}
+		flow.finish(true, false, provider.TransferConcurrency)
 		r.access.MarkSuccess(context.WithoutCancel(ctx), route)
 		if err := r.store.MarkDownloaded(context.WithoutCancel(ctx), task.ID, result.Path, result.Size); err != nil {
 			slog.Warn("checkpoint provider transfer", "provider", provider.SourceID, "task", task.ID, "error", err)
@@ -205,12 +273,11 @@ func (r *Runtime) handleTransferError(ctx context.Context, provider config.Provi
 	if route.ProxyID != nil {
 		r.access.MarkProxyFailure(context.WithoutCancel(ctx), route, cause.Error())
 	}
-	var integrity *transfer.IntegrityError
-	if errors.As(cause, &integrity) {
-		_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, cause, retryDelay(task.Attempts))
-		return
+	delay := retryDelay(task.Attempts)
+	if httpErr != nil && httpErr.RetryAfter > delay {
+		delay = httpErr.RetryAfter
 	}
-	_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, cause, retryDelay(task.Attempts))
+	_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, cause, delay)
 }
 
 func isCredentialFailure(err error) bool {
@@ -270,9 +337,23 @@ func retryDelay(attempt int) time.Duration {
 	seconds := 5 * math.Pow(2, float64(exponent))
 	delay := time.Duration(seconds) * time.Second
 	if delay > 10*time.Minute {
-		return 10 * time.Minute
+		delay = 10 * time.Minute
 	}
-	return delay
+	return delay + time.Duration(rand.Int64N(int64(delay/2)+1))
+}
+
+func isCongestion(err error) bool {
+	var httpErr *transfer.HTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.Status {
+		case http.StatusRequestTimeout, http.StatusTooManyRequests,
+			http.StatusInternalServerError, http.StatusBadGateway,
+			http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func allowedHost(sourceID, host string) bool {

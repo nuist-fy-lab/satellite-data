@@ -1,6 +1,11 @@
 package pipeline
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
+)
 
 func TestAllowedHostAcceptsNativeLAADS(t *testing.T) {
 	for _, source := range []string{"modis", "viirs"} {
@@ -13,5 +18,44 @@ func TestAllowedHostAcceptsNativeLAADS(t *testing.T) {
 	}
 	if allowedHost("modis", "example.invalid") {
 		t.Fatal("unexpected host accepted")
+	}
+}
+
+func TestProviderFlowAdaptsWithinCeiling(t *testing.T) {
+	flow := &providerFlow{limit: 4, lastSample: time.Now().Add(-2 * time.Second)}
+	for range 4 {
+		if !flow.start() {
+			t.Fatal("capacity lost before limit")
+		}
+	}
+	if flow.start() {
+		t.Fatal("flow exceeded concurrency limit")
+	}
+	flow.finish(false, true, 4)
+	limit, active, _ := flow.snapshot()
+	if limit != 2 || active != 3 {
+		t.Fatalf("after throttle: limit=%d active=%d", limit, active)
+	}
+	for range 3 {
+		flow.finish(true, false, 4)
+	}
+	for range 8 {
+		if !flow.start() {
+			t.Fatal("expected one active slot")
+		}
+		flow.finish(true, false, 4)
+	}
+	limit, _, _ = flow.snapshot()
+	if limit != 3 {
+		t.Fatalf("expected additive recovery, got %d", limit)
+	}
+}
+
+func TestCongestionClassification(t *testing.T) {
+	if !isCongestion(&transfer.HTTPError{Status: 429}) || !isCongestion(&transfer.HTTPError{Status: 503}) {
+		t.Fatal("rate limiting and server errors should reduce concurrency")
+	}
+	if isCongestion(&transfer.HTTPError{Status: 404}) {
+		t.Fatal("missing objects should not reduce concurrency")
 	}
 }
