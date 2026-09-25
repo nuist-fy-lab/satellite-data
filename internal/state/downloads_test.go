@@ -3,11 +3,13 @@ package state
 import (
 	"context"
 	"database/sql"
-	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
-	_ "modernc.org/sqlite"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
+	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
+	_ "modernc.org/sqlite"
 )
 
 func TestDownloadClaimsAreProviderIsolated(t *testing.T) {
@@ -38,6 +40,51 @@ func TestDownloadClaimsAreProviderIsolated(t *testing.T) {
 	}
 	if goes.ProviderID != "goes" {
 		t.Fatalf("claimed provider %q", goes.ProviderID)
+	}
+}
+
+func TestTransferProgressDoesNotFinishDiscovery(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := t.Context()
+	start := time.Date(2023, 6, 1, 0, 0, 0, 0, time.UTC)
+	request, err := store.EnqueueDownloadRequest(ctx, "goes18", "goes", "goes18:ABI-L1b-RadF", start, start.AddDate(0, 1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AdvanceDownloadRequest(ctx, request.ID, start.Add(time.Hour), 1, []DownloaderTaskRef{{ID: 1, Key: "sample", Filename: "sample.nc"}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateDownloadTransferState(ctx, request.ID, 1, []downloader.Task{{ID: 1, State: "done"}}); err != nil {
+		t.Fatal(err)
+	}
+	request, err = store.DownloadRequest(ctx, request.ID)
+	if err != nil || request.State != "pending" || request.FilesDone != 1 || !request.CompletedAt.IsZero() {
+		t.Fatalf("pending progress=%+v err=%v", request, err)
+	}
+	_, claimed, err := store.ClaimDownloadRequest(ctx, "goes")
+	if err != nil || !claimed {
+		t.Fatalf("claim=%v err=%v", claimed, err)
+	}
+	if err := store.UpdateDownloadTransferState(ctx, request.ID, 1, []downloader.Task{{ID: 1, State: "done"}}); err != nil {
+		t.Fatal(err)
+	}
+	request, err = store.DownloadRequest(ctx, request.ID)
+	if err != nil || request.State != "discovering" || request.FilesDone != 1 {
+		t.Fatalf("discovering progress=%+v err=%v", request, err)
+	}
+	if err := store.AdvanceDownloadRequest(ctx, request.ID, request.End, 0, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateDownloadTransferState(ctx, request.ID, 1, []downloader.Task{{ID: 1, State: "done"}}); err != nil {
+		t.Fatal(err)
+	}
+	request, err = store.DownloadRequest(ctx, request.ID)
+	if err != nil || request.State != "done" || request.FilesDone != 1 || request.CompletedAt.IsZero() {
+		t.Fatalf("done=%+v err=%v", request, err)
 	}
 }
 

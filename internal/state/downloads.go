@@ -282,7 +282,7 @@ func (s *Store) ActiveDownloadRequests(ctx context.Context, limit int) ([]Downlo
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, downloadRequestSelect+`
-		WHERE state IN ('transferring','waiting_auth') ORDER BY id LIMIT ?`, limit)
+		WHERE state IN ('pending','discovering','retry_wait','transferring','waiting_auth') ORDER BY id LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -346,8 +346,13 @@ func (s *Store) UpdateDownloadTransferState(ctx context.Context, requestID int64
 	now := formatTime(time.Now())
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE download_requests
-		SET state=?,files_done=?,files_failed=?,files_waiting_auth=?,last_error=?,completed_at=?,updated_at=?
-		WHERE id=?`, state, done, failed, waitingAuth, lastError, completed, now, requestID)
+		SET state=CASE WHEN state IN ('pending','discovering','retry_wait') THEN state ELSE ? END,
+		    files_done=?,files_failed=?,files_waiting_auth=?,
+		    last_error=CASE WHEN state IN ('pending','discovering','retry_wait') THEN last_error ELSE ? END,
+		    completed_at=CASE WHEN state IN ('pending','discovering','retry_wait') THEN completed_at ELSE ? END,
+		    updated_at=?
+		WHERE id=? AND state IN ('pending','discovering','retry_wait','transferring','waiting_auth')`,
+		state, done, failed, waitingAuth, lastError, completed, now, requestID)
 	return err
 }
 
