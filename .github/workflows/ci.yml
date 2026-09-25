@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
-          cache: true
+          cache: false
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Check web JavaScript syntax
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
-          cache: true
+          cache: false
       - name: Build daemon and CLI
         env:
           CGO_ENABLED: '0'
