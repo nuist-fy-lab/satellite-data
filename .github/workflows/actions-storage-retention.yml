@@ -10,6 +10,10 @@ permissions:
   actions: write
   contents: read
 
+concurrency:
+  group: actions-storage-retention
+  cancel-in-progress: true
+
 jobs:
   prune:
     runs-on: ubuntu-latest
