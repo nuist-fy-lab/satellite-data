@@ -23,10 +23,8 @@ The `ci-latest` release retains three generations of binaries: `satellite`
 and `satellited` for the latest build, plus `-prev1-<commit>` and
 `-prev2-<commit>` assets for the two prior builds. Previous assets are
 verified before replacing the release; the oldest generation drops out.
-Same-repository PR builds publish SHA-pinned prerelease binaries after cloud
-tests. The main build verifies every asset in `ci-latest` before CI succeeds;
-Actions artifacts are not used because their storage quota is independent of
-the Release storage quota.
+Cloud builds also upload a two-day Actions artifact so an authenticated CLI
+can publish the same binaries if the workflow token cannot create a Release.
 
 ## Current milestone
 
@@ -126,12 +124,3 @@ On the data node, the user-level units are `satellited.service` and
 There is no `satellite-downloader.service` unit.
 
 Linux deployment artifacts are built with `CGO_ENABLED=0` and `GOAMD64=v1` so the same CI artifact can run on older HPC userspace distributions without inheriting the GitHub runner's glibc requirement.
-
-After `main` CI succeeds, the RS host's `satellite-data-auto-deploy.timer`
-checks the private `ci-latest` Release every five minutes. It deploys only when
-the Release target equals the current `main` SHA and a matching push CI run has
-succeeded. The deployment verifies the GitHub asset digests, transfers only
-the cloud binaries over Tailnet SSH, switches the existing `current` symlink,
-and restores the previous release if local or public health checks fail.
-The RS host keeps its existing GitHub login; no GitHub credentials are copied
-to the data node. The installer script and systemd units are in `deploy/`.
