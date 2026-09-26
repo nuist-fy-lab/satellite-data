@@ -29,6 +29,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: test
+    concurrency:
+      group: ci-release-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -50,5 +53,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete ci-latest --yes --cleanup-tag || true
+          set -euo pipefail
+
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')"
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "Skip stale CI release for $GITHUB_SHA; main is $head"
+            exit 0
+          fi
+          previous="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq '.target_commitish' 2>/dev/null || true)"
+          if [[ "$previous" == "$GITHUB_SHA" ]]; then
+            echo "ci-latest already points to this commit"
+            exit 0
+          fi
+          if [[ -n "$previous" ]]; then
+            [[ "$previous" =~ ^[0-9a-f]{40}$ ]] || { echo "Unexpected ci-latest target" >&2; exit 1; }
+            history_tag="ci-history-${previous:0:12}"
+            if ! gh release view "$history_tag" >/dev/null 2>&1; then
+              mkdir -p previous-release
+              gh release download ci-latest --pattern satellite --pattern satellited --dir previous-release
+              for name in satellite satellited; do
+                expected="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq ".assets[] | select(.name == \"$name\") | .digest")"
+                [[ "$expected" == "sha256:$(sha256sum "previous-release/$name" | cut -d' ' -f1)" ]] || { echo "Invalid $name release digest" >&2; exit 1; }
+              done
+              gh release create "$history_tag" previous-release/satellited previous-release/satellite \
+                --target "$previous" --title "CI ${previous:0:12}" --notes "Archived CI build for $previous" --prerelease
+            fi
+            gh release delete ci-latest --yes --cleanup-tag
+          fi
           gh release create ci-latest dist/satellited dist/satellite --target "$GITHUB_SHA" --title "CI latest" --notes "Rolling CI build for $GITHUB_SHA" --prerelease
+
+          histories="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.tag_name | test("^ci-history-[0-9a-f]{12}$")) | [.published_at, .tag_name] | @tsv')"
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && gh release delete "$tag" --yes --cleanup-tag
+          done < <(printf '%s\n' "$histories" | sort -r | tail -n +3 | cut -f2)
