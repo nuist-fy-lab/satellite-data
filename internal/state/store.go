@@ -1,6 +1,7 @@
 package state
 
 import (
+	"container/list"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
@@ -181,7 +183,10 @@ CREATE INDEX IF NOT EXISTS download_monitor_samples_time_idx ON download_monitor
 `
 
 type Store struct {
-	db *sql.DB
+	db            *sql.DB
+	coverageMu    sync.Mutex
+	coverageCache map[coverageKey]*list.Element
+	coverageLRU   list.List
 }
 
 type YearDay struct {

@@ -71,6 +71,10 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/products", s.products)
 	mux.HandleFunc("GET /api/year", s.year)
 	mux.HandleFunc("GET /api/day", s.day)
+	mux.HandleFunc("GET /api/coverage/year", s.coverageYear)
+	mux.HandleFunc("GET /api/coverage/month", s.coverageMonth)
+	mux.HandleFunc("GET /api/coverage/day", s.coverageDay)
+	mux.HandleFunc("GET /api/coverage/files", s.coverageFiles)
 	mux.HandleFunc("POST /api/index", s.indexRange)
 
 	static, err := fs.Sub(webui.Files, "static")

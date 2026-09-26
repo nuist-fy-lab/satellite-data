@@ -27,6 +27,7 @@ type Profile struct {
 	Bands            []Band `json:"bands"`
 	productRE        *regexp.Regexp
 	bandRE           map[int]*regexp.Regexp
+	bandMatcher      *regexp.Regexp
 }
 
 var profiles = loadProfiles()
@@ -47,6 +48,10 @@ func loadProfiles() []Profile {
 			panic(err)
 		}
 		p.bandRE = make(map[int]*regexp.Regexp, len(p.Bands))
+		p.bandMatcher, err = regexp.Compile(strings.ReplaceAll(p.AssetBandPattern, "{band}", `([0-9]{2})`))
+		if err != nil {
+			panic(err)
+		}
 		for _, band := range p.Bands {
 			if band.Number < 1 || band.Resolution == "" || p.bandRE[band.Number] != nil {
 				panic("invalid download band")
@@ -59,6 +64,23 @@ func loadProfiles() []Profile {
 		}
 	}
 	return loaded
+}
+
+// BandForAsset identifies a band in one pass, including products whose band
+// naming convention differs from GOES. Zero means this asset is not a band file.
+func (p *Profile) BandForAsset(filename string) int {
+	if p == nil {
+		return 0
+	}
+	parts := p.bandMatcher.FindStringSubmatch(filename)
+	if len(parts) != 2 {
+		return 0
+	}
+	number := int(parts[1][0]-'0')*10 + int(parts[1][1]-'0')
+	if p.bandRE[number] == nil {
+		return 0
+	}
+	return number
 }
 
 func ForProduct(source, collection string) *Profile {

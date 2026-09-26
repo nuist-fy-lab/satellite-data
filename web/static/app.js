@@ -15,6 +15,11 @@ const state = {
   collections: [],
   selected: null,
   dayState: new Map(),
+  coverage: {
+    supported: false, bands: [], yearDays: new Map(), month: null, dayData: null,
+    view: 'year', time: 'all', band: 0, day: '', hour: 0,
+    requestSeq: 0, fileSeq: 0, poll: 0,
+  },
   yearPoll: 0,
   dayPoll: 0,
   monitor: {
@@ -44,6 +49,7 @@ const statusLabels = {
   hourly_complete: '整点完整',
   hourly_complete_official_gap: '整点完整 · 官方有缺时次',
   missing: '本地缺失',
+  partial: '部分完成',
   error: '错误',
   processing: '处理中',
   official_missing: '官方缺失',
@@ -169,7 +175,17 @@ function fillMonths() {
 function updateSelectedProduct() {
   state.selected = selectedCollection();
   state.dayState.clear();
+  state.coverage.requestSeq++;
+  state.coverage.fileSeq++;
+  state.coverage.supported = false;
+  state.coverage.yearDays.clear();
+  state.coverage.month = null;
+  state.coverage.dayData = null;
+  state.coverage.day = '';
+  state.coverage.view = 'year';
+  clearTimeout(state.coverage.poll);
   closeDetail();
+  renderCoverageShell();
   renderCalendar();
   const product = state.selected;
   if (!product) {
@@ -191,7 +207,13 @@ function updateSelectedProduct() {
 }
 
 function renderCalendar() {
+  if (state.coverage.supported) {
+    renderCoverageYear();
+    return;
+  }
   const year = Number(yearEl.value || defaultYear());
+  gridEl.classList.remove('coverage-year');
+  $('.calendar-axis').classList.remove('coverage-axis');
   gridEl.classList.remove('placeholder-grid');
   gridEl.replaceChildren();
   const start = new Date(Date.UTC(year, 0, 1));
@@ -221,6 +243,138 @@ function renderCalendar() {
   }
 }
 
+function bandCoverageSupported(product) {
+  return Boolean(product && (
+    (/^goes\d+$/.test(product.source_id) && /^ABI-L1b-Rad[FMC]$/.test(product.product)) ||
+    (/^himawari[89]$/.test(product.source_id) && product.product === 'AHI-L1b-FLDK')
+  ));
+}
+
+function coverageBandName(band) {
+  return `C${String(band).padStart(2, '0')}`;
+}
+
+function coverageStatus(row, officialState, cadence, hourly = false, mode = 'grid') {
+  if (officialState === 0 || officialState === 3) return 'unknown';
+  if (officialState === 1) return 'official_missing';
+  if (hourly && mode !== 'grid') return 'unknown';
+  const count = row?.[hourly ? 3 : 1] || 0;
+  const complete = row?.[hourly ? 4 : 2] || 0;
+  if (!count) return 'official_missing';
+  if (row[hourly ? 8 : 7]) return 'error';
+  if (row[hourly ? 10 : 9]) return 'processing';
+  if (complete === count) {
+    const expected = hourly ? 24 : (cadence > 0 ? 1440 / cadence : 0);
+    return expected && count < expected ? 'complete_official_gap' : 'complete';
+  }
+  return complete || row[hourly ? 6 : 5] ? 'partial' : 'missing';
+}
+
+function renderCoverageShell() {
+  const coverage = state.coverage;
+  const visible = coverage.supported;
+  $('#coverage-tools').classList.toggle('hidden', !visible);
+  $('.legend').classList.toggle('hidden', visible);
+  $('#year-layout').classList.toggle('hidden', visible && coverage.view !== 'year');
+  $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');
+  $('#day-coverage').classList.toggle('hidden', !visible || coverage.view !== 'day');
+  $('#calendar-help').textContent = visible
+    ? '绿色 完整 · 浅绿 部分 · 橙色 未下载 · 蓝色 处理中 · 红色 错误 · 斜纹 官方缺时次 · 灰色 待索引'
+    : '年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。';
+  $('#calendar-help').classList.remove('hidden');
+  document.querySelectorAll('[data-coverage-view]').forEach(button => {
+    const active = button.dataset.coverageView === coverage.view;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  document.querySelectorAll('[data-coverage-time]').forEach(button => {
+    const active = button.dataset.coverageTime === coverage.time;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+
+async function loadCoverageYear(schedulePoll = true) {
+  const product = state.selected.id;
+  const year = Number(yearEl.value);
+  const seq = ++state.coverage.requestSeq;
+  $('#coverage-status').textContent = '读取年历…';
+  try {
+    const payload = await json(`/api/coverage/year?product=${encodeURIComponent(product)}&year=${year}`);
+    if (seq !== state.coverage.requestSeq || state.selected?.id !== product || Number(yearEl.value) !== year) return;
+    if (payload.v !== 1) throw new Error('不支持的年历数据版本');
+    const coverage = state.coverage;
+    coverage.supported = true;
+    coverage.bands = payload.bands;
+    coverage.yearDays = new Map();
+    state.dayState.clear();
+    for (const row of payload.days) {
+      const day = new Date(Date.UTC(year, 0, row[0] + 1)).toISOString().slice(0, 10);
+      coverage.yearDays.set(day, row);
+      state.dayState.set(day, {
+        day, status: row[1], official_count: row[2], local_ok_count: row[3],
+        hourly_official_count: row[4], hourly_local_ok_count: row[5],
+        official_gap_count: row[6], missing_count: row[7], error_count: row[8],
+        processing_count: row[9], indexing: row[10], updated_at: row[11],
+      });
+    }
+    const bandEl = $('#coverage-band');
+    if (bandEl.options.length !== coverage.bands.length + 1 ||
+        coverage.bands.some((band, i) => Number(bandEl.options[i + 1]?.value) !== band)) {
+      bandEl.replaceChildren(new Option('全部波段', '0'));
+      for (const band of coverage.bands) bandEl.add(new Option(coverageBandName(band), String(band)));
+    }
+    if (!coverage.bands.includes(coverage.band)) coverage.band = 0;
+    bandEl.value = String(coverage.band);
+    $('#coverage-status').textContent = '';
+    renderCoverageShell();
+    renderCalendar();
+    if (coverage.view === 'month') loadCoverageMonth();
+    if (schedulePoll && payload.days.some(row => row[10])) {
+      state.yearPoll = setTimeout(() => loadYear(true), 6000);
+    }
+  } catch (error) {
+    if (seq === state.coverage.requestSeq) {
+      $('#coverage-status').textContent = `年历读取失败 · ${error.message}`;
+      $('#product-meta').textContent = `年历读取失败 · ${error.message}`;
+    }
+  }
+}
+
+function renderCoverageYear() {
+  const coverage = state.coverage;
+  const year = Number(yearEl.value || defaultYear());
+  gridEl.classList.remove('placeholder-grid');
+  gridEl.classList.add('coverage-year');
+  $('.calendar-axis').classList.add('coverage-axis');
+  const fragment = document.createDocumentFragment();
+  const first = new Date(Date.UTC(year, 0, 1));
+  for (let i = 0; i < first.getUTCDay(); i++) {
+    const spacer = document.createElement('i');
+    spacer.className = 'c spacer';
+    fragment.append(spacer);
+  }
+  const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
+  for (let date = new Date(first); date.getUTCFullYear() === year; date.setUTCDate(date.getUTCDate() + 1)) {
+    const day = date.toISOString().slice(0, 10);
+    const row = coverage.yearDays.get(day);
+    const byBand = new Map((row?.[12] || []).map(total => [total[0], total]));
+    const officialState = row?.[13] || 0;
+    const cell = document.createElement('i');
+    cell.className = `c coverage-day${day === coverage.day ? ' selected-day' : ''}`;
+    cell.dataset.day = day;
+    cell.tabIndex = 0;
+    cell.setAttribute('aria-label', dayTip(day));
+    for (const band of coverage.bands) {
+      const part = document.createElement('i');
+      part.className = `${coverageStatus(byBand.get(band), officialState, cadence, coverage.time === 'hourly', row?.[14])}${coverage.band && band !== coverage.band ? ' muted' : ''}`;
+      cell.append(part);
+    }
+    fragment.append(cell);
+  }
+  gridEl.replaceChildren(fragment);
+}
+
 function updateCell(day) {
   const cell = gridEl.querySelector(`[data-day="${day}"]`);
   if (!cell) return;
@@ -233,21 +387,37 @@ function updateCell(day) {
 function dayTip(day) {
   const item = state.dayState.get(day);
   if (!item) return `${day}\n待索引`;
-  const lines = [`${day} · ${statusLabels[item.status] || item.status} · ${state.displayZone}`];
+  const band = state.coverage.supported ? state.coverage.band : 0;
+  const row = band ? state.coverage.yearDays.get(day)?.[12]?.find(entry => entry[0] === band) : null;
+  const officialState = state.coverage.supported ? state.coverage.yearDays.get(day)?.[13] || 0 :
+    item.status === 'official_missing' ? 1 : item.official_count > 0 ? 2 : 0;
+  const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
+  const status = band ? coverageStatus(row, officialState, cadence, state.coverage.time === 'hourly', state.coverage.yearDays.get(day)?.[14]) : item.status;
+  const lines = [`${day} · ${band ? coverageBandName(band) + ' · ' : ''}${statusLabels[status] || status} · ${state.displayZone}`];
   if (item.indexing) lines.push('官方索引中');
-  lines.push(`全部官方时次 ${item.local_ok_count || 0} / ${item.official_count || 0}`);
+  lines.push(`全产品官方时次 ${item.local_ok_count || 0} / ${item.official_count || 0}`);
   if (item.hourly_official_count) lines.push(`整点官方时次 ${item.hourly_local_ok_count || 0} / ${item.hourly_official_count}`);
   if (item.missing_count) lines.push(`本地缺失 ${item.missing_count}`);
   if (item.processing_count) lines.push(`处理中 ${item.processing_count}`);
   if (item.error_count) lines.push(`错误 ${item.error_count}`);
   if (item.official_gap_count) lines.push(`固定时序官方缺时次 ${item.official_gap_count}`);
   if (item.updated_at) lines.push(`索引更新 ${String(item.updated_at).replace('T',' ').slice(0,19)} UTC`);
+  if (band) {
+    const hourly = state.coverage.time === 'hourly';
+    lines.push(`所选波段${hourly ? '整点' : '全部时次'} ${row ? row[hourly ? 4 : 2] : 0} / ${row ? row[hourly ? 3 : 1] : 0}`);
+  }
   return lines.join('\n');
 }
 
 async function loadYear(schedulePoll = true) {
   clearTimeout(state.yearPoll);
   if (!state.selected) return;
+  if (bandCoverageSupported(state.selected)) {
+    await loadCoverageYear(schedulePoll);
+    return;
+  }
+  state.coverage.supported = false;
+  renderCoverageShell();
   const product = state.selected.id;
   const year = Number(yearEl.value || defaultYear());
   try {
@@ -265,6 +435,10 @@ async function loadYear(schedulePoll = true) {
 }
 
 async function queryDay(day) {
+  if (state.coverage.supported) {
+    await openCoverageDay(day);
+    return;
+  }
   await openDay(day, true);
 }
 
@@ -281,6 +455,297 @@ async function queryMonth() {
   });
   await json('/api/index?' + params, {method: 'POST'});
   loadYear(true);
+}
+
+async function loadCoverageMonth() {
+  const coverage = state.coverage;
+  if (!coverage.supported) return;
+  const product = state.selected.id;
+  const year = Number(yearEl.value);
+  const month = Number(monthEl.value) + 1;
+  const band = coverage.band;
+  const mode = coverage.time;
+  const seq = ++coverage.requestSeq;
+  coverage.month = null;
+  $('#coverage-status').textContent = '读取月度覆盖…';
+  try {
+    const params = new URLSearchParams({product, year, month, band, time:mode});
+    const payload = await json('/api/coverage/month?' + params);
+    if (seq !== coverage.requestSeq || state.selected?.id !== product ||
+        Number(yearEl.value) !== year || Number(monthEl.value) + 1 !== month || coverage.band !== band || coverage.time !== mode) return;
+    if (payload.v !== 1) throw new Error('不支持的月度数据版本');
+    coverage.month = payload;
+    $('#coverage-status').textContent = '';
+    renderCoverageMonth();
+  } catch (error) {
+    if (seq === coverage.requestSeq) $('#coverage-status').textContent = `月度覆盖读取失败 · ${error.message}`;
+  }
+}
+
+function renderCoverageMonth() {
+  const coverage = state.coverage;
+  const payload = coverage.month;
+  const year = Number(yearEl.value);
+  const month = Number(monthEl.value) + 1;
+  $('#coverage-month-title').textContent = `${year} 年 ${month} 月`;
+  const grid = $('#month-grid');
+  if (!payload) { grid.replaceChildren(); return; }
+  const fragment = document.createDocumentFragment();
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  for (let i = 0; i < start.getUTCDay(); i++) {
+    const spacer = document.createElement('div');
+    spacer.className = 'month-spacer';
+    fragment.append(spacer);
+  }
+  const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
+  for (const [dayNumber, officialState, indexing, mode, totals, hours] of payload.days) {
+    const byBand = new Map(totals.map(row => [row[0], row]));
+    const date = `${year}-${String(month).padStart(2, '0')}-${String(dayNumber).padStart(2, '0')}`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'month-day';
+    button.dataset.day = date;
+    const descriptions = coverage.bands.filter(band => !coverage.band || band === coverage.band).map(band => {
+      const row = byBand.get(band);
+      const status = coverageStatus(row, officialState, cadence, coverage.time === 'hourly', mode);
+      return `${coverageBandName(band)} ${statusLabels[status] || status} ${row?.[coverage.time === 'hourly' ? 4 : 2] || 0}/${row?.[coverage.time === 'hourly' ? 3 : 1] || 0}`;
+    });
+    button.title = `${date} · UTC${indexing ? ' · 官方索引中' : ''}\n${descriptions.join(' · ')}`;
+    button.setAttribute('aria-label', button.title);
+    const ring = document.createElement('span');
+    ring.className = 'month-ring';
+    const segment = 360 / coverage.bands.length;
+    const colors = [];
+    for (const [index, band] of coverage.bands.entries()) {
+      const row = byBand.get(band);
+      const status = coverageStatus(row, officialState, cadence, coverage.time === 'hourly', mode);
+      const begin = index * segment;
+      const end = begin + segment - 1.5;
+      if (coverage.band && coverage.band !== band) {
+        colors.push(`#e4e8eb ${begin}deg ${end}deg`);
+      } else if (status === 'partial') {
+        const count = row?.[coverage.time === 'hourly' ? 3 : 1] || 1;
+        const complete = row?.[coverage.time === 'hourly' ? 4 : 2] || 0;
+        const partial = row?.[coverage.time === 'hourly' ? 6 : 5] || 0;
+        const fullEnd = begin + (end - begin) * Math.min(1, complete / count);
+        const partialEnd = begin + (end - begin) * Math.min(1, (complete + partial) / count);
+        colors.push(`#178353 ${begin}deg ${fullEnd}deg`, `#67ae9b ${fullEnd}deg ${partialEnd}deg`,
+          `#e4a646 ${partialEnd}deg ${end}deg`);
+      } else {
+        const color = {complete:'#178353', complete_official_gap:'#178353', error:'#c3454b',
+          processing:'#4192bd', missing:'#e4a646', official_missing:'#b5bec4', unknown:'#e5eaed'}[status] || '#e5eaed';
+        colors.push(`${color} ${begin}deg ${end}deg`);
+      }
+      colors.push(`#fff ${end}deg ${(index + 1) * segment}deg`);
+    }
+    ring.style.background = `conic-gradient(${colors.join(',')})`;
+    const label = document.createElement('span');
+    label.textContent = String(dayNumber);
+    ring.append(label);
+    button.append(ring);
+    const bar = document.createElement('span');
+    bar.className = 'month-hours';
+    for (const [, expected, ok, partial, errors, processing] of hours) {
+      const slot = document.createElement('i');
+      const status = officialState === 0 || officialState === 3 || (coverage.time === 'hourly' && mode !== 'grid') ? 'unknown' : officialState === 1 ? 'official_missing' :
+        errors ? 'error' : processing ? 'processing' : !expected ? 'official_missing' :
+        ok >= expected ? 'complete' : ok || partial ? 'partial' : 'missing';
+      slot.className = `month-hour ${status}`;
+      bar.append(slot);
+    }
+    button.append(bar);
+    fragment.append(button);
+  }
+  grid.replaceChildren(fragment);
+}
+
+function moveCoverageMonth(delta) {
+  const year = Number(yearEl.value);
+  const month = Number(monthEl.value);
+  const next = new Date(Date.UTC(year, month + delta, 1));
+  if (![...yearEl.options].some(option => Number(option.value) === next.getUTCFullYear())) return;
+  yearEl.value = String(next.getUTCFullYear());
+  monthEl.value = String(next.getUTCMonth());
+  if (next.getUTCFullYear() !== year) {
+    state.dayState.clear();
+    state.coverage.yearDays.clear();
+    persistFilters();
+    loadYear(true);
+  } else {
+    loadCoverageMonth();
+  }
+}
+
+async function openCoverageDay(day) {
+  const coverage = state.coverage;
+  const year = Number(yearEl.value);
+  const parsed = new Date(`${day}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number(day.slice(0, 4)) !== year ||
+      !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) return;
+  coverage.day = day;
+  coverage.dayData = null;
+  coverage.hour = 0;
+  coverage.view = 'day';
+  coverage.fileSeq++;
+  clearTimeout(coverage.poll);
+  monthEl.value = String(Number(day.slice(5, 7)) - 1);
+  closeDetail();
+  renderCoverageShell();
+  renderCalendar();
+  $('#coverage-day-picker').value = day;
+  $('#coverage-day-picker').min = `${year}-01-01`;
+  $('#coverage-day-picker').max = `${year}-12-31`;
+  $('#coverage-day-title').textContent = day;
+  $('#coverage-files').replaceChildren();
+  $('#coverage-day-summary').textContent = '读取覆盖率…';
+  const product = state.selected.id;
+  const seq = ++coverage.requestSeq;
+  try {
+    const payload = await json(`/api/coverage/day?product=${encodeURIComponent(product)}&day=${day}`);
+    if (seq !== coverage.requestSeq || state.selected?.id !== product || coverage.day !== day) return;
+    if (payload.v !== 1) throw new Error('不支持的日度数据版本');
+    coverage.dayData = payload;
+    coverage.cells = new Map(payload.cells.map(cell => [`${cell[0]}:${cell[1]}`, cell]));
+    renderCoverageDay();
+    if (payload.indexing && !payload.official_state) {
+      coverage.poll = setTimeout(() => openCoverageDay(day), 3000);
+    }
+  } catch (error) {
+    if (seq === coverage.requestSeq) $('#coverage-day-summary').textContent = `日度覆盖读取失败 · ${error.message}`;
+  }
+}
+
+function coverageDayColumns(day) {
+  const hourly = state.coverage.time === 'hourly';
+  if (day.mode === 'grid' && day.cadence > 0) {
+    const minutes = hourly
+      ? Array.from({length: 24}, (_, hour) => hour * 60)
+      : Array.from({length: 60 / day.cadence}, (_, index) => state.coverage.hour * 60 + index * day.cadence);
+    const byMinute = new Map();
+    day.times.forEach(([ts, minute], index) => {
+      if (minute < 0) return;
+      if (!byMinute.has(minute)) byMinute.set(minute, []);
+      byMinute.get(minute).push(index);
+    });
+    return minutes.map(minute => ({
+      label: `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`,
+      indices: byMinute.get(minute) || [],
+    }));
+  }
+  return day.times.map(([ts], index) => ({
+    label: ts.slice(11, 16), indices: [index],
+  })).filter(column => hourly ? column.label.endsWith(':00') : Number(column.label.slice(0, 2)) === state.coverage.hour);
+}
+
+function renderCoverageDay() {
+  const coverage = state.coverage;
+  const day = coverage.dayData;
+  if (!day) return;
+  const summary = $('#coverage-day-summary');
+  summary.textContent = day.official_state === 0 ? (day.indexing ? '官方索引中' : '待官方索引') :
+    day.official_state === 1 ? '官方未发布 · UTC 时次' :
+    day.official_state === 3 ? '波段文件名无法识别 · 待核查' :
+    `${day.times.length} 个实际时次 · ${day.cells.length} 个波段时次 · 时间轴为 UTC`;
+  const hourEl = $('#coverage-hour');
+  if (!hourEl.options.length) {
+    for (let hour = 0; hour < 24; hour++) hourEl.add(new Option(`${String(hour).padStart(2, '0')}:00`, String(hour)));
+  }
+  hourEl.value = String(coverage.hour);
+  hourEl.disabled = coverage.time === 'hourly';
+  const columns = coverageDayColumns(day);
+  const matrix = $('#coverage-matrix');
+  matrix.style.gridTemplateColumns = `70px repeat(${Math.max(1, columns.length)},20px)`;
+  const fragment = document.createDocumentFragment();
+  const first = document.createElement('span');
+  first.className = 'matrix-label';
+  first.textContent = '波段 / UTC';
+  fragment.append(first);
+  for (const column of columns) {
+    const header = document.createElement('span');
+    header.className = 'matrix-header';
+    header.textContent = column.label.slice(-2);
+    header.title = `${column.label} UTC`;
+    fragment.append(header);
+  }
+  const bands = coverage.band ? [coverage.band] : coverage.bands;
+  for (const band of bands) {
+    const label = document.createElement('span');
+    label.className = 'matrix-label';
+    label.textContent = coverageBandName(band);
+    fragment.append(label);
+    for (const column of columns) {
+      const matched = column.indices.map(index => coverage.cells.get(`${index}:${band}`)).filter(Boolean);
+      const official = matched.reduce((sum, cell) => sum + cell[2], 0);
+      const ok = matched.reduce((sum, cell) => sum + cell[3], 0);
+      const errors = matched.reduce((sum, cell) => sum + cell[4], 0);
+      const processing = matched.reduce((sum, cell) => sum + cell[5], 0);
+      const status = day.official_state !== 2 ? day.official_state === 1 ? 'official_missing' : 'unknown' :
+        !official ? 'official_missing' : errors ? 'error' : processing ? 'processing' :
+        ok >= official ? 'complete' : ok ? 'partial' : 'missing';
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = `matrix-cell ${status}`;
+      cell.title = `${coverageBandName(band)} · ${column.label} UTC · ${statusLabels[status] || status} · ${ok}/${official} 文件`;
+      cell.dataset.band = String(band);
+      cell.dataset.indices = matched.map(row => row[0]).join(',');
+      fragment.append(cell);
+    }
+  }
+  matrix.replaceChildren(fragment);
+}
+
+async function showCoverageFiles(indices, band) {
+  const coverage = state.coverage;
+  const day = coverage.dayData;
+  const node = $('#coverage-files');
+  const seq = ++coverage.fileSeq;
+  node.replaceChildren();
+  if (!day || !indices.length) {
+    node.textContent = '该波段与时次没有官方文件';
+    return;
+  }
+  const heading = document.createElement('strong');
+  heading.textContent = `${coverageBandName(band)} · ${day.day}`;
+  node.append(heading);
+  let selector;
+  if (indices.length > 1) {
+    selector = document.createElement('select');
+    selector.setAttribute('aria-label', '实际采集时间');
+    for (const index of indices) selector.add(new Option(displayTime(day.times[index][0]), String(index)));
+    node.append(selector);
+  }
+  const list = document.createElement('div');
+  node.append(list);
+  async function load(index) {
+    const current = ++coverage.fileSeq;
+    list.textContent = '读取文件…';
+    const slot = day.times[index]?.[0];
+    if (!slot) { list.textContent = '时次无效'; return; }
+    try {
+      const params = new URLSearchParams({product:state.selected.id, slot, band});
+      const payload = await json('/api/coverage/files?' + params);
+      if (current !== coverage.fileSeq || coverage.dayData !== day) return;
+      const fragment = document.createDocumentFragment();
+      for (const file of payload.files || []) {
+        const row = document.createElement('div');
+        row.className = 'coverage-file';
+        const name = document.createElement('code');
+        name.textContent = file.filename;
+        const size = document.createElement('span');
+        size.textContent = `${(file.size / 1048576).toFixed(1)} MiB`;
+        const status = document.createElement('span');
+        status.textContent = {ok:'齐全', error:'错误', processing:'处理', missing:'缺失'}[file.state] || file.state;
+        row.append(name, size, status);
+        fragment.append(row);
+      }
+      list.replaceChildren(fragment);
+      if (!payload.files?.length) list.textContent = '该时次没有官方文件';
+    } catch (error) {
+      if (current === coverage.fileSeq) list.textContent = `文件读取失败 · ${error.message}`;
+    }
+  }
+  if (selector) selector.addEventListener('change', () => load(Number(selector.value)));
+  if (seq === coverage.fileSeq) load(indices[0]);
 }
 
 function displayDay(timestamp) {
@@ -1428,18 +1893,100 @@ function bind() {
   instrumentEl.addEventListener('change', () => { rebuildFilters('instrument'); persistFilters(); });
   levelEl.addEventListener('change', () => { rebuildFilters('level'); persistFilters(); });
   productEl.addEventListener('change', updateSelectedProduct);
-  yearEl.addEventListener('change', () => { state.dayState.clear(); closeDetail(); renderCalendar(); persistFilters(); loadYear(true); });
+  yearEl.addEventListener('change', () => {
+    state.coverage.requestSeq++;
+    state.coverage.fileSeq++;
+    clearTimeout(state.coverage.poll);
+    state.coverage.day = '';
+    state.coverage.dayData = null;
+    state.coverage.month = null;
+    if (state.coverage.view === 'day') state.coverage.view = 'year';
+    state.dayState.clear(); closeDetail(); renderCoverageShell(); renderCalendar(); persistFilters(); loadYear(true);
+  });
+  monthEl.addEventListener('change', () => {
+    if (state.coverage.supported && state.coverage.view === 'month') loadCoverageMonth();
+  });
   timezoneEl.addEventListener('change', () => {
     state.displayZone = timezoneEl.value;
     localStorage.setItem('satellite-data-zone', state.displayZone);
     closeDetail();
     renderCalendar();
+    if (state.coverage.supported && state.coverage.view === 'day') renderCoverageDay();
     if (state.monitor.payload) renderMonitor();
     state.downloads.history.chartKey = '';
   });
   $('#reset-filters').addEventListener('click', resetFilters);
   $('#query-month').addEventListener('click', queryMonth);
   $('#clear-calendar').addEventListener('click', () => loadYear(true));
+  $('#coverage-views').addEventListener('click', event => {
+    const button = event.target.closest('[data-coverage-view]');
+    if (!button || !state.coverage.supported) return;
+    const view = button.dataset.coverageView;
+    if (view !== 'day') {
+      clearTimeout(state.coverage.poll);
+      state.coverage.requestSeq++;
+      state.coverage.fileSeq++;
+    }
+    state.coverage.view = view;
+    renderCoverageShell();
+    if (view === 'month') loadCoverageMonth();
+    if (view === 'day') {
+      const year = Number(yearEl.value);
+      const today = new Date().toISOString().slice(0, 10);
+      const day = state.coverage.day && state.coverage.day.startsWith(String(year))
+        ? state.coverage.day : today.startsWith(String(year)) && Number(today.slice(5, 7)) === Number(monthEl.value) + 1
+          ? today : `${year}-${String(Number(monthEl.value) + 1).padStart(2, '0')}-01`;
+      openCoverageDay(day);
+    }
+  });
+  $('#coverage-band').addEventListener('change', event => {
+    state.coverage.band = Number(event.target.value);
+    renderCalendar();
+    if (state.coverage.view === 'month') loadCoverageMonth();
+    if (state.coverage.view === 'day') { $('#coverage-files').replaceChildren(); renderCoverageDay(); }
+  });
+  $('#coverage-times').addEventListener('click', event => {
+    const button = event.target.closest('[data-coverage-time]');
+    if (!button || !state.coverage.supported) return;
+    state.coverage.time = button.dataset.coverageTime;
+    renderCoverageShell();
+    renderCalendar();
+    if (state.coverage.view === 'month') loadCoverageMonth();
+    if (state.coverage.view === 'day') { $('#coverage-files').replaceChildren(); renderCoverageDay(); }
+  });
+  gridEl.addEventListener('mouseover', event => {
+    const cell = state.coverage.supported && event.target.closest('[data-day]');
+    if (cell) showTip(event, cell.dataset.day);
+  });
+  gridEl.addEventListener('mousemove', event => { if (state.coverage.supported && !tipEl.classList.contains('hidden')) moveTip(event); });
+  gridEl.addEventListener('mouseout', event => { if (state.coverage.supported && !event.relatedTarget?.closest?.('[data-day]')) hideTip(); });
+  gridEl.addEventListener('click', event => {
+    const cell = state.coverage.supported && event.target.closest('[data-day]');
+    if (cell) queryDay(cell.dataset.day);
+  });
+  gridEl.addEventListener('keydown', event => {
+    const cell = state.coverage.supported && event.target.closest('[data-day]');
+    if (cell && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); queryDay(cell.dataset.day); }
+  });
+  $('#month-grid').addEventListener('click', event => {
+    const day = event.target.closest('[data-day]')?.dataset.day;
+    if (day) openCoverageDay(day);
+  });
+  $('#coverage-prev-month').addEventListener('click', () => moveCoverageMonth(-1));
+  $('#coverage-next-month').addEventListener('click', () => moveCoverageMonth(1));
+  $('#coverage-day-picker').addEventListener('change', event => openCoverageDay(event.target.value));
+  $('#coverage-hour').addEventListener('change', event => {
+    state.coverage.hour = Number(event.target.value);
+    $('#coverage-files').replaceChildren();
+    renderCoverageDay();
+  });
+  $('#coverage-matrix').addEventListener('click', event => {
+    const cell = event.target.closest('[data-indices]');
+    if (!cell) return;
+    document.querySelector('#coverage-matrix .selected')?.classList.remove('selected');
+    cell.classList.add('selected');
+    showCoverageFiles(cell.dataset.indices ? cell.dataset.indices.split(',').map(Number) : [], Number(cell.dataset.band));
+  });
   $('#close-detail').addEventListener('click', closeDetail);
   $('#refresh-sources').addEventListener('click', loadSources);
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));

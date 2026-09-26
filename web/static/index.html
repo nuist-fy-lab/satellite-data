@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=5">
+  <link rel="stylesheet" href="/styles.css?v=6">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <aside class="sidebar" aria-label="功能导航">
@@ -43,7 +43,7 @@
             <select id="level" title="数据级别"></select>
             <select id="product" title="产品"></select>
             <select id="year" title="年份"></select>
-            <select id="month" title="批量查询月份"></select>
+            <select id="month" title="月份"></select>
             <select id="timezone" title="显示时区">
               <option value="UTC">UTC</option>
               <option value="BJT">BJT</option>
@@ -75,13 +75,39 @@
             <button id="clear-calendar" type="button">刷新年历</button>
           </div>
         </div>
-        <div class="calendar-axis" aria-hidden="true">
-          <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+        <div id="coverage-tools" class="coverage-tools hidden">
+          <div id="coverage-views" class="coverage-switch" role="group" aria-label="年历视图">
+            <button type="button" data-coverage-view="year" class="active">年</button>
+            <button type="button" data-coverage-view="month">月</button>
+            <button type="button" data-coverage-view="day">日</button>
+          </div>
+          <select id="coverage-band" aria-label="波段"><option value="0">全部波段</option></select>
+          <div id="coverage-times" class="coverage-switch" role="group" aria-label="时次范围">
+            <button type="button" data-coverage-time="all" class="active">全部时次</button>
+            <button type="button" data-coverage-time="hourly">整点</button>
+          </div>
+          <span id="coverage-status" role="status"></span>
         </div>
-        <div class="calendar-wrap">
-          <div id="year-grid" class="year-grid placeholder-grid" aria-label="年度数据日历"></div>
+        <div id="year-layout">
+          <div class="calendar-axis" aria-hidden="true">
+            <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+          </div>
+          <div class="calendar-wrap">
+            <div id="year-grid" class="year-grid placeholder-grid" aria-label="年度数据日历"></div>
+          </div>
         </div>
-        <div class="calendar-help">年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。</div>
+        <div id="calendar-help" class="calendar-help">年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。</div>
+        <section id="month-coverage" class="month-coverage hidden" aria-label="月度波段覆盖">
+          <div class="coverage-heading"><button id="coverage-prev-month" type="button" title="上个月" aria-label="上个月">‹</button><strong id="coverage-month-title"></strong><button id="coverage-next-month" type="button" title="下个月" aria-label="下个月">›</button></div>
+          <div class="month-weekdays" aria-hidden="true"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+          <div id="month-grid" class="month-grid"></div>
+        </section>
+        <section id="day-coverage" class="day-coverage hidden" aria-label="日度波段覆盖">
+          <div class="coverage-heading"><strong id="coverage-day-title"></strong><input id="coverage-day-picker" type="date" aria-label="选择日期"><label>小时 <select id="coverage-hour" aria-label="展开小时"></select></label></div>
+          <div id="coverage-day-summary" class="coverage-day-summary"></div>
+          <div class="matrix-scroll"><div id="coverage-matrix" class="coverage-matrix"></div></div>
+          <div id="coverage-files" class="coverage-files"></div>
+        </section>
 
         <section id="day-detail" class="detail hidden">
           <div class="detail-head">
@@ -303,6 +329,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=13"></script>
+  <script type="module" src="/app.js?v=14"></script>
 </body>
 </html>

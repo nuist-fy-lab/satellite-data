@@ -27,6 +27,24 @@ func TestGOESBandAndHourlySelection(t *testing.T) {
 	}
 }
 
+func TestBandForAsset(t *testing.T) {
+	for _, tc := range []struct {
+		source, product, filename string
+		want                      int
+	}{
+		{"goes18", "goes18:ABI-L1b-RadF", "OR_ABI-L1b-RadF-M6C06_G18_s20231650000210.nc", 6},
+		{"goes18", "goes18:ABI-L1b-RadF", "OR_ABI-L1b-RadF-M6C16_G18_s20231650000210.nc", 16},
+		{"goes18", "goes18:ABI-L1b-RadF", "OR_ABI-L1b-RadF-M6C17_G18_s20231650000210.nc", 0},
+		{"himawari9", "himawari9:AHI-L1b-FLDK", "HS_H09_20230926_0100_B03_FLDK.dat", 3},
+		{"himawari9", "himawari9:AHI-L1b-FLDK", "not-a-band.dat", 0},
+	} {
+		profile := ForProduct(tc.source, tc.product)
+		if got := profile.BandForAsset(tc.filename); got != tc.want {
+			t.Errorf("%s: got %d want %d", tc.filename, got, tc.want)
+		}
+	}
+}
+
 func TestSelectionValidationAndOtherProviders(t *testing.T) {
 	for _, s := range []Selection{{Band: 6}, {Times: []string{"25:00"}}} {
 		if _, err := s.Normalize("viirs", "viirs:test"); err == nil {
