@@ -65,25 +65,29 @@ jobs:
             echo "ci-latest already points to this commit"
             exit 0
           fi
+          binaries=(dist/satellited dist/satellite)
           if [[ -n "$previous" ]]; then
             [[ "$previous" =~ ^[0-9a-f]{40}$ ]] || { echo "Unexpected ci-latest target" >&2; exit 1; }
-            history_tag="ci-history-${previous:0:12}"
-            if ! gh release view "$history_tag" >/dev/null 2>&1; then
-              mkdir -p previous-release
-              gh release download ci-latest --pattern satellite --pattern satellited --dir previous-release
-              for name in satellite satellited; do
-                expected="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq ".assets[] | select(.name == \"$name\") | .digest")"
-                [[ "$expected" == "sha256:$(sha256sum "previous-release/$name" | cut -d' ' -f1)" ]] || { echo "Invalid $name release digest" >&2; exit 1; }
-              done
-              gh release create "$history_tag" previous-release/satellited previous-release/satellite \
-                --target "$previous" --title "CI ${previous:0:12}" --notes "Archived CI build for $previous" --prerelease
-            fi
+            mkdir -p previous-release
+            gh release download ci-latest --dir previous-release
+            assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" \
+              --jq '.assets[] | [.name, .digest] | @tsv')"
+            while IFS=$'\t' read -r name expected; do
+              [[ "$name" =~ ^(satellite|satellited)(-prev[12]-[0-9a-f]{12})?$ ]] || { echo "Unexpected release asset" >&2; exit 1; }
+              [[ "$expected" == "sha256:$(sha256sum "previous-release/$name" | cut -d' ' -f1)" ]] || { echo "Invalid $name release digest" >&2; exit 1; }
+            done <<< "$assets"
+            for name in satellite satellited; do
+              [[ -f "previous-release/$name" ]] || { echo "Missing $name release asset" >&2; exit 1; }
+              archived="previous-release/${name}-prev1-${previous:0:12}"
+              mv "previous-release/$name" "$archived"
+              binaries+=("$archived")
+            done
+            for archived in previous-release/satellite-prev1-* previous-release/satellited-prev1-*; do
+              [[ -f "$archived" ]] || continue
+              older="${archived/-prev1-/-prev2-}"
+              mv "$archived" "$older"
+              binaries+=("$older")
+            done
             gh release delete ci-latest --yes --cleanup-tag
           fi
-          gh release create ci-latest dist/satellited dist/satellite --target "$GITHUB_SHA" --title "CI latest" --notes "Rolling CI build for $GITHUB_SHA" --prerelease
-
-          histories="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq '.[] | select(.tag_name | test("^ci-history-[0-9a-f]{12}$")) | [.published_at, .tag_name] | @tsv')"
-          while IFS= read -r tag; do
-            [[ -n "$tag" ]] && gh release delete "$tag" --yes --cleanup-tag
-          done < <(printf '%s\n' "$histories" | sort -r | tail -n +3 | cut -f2)
+          gh release create ci-latest "${binaries[@]}" --target "$GITHUB_SHA" --title "CI latest" --notes "Rolling CI build for $GITHUB_SHA (latest plus two earlier builds)" --prerelease

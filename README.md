@@ -19,8 +19,10 @@ Samples are kept for eight days; missing samples remain gaps, not zero-speed
 observations. `GET /api/v1/monitor/downloads?window=1h` exposes provider-isolated
 history (`realtime`, `1h`, `3h`, `6h`, `12h`, `1d`, `2d`, `1w`). "Active transfers"
 counts running download workers, not the host's TCP sockets.
-CI releases retain `ci-latest` and the two most recent `ci-history-<commit>`
-snapshots; the previous binaries are archived before replacing `ci-latest`.
+The `ci-latest` release retains three generations of binaries: `satellite`
+and `satellited` for the latest build, plus `-prev1-<commit>` and
+`-prev2-<commit>` assets for the two prior builds. Previous assets are
+verified before replacing the release; the oldest generation drops out.
 
 ## Current milestone
 
