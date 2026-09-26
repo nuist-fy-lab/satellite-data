@@ -48,46 +48,23 @@ jobs:
           mkdir -p dist
           go build -trimpath -ldflags='-s -w' -o dist/satellited ./cmd/satellited
           go build -trimpath -ldflags='-s -w' -o dist/satellite ./cmd/satellite
+      - name: Record cloud build digests
+        run: |
+          cd dist
+          sha256sum satellite satellited > SHA256SUMS
+      - name: Store short-lived cloud binaries
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: satellite-release
+          path: |
+            dist/satellite
+            dist/satellited
+            dist/SHA256SUMS
+          retention-days: 2
+          if-no-files-found: error
       - name: Publish rolling CI binaries
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          head="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')"
-          if [[ "$head" != "$GITHUB_SHA" ]]; then
-            echo "Skip stale CI release for $GITHUB_SHA; main is $head"
-            exit 0
-          fi
-          previous="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq '.target_commitish' 2>/dev/null || true)"
-          if [[ "$previous" == "$GITHUB_SHA" ]]; then
-            echo "ci-latest already points to this commit"
-            exit 0
-          fi
-          binaries=(dist/satellited dist/satellite)
-          if [[ -n "$previous" ]]; then
-            [[ "$previous" =~ ^[0-9a-f]{40}$ ]] || { echo "Unexpected ci-latest target" >&2; exit 1; }
-            mkdir -p previous-release
-            gh release download ci-latest --dir previous-release
-            assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" \
-              --jq '.assets[] | [.name, .digest] | @tsv')"
-            while IFS=$'\t' read -r name expected; do
-              [[ "$name" =~ ^(satellite|satellited)(-prev[12]-[0-9a-f]{12})?$ ]] || { echo "Unexpected release asset" >&2; exit 1; }
-              [[ "$expected" == "sha256:$(sha256sum "previous-release/$name" | cut -d' ' -f1)" ]] || { echo "Invalid $name release digest" >&2; exit 1; }
-            done <<< "$assets"
-            for name in satellite satellited; do
-              [[ -f "previous-release/$name" ]] || { echo "Missing $name release asset" >&2; exit 1; }
-              archived="previous-release/${name}-prev1-${previous:0:12}"
-              mv "previous-release/$name" "$archived"
-              binaries+=("$archived")
-            done
-            for archived in previous-release/satellite-prev1-* previous-release/satellited-prev1-*; do
-              [[ -f "$archived" ]] || continue
-              older="${archived/-prev1-/-prev2-}"
-              mv "$archived" "$older"
-              binaries+=("$older")
-            done
-            gh release delete ci-latest --yes --cleanup-tag
-          fi
-          gh release create ci-latest "${binaries[@]}" --target "$GITHUB_SHA" --title "CI latest" --notes "Rolling CI build for $GITHUB_SHA (latest plus two earlier builds)" --prerelease
+        run: bash deploy/publish-ci-release.sh

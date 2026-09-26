@@ -23,6 +23,8 @@ The `ci-latest` release retains three generations of binaries: `satellite`
 and `satellited` for the latest build, plus `-prev1-<commit>` and
 `-prev2-<commit>` assets for the two prior builds. Previous assets are
 verified before replacing the release; the oldest generation drops out.
+Cloud builds also upload a two-day Actions artifact so an authenticated CLI
+can publish the same binaries if the workflow token cannot create a Release.
 
 ## Current milestone
 

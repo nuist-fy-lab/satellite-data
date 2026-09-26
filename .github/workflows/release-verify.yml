@@ -1,0 +1,49 @@
+name: Release verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check rolling release provenance and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir release
+          gh release download ci-latest --repo "$GITHUB_REPOSITORY" --dir release
+          target="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq '.target_commitish')"
+          [[ "$target" == "$GITHUB_SHA" ]] || { echo "Release does not target current main" >&2; exit 1; }
+          assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq '.assets[] | [.name, .digest] | @tsv')"
+          declare -A slot_commit=() slot_satellite=() slot_satellited=()
+          count=0
+          while IFS=$'\t' read -r name digest; do
+            ((count+=1))
+            [[ "$digest" == "sha256:$(sha256sum "release/$name" | cut -d' ' -f1)" ]] || { echo "Invalid asset digest: $name" >&2; exit 1; }
+            if [[ "$name" == satellite || "$name" == satellited ]]; then
+              slot=0
+            elif [[ "$name" =~ ^(satellite|satellited)-prev([12])-([0-9a-f]{12})$ ]]; then
+              slot="${BASH_REMATCH[2]}"
+              commit="${BASH_REMATCH[3]}"
+              [[ -z "${slot_commit[$slot]:-}" || "${slot_commit[$slot]}" == "$commit" ]] || { echo "Mixed commits in history slot" >&2; exit 1; }
+              slot_commit[$slot]="$commit"
+            else
+              echo "Unexpected asset: $name" >&2
+              exit 1
+            fi
+            if [[ "$name" == satellite* && "$name" != satellited* ]]; then
+              slot_satellite[$slot]=1
+            else
+              slot_satellited[$slot]=1
+            fi
+          done <<< "$assets"
+          ((count >= 2 && count <= 6 && count % 2 == 0)) || { echo "Expected one to three binary pairs" >&2; exit 1; }
+          for slot in 0 1 2; do
+            [[ "${slot_satellite[$slot]:-0}" == "${slot_satellited[$slot]:-0}" ]] || { echo "Incomplete binary pair" >&2; exit 1; }
+          done
+          [[ "${slot_satellite[0]:-0}" == 1 ]] || { echo "Missing latest binaries" >&2; exit 1; }
