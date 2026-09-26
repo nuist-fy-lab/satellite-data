@@ -23,6 +23,8 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Check web JavaScript syntax
         run: node --check web/static/app.js
+      - name: Check deployment scripts
+        run: bash -n deploy/auto-deploy.sh deploy/activate-ci-release.sh
       - name: Vet
         run: go vet ./...
       - name: Test
@@ -82,3 +84,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash deploy/publish-ci-release.sh
+      - name: Verify rolling release on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "Skipped verification of superseded main commit"
+            exit 0
+          fi
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/ci-latest")"
+          [[ "$(jq -r .target_commitish <<<"$release")" == "$GITHUB_SHA" ]]
+          mkdir verify
+          gh release download ci-latest --repo "$GITHUB_REPOSITORY" --dir verify
+          while IFS=$'\t' read -r name digest; do
+            [[ "$name" =~ ^(satellite|satellited)(-prev[12]-[0-9a-f]{12})?$ ]]
+            [[ "$digest" == "sha256:$(sha256sum "verify/$name" | cut -d' ' -f1)" ]]
+          done < <(jq -r '.assets[] | [.name, .digest] | @tsv' <<<"$release")
+          cmp dist/satellite verify/satellite
+          cmp dist/satellited verify/satellited
