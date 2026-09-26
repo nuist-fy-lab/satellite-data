@@ -115,6 +115,45 @@ main{max-width:1180px;margin:0 auto;padding:28px 24px 60px}
 .tier.special{color:#9a6700;background:#fff8c5;border-color:#eedf8b}
 .empty-panel{border:1px solid var(--line);border-radius:7px;background:var(--soft-2);padding:28px;color:var(--muted);font-size:12px}
 .download-section{margin:16px 0 26px}.download-section h2{font-size:12px;font-weight:650;margin:0 0 7px}
+.download-monitor{border-top:1px solid var(--line);padding-top:14px}
+.download-monitor-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.download-monitor-head h2{margin:0}
+.download-monitor-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.download-monitor-controls label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px}
+.download-monitor-controls select{max-width:180px;min-width:126px;font-size:11px}
+.download-monitor-windows{display:flex;gap:1px;padding:2px;border:1px solid var(--line);border-radius:6px;max-width:100%;overflow-x:auto;background:var(--soft)}
+.download-monitor-windows button{border:0;border-radius:4px;min-width:34px;flex:0 0 auto;font-size:10px;color:var(--muted);padding:5px 8px;background:transparent}
+.download-monitor-windows button.active{background:#fff;color:var(--fg);box-shadow:0 0 0 1px var(--line)}
+.download-monitor-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin:12px 0 2px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.download-monitor-kpis>div{padding:10px 12px;min-width:0;border-right:1px solid #eaeef2}
+.download-monitor-kpis>div:last-child{border-right:0}
+.download-monitor-kpis span{display:block;color:var(--muted);font-size:10px}
+.download-monitor-kpis strong{display:block;margin-top:4px;font-size:17px;line-height:1.25;overflow-wrap:anywhere}
+.download-monitor-kpis #download-kpi-sampled{font-size:12px;margin-top:8px}
+.download-monitor-plots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;border-bottom:1px solid var(--line)}
+.download-monitor-plot{min-width:0;padding:12px 14px 9px}
+.download-monitor-plot+ .download-monitor-plot{border-left:1px solid #eaeef2}
+.download-plot-head{display:flex;justify-content:space-between;gap:10px;align-items:baseline;font-size:11px}
+.download-plot-head span{font-weight:600;color:var(--muted);white-space:nowrap}
+.download-plot-legend{display:flex;gap:12px;min-height:16px;margin-top:5px;color:var(--muted);font-size:10px}
+.download-plot-legend span{display:flex;align-items:center;gap:4px}
+.download-plot-legend i{width:11px;height:3px;display:inline-block;background:#0d8d81}
+.download-plot-legend .transfer-limit{background:#b87829}
+.download-plot-canvas{position:relative;min-height:185px;margin-top:4px}
+.download-plot-canvas svg{width:100%;height:150px;display:block;touch-action:pan-y}
+.download-plot-canvas .plot-grid{stroke:#e6ebee;stroke-width:1}
+.download-plot-canvas .plot-line{fill:none;stroke:#0d8d81;stroke-width:2;vector-effect:non-scaling-stroke}
+.download-plot-canvas .plot-limit{fill:none;stroke:#b87829;stroke-width:1.5;stroke-dasharray:4 3;vector-effect:non-scaling-stroke}
+.download-plot-canvas .plot-cursor{stroke:#596977;stroke-width:1;stroke-dasharray:2 2;vector-effect:non-scaling-stroke}
+.download-plot-canvas .plot-max{position:absolute;top:0;left:6px;color:var(--muted);font-size:10px}
+.download-plot-canvas .plot-time{display:flex;justify-content:space-between;gap:6px;color:var(--muted);font-size:10px}
+.download-plot-canvas .plot-time span{min-width:0;overflow-wrap:anywhere}
+.download-plot-canvas .plot-time span:last-child{text-align:right}
+.download-plot-canvas .plot-tip{position:absolute;z-index:4;pointer-events:none;max-width:calc(100% - 8px);padding:6px 8px;border-radius:4px;background:#24292f;color:#fff;font-size:10px;line-height:1.5;box-shadow:0 3px 12px #0002}
+.download-plot-canvas .plot-tip.hidden{display:none}
+.download-plot-empty{height:170px;display:grid;place-items:center;color:var(--muted);font-size:11px}
+@media(max-width:850px){.download-monitor-plots{grid-template-columns:minmax(0,1fr)}.download-monitor-plot+.download-monitor-plot{border-left:0;border-top:1px solid #eaeef2}}
+@media(max-width:550px){.download-monitor-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.download-monitor-kpis>div:nth-child(2){border-right:0}.download-monitor-kpis>div:nth-child(-n+2){border-bottom:1px solid #eaeef2}.download-monitor-controls{width:100%}.download-monitor-controls label{width:100%}.download-monitor-controls select{flex:1;max-width:none}.download-monitor-plot{padding:12px 4px 9px}}
 .download-submit-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 12px;border-top:1px solid var(--line);padding:12px 0}
 .download-submit-form label{display:grid;align-content:start;gap:4px;min-width:0;color:var(--muted);font-size:11px}
 .download-submit-form select,.download-submit-form input{width:100%;min-width:0;color:var(--fg);font-size:12px}

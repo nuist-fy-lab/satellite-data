@@ -166,6 +166,18 @@ CREATE TABLE IF NOT EXISTS link_samples (
 );
 CREATE INDEX IF NOT EXISTS link_samples_time_idx ON link_samples(sampled_at_ns);
 CREATE INDEX IF NOT EXISTS link_samples_source_time_idx ON link_samples(source_id,sampled_at_ns);
+
+CREATE TABLE IF NOT EXISTS download_monitor_samples (
+  provider_id TEXT NOT NULL,
+  sampled_at_ns INTEGER NOT NULL,
+  bytes_per_second REAL NOT NULL,
+  active_transfers INTEGER NOT NULL,
+  adaptive_concurrency INTEGER NOT NULL,
+  queued INTEGER NOT NULL,
+  verifying INTEGER NOT NULL,
+  PRIMARY KEY(provider_id,sampled_at_ns)
+);
+CREATE INDEX IF NOT EXISTS download_monitor_samples_time_idx ON download_monitor_samples(sampled_at_ns);
 `
 
 type Store struct {

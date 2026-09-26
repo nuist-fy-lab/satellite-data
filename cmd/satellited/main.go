@@ -18,6 +18,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/config"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
+	"github.com/nuist-fy-lab/satellite-data/internal/downloadmon"
 	"github.com/nuist-fy-lab/satellite-data/internal/httpapi"
 	"github.com/nuist-fy-lab/satellite-data/internal/indexer"
 	"github.com/nuist-fy-lab/satellite-data/internal/linkmon"
@@ -63,6 +64,7 @@ func main() {
 	archiveIndexer := indexer.New(registry, store, *archiveRoot)
 	archiveIndexer.Run(ctx)
 	downloaderClient := downloader.New(runtimeConfig.DownloaderSocket)
+	downloadmon.New(store, downloaderClient).Run(ctx)
 	authStore, err := authstore.Open(runtimeConfig.AuthDB)
 	if err != nil {
 		slog.Error("open access auth store", "error", err)

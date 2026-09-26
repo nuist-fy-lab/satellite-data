@@ -13,6 +13,12 @@ chunked and pipelined: each provider has its own discovery loop, assets are
 submitted to the downloader as soon as each chunk is discovered, and every
 downloader provider has independent transfer and verification worker pools.
 A slow provider therefore cannot consume another provider's slots.
+The main service samples downloader-reported throughput, active transfers,
+adaptive limits and queue depth every 15 seconds for the download-page charts.
+Samples are kept for eight days; missing samples remain gaps, not zero-speed
+observations. `GET /api/v1/monitor/downloads?window=1h` exposes provider-isolated
+history (`realtime`, `1h`, `3h`, `6h`, `12h`, `1d`, `2d`, `1w`). "Active transfers"
+counts running download workers, not the host's TCP sockets.
 
 ## Current milestone
 

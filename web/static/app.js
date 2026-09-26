@@ -23,7 +23,14 @@ const state = {
     payload: null,
     poll: 0,
   },
-  downloads: {poll: 0, catalog: [], source: '', loading: 0},
+  downloads: {
+    poll: 0, pollSeq: 0, catalog: [], source: '', loading: 0,
+    history: {
+      window: localStorage.getItem('satellite-data-download-window') || '1h',
+      selected: localStorage.getItem('satellite-data-download-provider') || 'all',
+      payload: null, loadedAt: 0, chartKey: '',
+    },
+  },
   access: {user: null, credentials: [], proxies: [], accounts: []},
   displayZone: localStorage.getItem('satellite-data-zone') === 'BJT' ? 'BJT' : 'UTC',
 };
@@ -848,14 +855,138 @@ function downloadRate(value) {
   return (rate / 1048576).toFixed(1) + ' MiB/s';
 }
 
-async function loadDownloads(schedule = true) {
+const downloadWindowSeconds = {realtime: 300, '1h': 3600, '3h': 10800, '6h': 21600, '12h': 43200, '1d': 86400, '2d': 172800, '1w': 604800};
+
+function downloadHistoryPoints(payload, source) {
+  const sources = (payload?.providers || []).filter(item => source === 'all' || item.source_id === source);
+  if (source !== 'all') return sources[0]?.points || [];
+  const buckets = new Map();
+  for (const provider of sources) for (const point of provider.points || []) {
+    const key = point.sampled_at;
+    if (!buckets.has(key)) buckets.set(key, {sampled_at: key, bytes_per_second: 0, active_transfers: 0, adaptive_concurrency: 0});
+    const bucket = buckets.get(key);
+    bucket.bytes_per_second += Number(point.bytes_per_second) || 0;
+    bucket.active_transfers += Number(point.active_transfers) || 0;
+    bucket.adaptive_concurrency += Number(point.adaptive_concurrency) || 0;
+  }
+  return [...buckets.values()].sort((a, b) => a.sampled_at.localeCompare(b.sampled_at));
+}
+
+function downloadMonitorTime(timestamp) {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return '—';
+  if (state.displayZone === 'BJT') date.setUTCHours(date.getUTCHours() + 8);
+  return date.toISOString().slice(5, 16).replace('T', ' ') + ' ' + state.displayZone;
+}
+
+function drawDownloadChart(id, points, metric, bucketSeconds, windowName) {
+  const node = $('#' + id);
+  const width = 620, height = 150, left = 12, right = 12, top = 20, bottom = 10;
+  const chartWidth = width - left - right, chartHeight = height - top - bottom;
+  const now = Date.now(), start = now - (downloadWindowSeconds[windowName] || 3600) * 1000;
+  const entries = points.map(point => ({
+    at: new Date(point.sampled_at).getTime(),
+    rate: Math.max(0, Number(point.bytes_per_second) || 0),
+    active: Math.max(0, Number(point.active_transfers) || 0),
+    limit: Math.max(0, Number(point.adaptive_concurrency) || 0),
+  })).filter(point => Number.isFinite(point.at) && point.at >= start && point.at <= now);
+  if (!entries.length) {
+    node.innerHTML = '<div class="download-plot-empty">等待历史样本</div>';
+    return;
+  }
+  const maxValue = metric === 'rate'
+    ? Math.max(1024, ...entries.map(point => point.rate * 1.15))
+    : Math.max(1, ...entries.map(point => Math.max(point.active, point.limit) * 1.15));
+  const x = at => left + (at - start) / (now - start) * chartWidth;
+  const y = value => top + (1 - Math.min(1, value / maxValue)) * chartHeight;
+  const path = key => entries.map((point, index) => {
+    const joined = index > 0 && point.at - entries[index - 1].at <= bucketSeconds * 2500;
+    return (joined ? 'L' : 'M') + x(point.at).toFixed(1) + ',' + y(point[key]).toFixed(1);
+  }).join(' ');
+  const grid = [0, .5, 1].map(fraction => {
+    const yy = top + fraction * chartHeight;
+    return `<line class="plot-grid" x1="${left}" x2="${width - right}" y1="${yy}" y2="${yy}"/>`;
+  }).join('');
+  const label = metric === 'rate' ? downloadRate(maxValue) : String(Math.ceil(maxValue));
+  const line = `<path class="plot-line" d="${path(metric === 'rate' ? 'rate' : 'active')}"/>`;
+  const limit = metric === 'active' ? `<path class="plot-limit" d="${path('limit')}"/>` : '';
+  node.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${metric === 'rate' ? '下载速度' : '活动传输与动态上限'}历史趋势">
+    <title>${metric === 'rate' ? '下载速度' : '活动传输与动态上限'}历史趋势</title>${grid}${limit}${line}
+    <line class="plot-cursor" x1="0" x2="0" y1="${top}" y2="${top + chartHeight}" visibility="hidden"/>
+    </svg><span class="plot-max">${esc(label)}</span><div class="plot-time"><span>${esc(downloadMonitorTime(start))}</span><span>${esc(downloadMonitorTime(now))}</span></div><div class="plot-tip hidden"></div>`;
+  const svg = node.querySelector('svg'), cursor = node.querySelector('.plot-cursor'), tip = node.querySelector('.plot-tip');
+  svg.addEventListener('pointermove', event => {
+    const bounds = svg.getBoundingClientRect();
+    const target = start + Math.max(0, Math.min(1, ((event.clientX - bounds.left) / bounds.width * width - left) / chartWidth)) * (now - start);
+    let nearest = entries[0];
+    for (const point of entries) if (Math.abs(point.at - target) < Math.abs(nearest.at - target)) nearest = point;
+    const xx = x(nearest.at);
+    cursor.setAttribute('x1', xx.toFixed(1));
+    cursor.setAttribute('x2', xx.toFixed(1));
+    cursor.setAttribute('visibility', 'visible');
+    tip.textContent = downloadMonitorTime(nearest.at) + ' · ' + (metric === 'rate'
+      ? downloadRate(nearest.rate) : `${nearest.active} 活动 / ${nearest.limit} 上限`);
+    tip.classList.remove('hidden');
+    tip.style.left = Math.max(4, Math.min(bounds.width - tip.offsetWidth - 4, xx / width * bounds.width + 8)) + 'px';
+    tip.style.top = '22px';
+  });
+  svg.addEventListener('pointerleave', () => { cursor.setAttribute('visibility', 'hidden'); tip.classList.add('hidden'); });
+}
+
+function renderDownloadMonitor(statuses, liveAvailable) {
+  const history = state.downloads.history;
+  const selector = $('#download-monitor-provider');
+  const available = uniqueSorted([...statuses.map(item => item.source_id), ...(history.payload?.providers || []).map(item => item.source_id)]);
+  selector.replaceChildren(new Option('全部 Provider', 'all'));
+  for (const source of available) selector.add(new Option(source, source));
+  if (history.selected !== 'all' && !available.includes(history.selected)) history.selected = 'all';
+  selector.value = history.selected;
+  document.querySelectorAll('[data-download-window]').forEach(button => button.classList.toggle('active', button.dataset.downloadWindow === history.window));
+  const selected = history.selected === 'all' ? statuses.filter(item => item.enabled) : statuses.filter(item => item.source_id === history.selected);
+  const total = key => selected.reduce((sum, item) => sum + (Number(item[key]) || 0), 0);
+  const active = total('active_transfers');
+  const allowed = selected.reduce((sum, item) => sum + (Number(item.adaptive_concurrency ?? item.transfer_concurrency) || 0), 0);
+  const rate = total('bytes_per_second');
+  const queued = selected.reduce((sum, item) => sum + (Number(item.states?.queued || 0) + Number(item.states?.retry_wait || 0)), 0);
+  const hasLive = liveAvailable && selected.length > 0;
+  $('#download-kpi-rate').textContent = hasLive ? downloadRate(rate) : '—';
+  $('#download-kpi-active').textContent = hasLive ? `${active} / ${allowed}` : '—';
+  $('#download-kpi-queued').textContent = hasLive ? String(queued) : '—';
+  $('#download-chart-rate-now').textContent = hasLive ? downloadRate(rate) : '—';
+  $('#download-chart-active-now').textContent = hasLive ? `${active} / ${allowed}` : '—';
+  const samples = history.selected === 'all' ? (history.payload?.providers || []) : (history.payload?.providers || []).filter(item => item.source_id === history.selected);
+  const last = Math.max(0, ...samples.map(item => new Date(item.latest?.sampled_at).getTime() || 0));
+  const age = Date.now() - last;
+  $('#download-kpi-sampled').textContent = !last ? '等待样本' : age > 45_000 ? '采样中断' : downloadMonitorTime(last);
+  const chartKey = `${history.window}|${history.selected}|${history.payload?.generated_at || ''}`;
+  if (history.chartKey !== chartKey) {
+    const points = downloadHistoryPoints(history.payload, history.selected);
+    drawDownloadChart('download-chart-rate', points, 'rate', Number(history.payload?.bucket_seconds) || 15, history.window);
+    drawDownloadChart('download-chart-active', points, 'active', Number(history.payload?.bucket_seconds) || 15, history.window);
+    history.chartKey = chartKey;
+  }
+}
+
+async function loadDownloads(schedule = true, forceHistory = false) {
   clearTimeout(state.downloads.poll);
-  const [requests, providers] = await Promise.allSettled([
+  const ticket = ++state.downloads.pollSeq;
+  const history = state.downloads.history;
+  if (!downloadWindowSeconds[history.window]) history.window = '1h';
+  const cacheFresh = !forceHistory && history.payload?.window === history.window && Date.now() - history.loadedAt < 15_000;
+  const [requests, providers, samples] = await Promise.allSettled([
     json('/api/v1/downloads?limit=50'), json('/api/v1/downloader/providers'),
+    cacheFresh ? Promise.resolve(history.payload) : json('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window)),
   ]);
+  if (ticket !== state.downloads.pollSeq) return;
   const error = [requests, providers].filter(result => result.status === 'rejected').map(result => result.reason.message);
   $('#downloads-error').textContent = error.join(' · ');
+  if (samples.status === 'fulfilled') {
+    history.payload = samples.value;
+    if (!cacheFresh) history.loadedAt = Date.now();
+  }
+  $('#download-monitor-error').textContent = samples.status === 'rejected' ? '历史采样读取失败 · ' + samples.reason.message : '';
   const statuses = providers.status === 'fulfilled' ? providers.value.providers || [] : [];
+  renderDownloadMonitor(statuses, providers.status === 'fulfilled');
   $('#download-providers').innerHTML = statuses.map(item => {
     const states = item.states || {};
     const waiting = (states.queued || 0) + (states.retry_wait || 0);
@@ -1304,6 +1435,7 @@ function bind() {
     closeDetail();
     renderCalendar();
     if (state.monitor.payload) renderMonitor();
+    state.downloads.history.chartKey = '';
   });
   $('#reset-filters').addEventListener('click', resetFilters);
   $('#query-month').addEventListener('click', queryMonth);
@@ -1311,7 +1443,23 @@ function bind() {
   $('#close-detail').addEventListener('click', closeDetail);
   $('#refresh-sources').addEventListener('click', loadSources);
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
-  $('#refresh-downloads').addEventListener('click', () => loadDownloads(true));
+  $('#refresh-downloads').addEventListener('click', () => loadDownloads(true, true));
+  $('#download-monitor-provider').addEventListener('change', event => {
+    state.downloads.history.selected = event.target.value;
+    localStorage.setItem('satellite-data-download-provider', event.target.value);
+    state.downloads.history.chartKey = '';
+    loadDownloads(true);
+  });
+  $('#download-monitor-windows').addEventListener('click', event => {
+    const button = event.target.closest('[data-download-window]');
+    if (!button) return;
+    state.downloads.history.window = button.dataset.downloadWindow;
+    state.downloads.history.payload = null;
+    state.downloads.history.loadedAt = 0;
+    localStorage.setItem('satellite-data-download-window', button.dataset.downloadWindow);
+    state.downloads.history.chartKey = '';
+    loadDownloads(true, true);
+  });
   $('#dl-source').addEventListener('change', loadDownloadCatalog);
   for (const [id] of dlStages) $('#dl-' + id).addEventListener('change', () => refreshDownloadFilters(id));
   $('#dl-product').addEventListener('change', () => refreshDownloadFilters('product'));

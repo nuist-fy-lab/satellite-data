@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,6 +56,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/downloads/catalog", s.downloadCatalog)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.download)
 	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
+	mux.HandleFunc("GET /api/v1/monitor/downloads", s.downloadMonitor)
 	mux.HandleFunc("GET /api/v1/monitor/links", s.linkMonitor)
 	mux.HandleFunc("POST /api/v1/access/login", s.accessLogin)
 	mux.HandleFunc("POST /api/v1/access/logout", s.accessLogout)
@@ -92,6 +94,60 @@ var monitorWindows = map[string]monitorWindow{
 	"1d":  {duration: 24 * time.Hour, bucket: 5 * time.Minute},
 	"2d":  {duration: 48 * time.Hour, bucket: 10 * time.Minute},
 	"1w":  {duration: 7 * 24 * time.Hour, bucket: 30 * time.Minute},
+}
+
+func (s *Server) downloadMonitor(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("window"))
+	if name == "" {
+		name = "1h"
+	}
+	window, ok := monitorWindows[name]
+	if name == "realtime" {
+		window, ok = monitorWindow{duration: 5 * time.Minute, bucket: 15 * time.Second}, true
+	}
+	if !ok {
+		writeError(w, http.StatusBadRequest, errors.New("unsupported download monitor window"))
+		return
+	}
+	latest, err := s.store.LatestDownloadSamples(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	points, err := s.store.DownloadSeries(r.Context(), time.Now().UTC().Add(-window.duration), window.bucket)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	type entry struct {
+		SourceID string                       `json:"source_id"`
+		Latest   *state.DownloadMonitorLatest `json:"latest,omitempty"`
+		Points   []state.DownloadMonitorPoint `json:"points"`
+	}
+	bySource := make(map[string]*entry)
+	for _, item := range latest {
+		sample := item
+		bySource[item.SourceID] = &entry{SourceID: item.SourceID, Latest: &sample, Points: []state.DownloadMonitorPoint{}}
+	}
+	for source, series := range points {
+		if bySource[source] == nil {
+			bySource[source] = &entry{SourceID: source}
+		}
+		bySource[source].Points = series
+	}
+	keys := make([]string, 0, len(bySource))
+	for key := range bySource {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	items := make([]entry, 0, len(keys))
+	for _, key := range keys {
+		items = append(items, *bySource[key])
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"window": name, "bucket_seconds": int(window.bucket.Seconds()),
+		"sample_interval_seconds": 15, "generated_at": time.Now().UTC(), "providers": items,
+	})
 }
 
 func (s *Server) linkMonitor(w http.ResponseWriter, r *http.Request) {

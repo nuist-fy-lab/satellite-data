@@ -134,6 +134,35 @@
         </form>
       </section>
       <div id="downloads-error" class="form-error"></div>
+      <section class="download-section download-monitor" aria-label="下载监控">
+        <div class="download-monitor-head">
+          <h2>传输监控</h2>
+          <div class="download-monitor-controls">
+            <label>Provider <select id="download-monitor-provider" aria-label="监控 Provider"><option value="all">全部 Provider</option></select></label>
+            <div id="download-monitor-windows" class="download-monitor-windows" role="group" aria-label="下载监控时间窗口">
+              <button type="button" data-download-window="realtime">实时</button>
+              <button type="button" data-download-window="1h">1h</button>
+              <button type="button" data-download-window="3h">3h</button>
+              <button type="button" data-download-window="6h">6h</button>
+              <button type="button" data-download-window="12h">12h</button>
+              <button type="button" data-download-window="1d">1d</button>
+              <button type="button" data-download-window="2d">2d</button>
+              <button type="button" data-download-window="1w">1w</button>
+            </div>
+          </div>
+        </div>
+        <div id="download-monitor-error" class="form-error" role="status"></div>
+        <div class="download-monitor-kpis">
+          <div><span>下载速度</span><strong id="download-kpi-rate">—</strong></div>
+          <div><span>活动传输 / 上限</span><strong id="download-kpi-active">—</strong></div>
+          <div><span>排队</span><strong id="download-kpi-queued">—</strong></div>
+          <div><span>最近采样</span><strong id="download-kpi-sampled">—</strong></div>
+        </div>
+        <div class="download-monitor-plots">
+          <div class="download-monitor-plot"><div class="download-plot-head"><strong>下载速度</strong><span id="download-chart-rate-now">—</span></div><div class="download-plot-legend" aria-hidden="true"></div><div class="download-plot-canvas" id="download-chart-rate"></div></div>
+          <div class="download-monitor-plot"><div class="download-plot-head"><strong>活动传输</strong><span id="download-chart-active-now">—</span></div><div class="download-plot-legend"><span><i class="transfer-active"></i>活动传输</span><span><i class="transfer-limit"></i>动态上限</span></div><div class="download-plot-canvas" id="download-chart-active"></div></div>
+        </div>
+      </section>
       <section class="download-section"><h2>Provider 传输</h2><div id="download-providers" class="download-list"></div></section>
       <section class="download-section"><h2>最近请求</h2><div id="download-requests" class="download-list"></div></section>
     </section>
