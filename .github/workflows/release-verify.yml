@@ -2,6 +2,11 @@ name: Release verification
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Commit SHA expected for ci-latest (defaults to this workflow ref)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -13,12 +18,13 @@ jobs:
       - name: Check rolling release provenance and assets
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha || github.sha }}
         run: |
           set -euo pipefail
           mkdir release
           gh release download ci-latest --repo "$GITHUB_REPOSITORY" --dir release
           target="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq '.target_commitish')"
-          [[ "$target" == "$GITHUB_SHA" ]] || { echo "Release does not target current main" >&2; exit 1; }
+          [[ "$target" == "$EXPECTED_SHA" ]] || { echo "Release targets unexpected commit" >&2; exit 1; }
           assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq '.assets[] | [.name, .digest] | @tsv')"
           declare -A slot_commit=() slot_satellite=() slot_satellited=()
           count=0
