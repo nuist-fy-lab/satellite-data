@@ -520,20 +520,13 @@ function renderCoverageMonth() {
       const row = byBand.get(band);
       const status = coverageStatus(row, officialState, cadence, coverage.time === 'hourly', mode);
       const begin = index * segment;
-      const end = begin + segment - 1.5;
+      const end = begin + segment - 0.6;
       if (coverage.band && coverage.band !== band) {
         colors.push(`#e4e8eb ${begin}deg ${end}deg`);
-      } else if (status === 'partial') {
-        const count = row?.[coverage.time === 'hourly' ? 3 : 1] || 1;
-        const complete = row?.[coverage.time === 'hourly' ? 4 : 2] || 0;
-        const partial = row?.[coverage.time === 'hourly' ? 6 : 5] || 0;
-        const fullEnd = begin + (end - begin) * Math.min(1, complete / count);
-        const partialEnd = begin + (end - begin) * Math.min(1, (complete + partial) / count);
-        colors.push(`#178353 ${begin}deg ${fullEnd}deg`, `#67ae9b ${fullEnd}deg ${partialEnd}deg`,
-          `#e4a646 ${partialEnd}deg ${end}deg`);
       } else {
-        const color = {complete:'#178353', complete_official_gap:'#178353', error:'#c3454b',
-          processing:'#4192bd', missing:'#e4a646', official_missing:'#b5bec4', unknown:'#e5eaed'}[status] || '#e5eaed';
+        const color = {complete:'#116b4b', complete_official_gap:'#116b4b', partial:'#259674',
+          error:'#c3454b', processing:'#4192bd', missing:'#efd2a4',
+          official_missing:'#b5bec4', unknown:'#e5eaed'}[status] || '#e5eaed';
         colors.push(`${color} ${begin}deg ${end}deg`);
       }
       colors.push(`#fff ${end}deg ${(index + 1) * segment}deg`);
@@ -543,6 +536,16 @@ function renderCoverageMonth() {
     label.textContent = String(dayNumber);
     ring.append(label);
     button.append(ring);
+    const count = document.createElement('small');
+    count.className = 'month-band-count';
+    if (coverage.band) {
+      const selected = byBand.get(coverage.band);
+      count.textContent = `${coverageBandName(coverage.band)} ${selected?.[coverage.time === 'hourly' ? 4 : 2] || 0}/${selected?.[coverage.time === 'hourly' ? 3 : 1] || 0}`;
+    } else {
+      const covered = totals.filter(row => row[2] > 0 || row[5] > 0).length;
+      count.textContent = `${covered}/${coverage.bands.length} 波段`;
+    }
+    button.append(count);
     const bar = document.createElement('span');
     bar.className = 'month-hours';
     for (const [, expected, ok, partial, errors, processing] of hours) {
