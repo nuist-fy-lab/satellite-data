@@ -290,11 +290,13 @@ func Open(path string) (*Store, error) {
 	// busy_timeout is connection-local in SQLite. Put it in the DSN so every
 	// pooled connection receives the same wait policy; executing PRAGMA once on
 	// *sql.DB only configures whichever connection happens to service that call.
+	// Reserve the writer lock before reading in read-modify-write transactions;
+	// a deferred transaction cannot wait safely when upgrading a stale snapshot.
 	separator := "?"
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
-	db, err := sql.Open("sqlite", path+separator+"_busy_timeout=30000")
+	db, err := sql.Open("sqlite", path+separator+"_busy_timeout=30000&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
