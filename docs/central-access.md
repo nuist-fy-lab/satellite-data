@@ -23,6 +23,13 @@ pools or manage other Keys, even with an accompanying web cookie. The CLI uses
 `satellite config set` for hidden input and private `0600` configuration, sends
 Bearer authorization only to the configured centre and never follows redirects.
 
+Production reuses NSMC's `users` records for the portal password. Satellite owns
+separate `satellite_api_keys` and `satellite_web_sessions` tables and distinct
+token namespaces. NSMC Keys/sessions cannot be listed, authenticated or revoked
+through Satellite, even by rewriting a token prefix. Existing NSMC sessions and
+Keys are left untouched. Old Satellite access-page cookies must log in once at
+the new portal entry; thereafter the credential page uses that same session.
+
 The entire web portal is session-protected, not just the access page. The
 `/login` page and login assets are public; unauthenticated pages redirect there
 and data APIs return 401. Login is at `/api/v1/auth/login` (or `POST /login`),

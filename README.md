@@ -76,6 +76,8 @@ The entire production portal requires a web login, including catalogue,
 calendar and monitoring pages. `GET /login` is the portal entry; the same
 HttpOnly session authorizes the credential page without a second password.
 Provider access administration still requires the administrator role.
+Existing NSMC portal usernames/passwords are reused; Satellite Key/session
+tables are isolated and do not change NSMC's active Keys or sessions.
 Operational API calls accept either the portal session or a web-created CLI
 API Key; CLI Keys never grant access to provider credentials/accounts.
 
