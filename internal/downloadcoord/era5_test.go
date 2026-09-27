@@ -43,7 +43,7 @@ func (*fakeCDS) Job(_ context.Context, id string) (era5.Job, error) {
 	return era5.Job{ID: id, Status: "successful"}, nil
 }
 func (*fakeCDS) Result(_ context.Context, id string) (model.Asset, error) {
-	return model.Asset{ID: "era5:" + id, Name: id + ".nc", Size: 128, MediaType: "application/x-netcdf", URL: "https://object-store.os-api.cci2.ecmwf.int/cache/file?signature=private"}, nil
+	return model.Asset{ID: "era5:" + id, Name: "data.nc", Size: 128, MediaType: "application/x-netcdf", URL: "https://object-store.os-api.cci2.ecmwf.int/cache/file?signature=private"}, nil
 }
 
 func fakeTransferClient(t *testing.T) (*downloader.Client, *sync.Mutex, *[]downloader.TaskSpec) {
@@ -158,6 +158,24 @@ func TestOneERA5OrderSchedulesAndArchivesMultiplePartsAfterRestart(t *testing.T)
 	order, _ = s.DownloadRequest(t.Context(), order.ID)
 	if order.State != "done" || order.FilesDone != 2 {
 		t.Fatalf("archive completion not reflected: %+v", order)
+	}
+	second, err := s.EnqueueERA5Order(t.Context(), key, first, first.AddDate(0, 0, 1), map[string]json.RawMessage{"variable": json.RawMessage(`["total_precipitation"]`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		second, err = s.DownloadRequest(t.Context(), second.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.advanceDiscovery(t.Context(), second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*specs) != 3 || (*specs)[0].Name != (*specs)[2].Name || (*specs)[0].RelativeDir == (*specs)[2].RelativeDir {
+		t.Fatal("same-day ERA5 selections can overwrite a shared result filename")
 	}
 }
 

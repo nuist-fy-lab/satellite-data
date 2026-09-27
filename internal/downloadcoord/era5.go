@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
@@ -113,7 +114,7 @@ func (c *Coordinator) advanceERA5(ctx context.Context, request state.DownloadReq
 	task, _, err := c.downloader.Enqueue(ctx, downloader.TaskSpec{
 		SourceID: "era5", CollectionID: request.CollectionID, GranuleID: "era5:" + part.JobID,
 		AssetID: asset.ID, Name: asset.Name, URL: "https://cds.climate.copernicus.eu/api/retrieve/v1/jobs/" + part.JobID + "/download",
-		RelativeDir: archiveRelativeDir("era5", product, part.Start), Size: asset.Size, ETag: asset.ETag, MediaType: asset.MediaType,
+		RelativeDir: path.Join(archiveRelativeDir("era5", product, part.Start), part.JobID), Size: asset.Size, ETag: asset.ETag, MediaType: asset.MediaType,
 	})
 	if err != nil {
 		return err
