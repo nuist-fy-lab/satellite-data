@@ -18,7 +18,7 @@ function harness(product, schema) {
         get value() { return value || this.options.find(option => option.selected)?.value || this.options[0]?.value || ''; },
         set value(next) { value = next; },
         get selectedOptions() { return this.options.filter(option => option.selected); },
-        replaceChildren() { this.options = []; this.innerHTML = ''; value = ''; },
+        replaceChildren(...items) { this.options = items; this.innerHTML = ''; value = ''; },
         add(option) { this.options.push(option); },
         classList: {add() {}, remove() {}, toggle() {}},
       });
