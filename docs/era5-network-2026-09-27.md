@@ -16,6 +16,17 @@ time from cumulative TCP connect to obtain approximate connection latency.
 One CDS schema request had a 3.359 s first-byte time while the other two
 were 0.654-0.668 s. API responsiveness therefore has observed variability.
 
+At 06:25 UTC, a separate probe made 20 direct TCP connections to each resolved
+IPv4 address on port 443 (3 s timeout, 75 ms pause between attempts):
+
+| Target | Successful connections | Min / median / max connection time |
+| --- | --- | --- |
+| CDS API | 20/20 | 147.86 / 167.96 / 267.82 ms |
+| ECMWF CCI2 object store | 20/20 | 139.85 / 182.96 / 278.37 ms |
+
+No connection failures were observed in this small sample. These TCP results
+do not measure ICMP packet loss or guarantee error-free long downloads.
+
 The constraints object transferred at 656,399 / 1,074,107 / 1,547,519 B/s,
 approximately 0.63-1.48 MiB/s (5.25-12.38 Mbps). **This is a small catalogue
 metadata object, not an ERA5 GRIB/NetCDF data download benchmark.** The actual

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +x
 set -euo pipefail
 umask 077
 target="${1:-${XDG_CONFIG_HOME:-$HOME/.config}/satellite-data/cds-token}"
