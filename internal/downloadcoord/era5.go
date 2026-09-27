@@ -24,8 +24,8 @@ func (c *Coordinator) advanceERA5(ctx context.Context, request state.DownloadReq
 	if c.cds == nil {
 		return errors.New("central CDS scheduling is unavailable")
 	}
-	part, err := c.store.ERA5OrderPart(ctx, request)
-	if errors.Is(err, sql.ErrNoRows) {
+	part, partErr := c.store.ERA5OrderPart(ctx, request)
+	if errors.Is(partErr, sql.ErrNoRows) {
 		// Check the deployed transfer worker before creating a remote CDS job.
 		providers, err := c.downloader.Providers(ctx)
 		if err != nil {
@@ -55,10 +55,10 @@ func (c *Coordinator) advanceERA5(ctx context.Context, request state.DownloadReq
 		if err := c.store.PrepareERA5Part(ctx, request, submission, end); err != nil {
 			return err
 		}
-		part, err = c.store.ERA5OrderPart(ctx, request)
+		part, partErr = c.store.ERA5OrderPart(ctx, request)
 	}
-	if err != nil {
-		return err
+	if partErr != nil {
+		return partErr
 	}
 	if part.Stage == "submitting" && part.JobID == "" {
 		return era5.ErrSubmissionUncertain
