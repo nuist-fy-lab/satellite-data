@@ -9,6 +9,19 @@ import (
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
 )
 
+func TestNewDownloaderStoreDoesNotCreateAccessTables(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "queue.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	var tables int
+	err = state.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('credentials','proxies','accounts')`).Scan(&tables)
+	if err != nil || tables != 0 {
+		t.Fatalf("downloader still initializes credential storage: tables=%d err=%v", tables, err)
+	}
+}
+
 func TestProviderClaimsAreIsolated(t *testing.T) {
 	state, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
 	if err != nil {

@@ -13,12 +13,10 @@ import (
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/access"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/auth"
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/config"
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/pipeline"
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/server"
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/store"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/vault"
 )
 
 func main() {
@@ -39,18 +37,7 @@ func main() {
 		slog.Error("recover downloader queue", "error", err)
 		os.Exit(1)
 	}
-	secretVault, err := vault.Open(cfg.MasterKey, true)
-	if err != nil {
-		slog.Error("open credential vault", "error", err)
-		os.Exit(1)
-	}
-	if err := access.RefreshCredentialExpiries(context.Background(), state, secretVault); err != nil {
-		slog.Warn("refresh credential expiry metadata", "error", err)
-	}
-
-	sharedHTTP := &http.Client{Timeout: 30 * time.Second}
-	authRegistry := auth.NewRegistry(sharedHTTP)
-	accessManager, err := access.NewManager(state, secretVault, authRegistry)
+	accessManager, err := access.NewManager(cfg.CentralSocket)
 	if err != nil {
 		slog.Error("initialize access manager", "error", err)
 		os.Exit(1)
@@ -72,7 +59,7 @@ func main() {
 	defer listener.Close()
 	defer os.Remove(cfg.SocketPath)
 	server := &http.Server{
-		Handler:           server.New(state, runtime, secretVault),
+		Handler:           server.New(state, runtime),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
