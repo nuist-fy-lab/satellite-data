@@ -1911,7 +1911,6 @@ function rebuildAccessSelects() {
   }
   if ([...credentialSelect.options].some(option => option.value === previousCredential)) credentialSelect.value = previousCredential;
   $('#account-credential-row').classList.toggle('hidden', !required);
-  credentialFields();
 
   const proxySelect = $('#account-proxy');
   const previousProxy = proxySelect.value;
@@ -1939,6 +1938,7 @@ function openPoolForm(kind, item = null, savedCredential = null) {
     $('#account-priority').value = item?.priority ?? 0;
     $('#account-enabled').checked = item?.enabled ?? true;
     rebuildAccessSelects();
+    credentialFields();
     $('#account-credential').value = item?.credential_id ? String(item.credential_id) : savedCredential ? String(savedCredential.id) : '';
     $('#account-proxy').value = item?.proxy_id ? String(item.proxy_id) : '';
   }
@@ -2207,7 +2207,7 @@ function bind() {
   $('#logout-access').addEventListener('click', logoutAccess);
   document.querySelectorAll('[data-pool-new]').forEach(node => node.addEventListener('click', () => openPoolForm(node.dataset.poolNew)));
   document.querySelectorAll('[data-form-cancel]').forEach(node => node.addEventListener('click', () => closePoolForm(node.dataset.formCancel)));
-  $('#account-source').addEventListener('change', rebuildAccessSelects);
+  $('#account-source').addEventListener('change', () => { rebuildAccessSelects(); credentialFields(); });
   $('#account-proxy-mode').addEventListener('change', () => $('#account-proxy-row').classList.toggle('hidden', $('#account-proxy-mode').value !== 'fixed'));
   $('#proxy-form').addEventListener('submit', saveProxy);
   $('#account-form').addEventListener('submit', saveAccount);
