@@ -30,6 +30,10 @@ jobs:
           node --check web/static/login.js
       - name: Test ERA5 request controls without a browser
         run: node --test web/era5.test.mjs
+      - name: Validate portal styles and HTML without a browser
+        run: |
+          npm install --prefix "$RUNNER_TEMP/satellite-web" --no-save --ignore-scripts css-tree@3.1.0 parse5@7.2.1
+          NODE_PATH="$RUNNER_TEMP/satellite-web/node_modules" node --test web/style.test.mjs
       - name: Vet
         run: go vet ./...
       - name: Test

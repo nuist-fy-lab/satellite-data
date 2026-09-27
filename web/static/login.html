@@ -3,19 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>登录 · Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=11">
+  <title>Satellite Data</title>
+  <link rel="stylesheet" href="/styles.css?v=12">
 </head>
-<body class="portal-login-page">
-  <main class="portal-login">
-    <h1>Satellite Data</h1>
-    <form id="portal-login-form" action="/login" method="post">
-      <label>门户账号<input id="portal-username" name="username" autocomplete="username" maxlength="64" required autofocus></label>
-      <label>密码<input id="portal-password" name="password" type="password" autocomplete="current-password" required></label>
+<body class="login">
+    <form id="portal-login-form" class="login-card" action="/login" method="post">
+      <div class="brand">Satellite Data</div>
+      <input id="portal-username" name="username" autocomplete="username" placeholder="username" aria-label="username" maxlength="64" required autofocus>
+      <input id="portal-password" name="password" type="password" autocomplete="current-password" placeholder="password" aria-label="password" required>
       <div id="portal-login-error" class="form-error" role="alert"></div>
-      <button id="portal-login-submit" type="submit">登录</button>
+      <button id="portal-login-submit" type="submit">Sign in</button>
     </form>
-  </main>
   <script type="module" src="/login.js?v=1"></script>
 </body>
 </html>

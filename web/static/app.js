@@ -714,9 +714,9 @@ function renderCoverageMonth() {
       if (coverage.band && coverage.band !== band) {
         colors.push(`#e4e8eb ${begin}deg ${end}deg`);
       } else {
-        const color = {complete:'#116b4b', complete_official_gap:'#116b4b', partial:'#259674',
-          error:'#c3454b', processing:'#4192bd', missing:'#efd2a4',
-          official_missing:'#b5bec4', unknown:'#e5eaed'}[status] || '#e5eaed';
+        const color = {complete:'var(--green)', complete_official_gap:'var(--green)', partial:'var(--partial)',
+          error:'var(--red)', processing:'var(--blue)', missing:'var(--orange)',
+          official_missing:'#b5bec4', unknown:'var(--empty)'}[status] || 'var(--empty)';
         colors.push(`${color} ${begin}deg ${end}deg`);
       }
       colors.push(`#fff ${end}deg ${(index + 1) * segment}deg`);
