@@ -320,7 +320,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, userID, name string) (APIKey, 
 		return APIKey{}, "", err
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(secret)
-	prefix := "nsmc_v1_" + id + "_" + encoded[:6]
+	prefix := "satellite_v1_" + id
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO api_keys(id,user_id,name,prefix,secret_hash,created_at) VALUES(?,?,?,?,?,?)`,
@@ -330,7 +330,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, userID, name string) (APIKey, 
 		return APIKey{}, "", err
 	}
 	key := APIKey{ID: id, Name: name, Prefix: prefix, CreatedAt: now}
-	return key, "nsmc_v1_" + id + "_" + encoded, nil
+	return key, "satellite_v1_" + id + "_" + encoded, nil
 }
 
 func (s *Store) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, error) {
@@ -375,7 +375,7 @@ func (s *Store) RevokeAPIKey(ctx context.Context, userID, keyID string) error {
 }
 
 func (s *Store) AuthenticateAPIKey(ctx context.Context, token string) (User, error) {
-	id, secret, err := parseToken(token, "nsmc_v1")
+	id, secret, err := parseToken(token, "satellite_v1")
 	if err != nil {
 		return User{}, err
 	}
@@ -418,7 +418,7 @@ func hashSecret(secret []byte) []byte {
 
 func parseToken(token, prefix string) (string, []byte, error) {
 	parts := strings.SplitN(token, "_", 4)
-	// nsmc_v1_<id>_<secret> and nsmcsess_v1_<id>_<secret>
+	// Prefix, version, public id, then the URL-safe secret (which may contain '_').
 	if len(parts) != 4 || parts[0]+"_"+parts[1] != prefix {
 		return "", nil, errors.New("invalid token format")
 	}

@@ -16,19 +16,30 @@ import (
 )
 
 type client struct {
-	base string
-	http *http.Client
+	base   string
+	apiKey string
+	http   *http.Client
 }
 
 func main() {
-	server := envOr("SATELLITE_SERVER", "http://127.0.0.1:8080")
 	args := os.Args[1:]
 	if len(args) < 2 {
 		usage()
 		os.Exit(2)
 	}
-	c := &client{base: strings.TrimRight(server, "/"), http: &http.Client{Timeout: 2 * time.Minute}}
-	var err error
+	if args[0] == "config" && args[1] == "set" {
+		if err := runConfigSet(args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "satellite:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	cfg, err := loadCLIConfig(configPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "satellite:", err)
+		os.Exit(1)
+	}
+	c := newClient(cfg)
 	switch args[0] + " " + args[1] {
 	case "source list":
 		err = c.sourceList()
@@ -54,6 +65,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "satellite:", err)
 		os.Exit(1)
 	}
+}
+
+func newClient(cfg cliConfig) *client {
+	return &client{base: cfg.Server, apiKey: cfg.APIKey, http: &http.Client{
+		Timeout: 2 * time.Minute,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}}
 }
 
 type downloadRequest struct {
@@ -333,6 +353,9 @@ func (c *client) do(method, path string, body any, target any) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -349,6 +372,9 @@ func (c *client) do(method, path string, body any, target any) error {
 		if problem.Error == "" {
 			problem.Error = resp.Status
 		}
+		if c.apiKey != "" {
+			problem.Error = strings.ReplaceAll(problem.Error, c.apiKey, "[REDACTED]")
+		}
 		return errors.New(problem.Error)
 	}
 	if target == nil {
@@ -359,6 +385,7 @@ func (c *client) do(method, path string, body any, target any) error {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `Usage:
+  satellite config set
   satellite source list
   satellite catalog list --source goes18
   satellite query list --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22T09:00:00Z --end 2026-09-22T10:00:00Z [--json]
@@ -369,12 +396,6 @@ func usage() {
   satellite download providers
 
 Environment:
-  SATELLITE_SERVER=http://127.0.0.1:8080`)
-}
-
-func envOr(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
+  SATELLITE_CONFIG selects the private CLI config file.
+  SATELLITE_SERVER and SATELLITE_API_KEY override the saved centre configuration.`)
 }

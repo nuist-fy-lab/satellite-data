@@ -72,6 +72,13 @@ web/                      embedded dependency-free UI
 
 ## API
 
+The entire production portal requires a web login, including catalogue,
+calendar and monitoring pages. `GET /login` is the portal entry; the same
+HttpOnly session authorizes the credential page without a second password.
+Provider access administration still requires the administrator role.
+Operational API calls accept either the portal session or a web-created CLI
+API Key; CLI Keys never grant access to provider credentials/accounts.
+
 ```text
 GET /healthz
 GET /api/v1/sources
@@ -131,7 +138,16 @@ snapshot is in `docs/era5-network-2026-09-27.md`.
 
 ## CLI
 
+After signing into the portal, create a CLI API Key on its CLI page, then configure the thin
+client with `satellite config set`. It prompts for the centre URL and reads the
+Key without terminal echo. Only the centre URL and CLI Key are saved in
+`~/.config/satellite/config.json` (mode `0600`). The Key is a centre-control
+authorization token, not a provider credential or account. Requests send it as
+`Authorization: Bearer ...`; redirects are not followed. There is no CLI login,
+username/password, provider Token or Vault setup.
+
 ```text
+satellite config set
 satellite source list
 satellite catalog list --source goes18
 satellite query list \
@@ -145,12 +161,23 @@ satellite download submit \
 satellite download status --id 1 --json
 ```
 
-`SATELLITE_SERVER` selects the centre API endpoint. The CLI's scope is download
+`SATELLITE_CONFIG` selects a different private config file. `SATELLITE_SERVER`
+and `SATELLITE_API_KEY` can override the saved centre connection in an existing
+secure environment; never pass a Key as a command argument or paste it into
+shell history. The CLI's scope is download
 task submission, catalogue/task/status queries and ordinary settings changes.
 It has no credential/account commands, Vault, encryption key, provider login,
 or local file-transfer responsibility. Provider status reports configuration status,
 not account or credential references. All provider accounts and Secrets remain
 in the centre and are managed through its protected administration interface.
+Only web sessions can create/list/revoke their own CLI Keys; even an administrator's
+Bearer Key cannot manage provider credentials/accounts or mint more Keys.
+The full Key is returned only once at creation. The centre stores its hash,
+tracks last use and rejects revoked Keys or Keys whose owner is disabled.
+Satellite Keys use `satellite_v1_`; NSMC Keys are not interchangeable. All
+catalogue/calendar/monitoring access and task submissions require a portal
+session or a valid CLI Key. Keys control shared centre tasks;
+this is an operator API, not a multi-tenant per-user archive.
 
 Ordinary settings, including adding, removing or changing provider proxy routes,
 must be implemented through a centre-owned settings API, not by editing local

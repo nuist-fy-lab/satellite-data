@@ -67,7 +67,7 @@ func (s *Server) era5Submit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) era5Job(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if _, err := s.adminUser(r); err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		s.writeAdminError(w, r)
 		return
 	}
 	if s.era5Provider(w) == nil {
@@ -88,7 +88,7 @@ func (s *Server) era5Job(w http.ResponseWriter, r *http.Request) {
 func (s *Server) era5Result(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if _, err := s.adminUser(r); err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		s.writeAdminError(w, r)
 		return
 	}
 	if s.era5Provider(w) == nil {

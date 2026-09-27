@@ -4,6 +4,8 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const app = await readFile(new URL('./static/app.js', import.meta.url), 'utf8');
+const html = await readFile(new URL('./static/index.html', import.meta.url), 'utf8');
+const loginHTML = await readFile(new URL('./static/login.html', import.meta.url), 'utf8');
 const withoutBoot = app.replace(/\nboot\(\);\s*$/, '\n');
 
 function harness(product, schema) {
@@ -65,6 +67,17 @@ function selectInputs(h) {
   for (const [key, value] of [['north', '20'], ['west', '100'], ['south', '10'], ['east', '110']]) h.element('#era5-' + key).value = value;
 }
 
+test('portal login precedes data loading and credentials have no second login form', () => {
+  assert.equal(html.includes('access-login-form'), false);
+  assert.equal(html.includes('access-password'), false);
+  assert.match(html, /id="portal-logout"/);
+  assert.match(html, /id="cli-view"/);
+  assert.match(loginHTML, /name="username"/);
+  assert.match(loginHTML, /name="password"[^>]+type="password"|type="password"[^>]+name="password"/);
+  const boot = app.slice(app.lastIndexOf('async function boot()'));
+  assert.ok(boot.indexOf('/api/v1/auth/session') < boot.indexOf('loadSources()'));
+});
+
 test('hourly subset submits exactly one day, explicit times and pressure levels', async () => {
   const h = harness(product(), schema(false, true));
   await h.context.prepareERA5(h.context.testProduct, 1);
@@ -114,6 +127,42 @@ test('stale process schema cannot replace the selected dataset form', async () =
   const h = harness(product(), schema(false));
   await h.context.prepareERA5(h.context.testProduct, 0);
   assert.equal(h.element('#era5-variables').options.length, 0);
+});
+
+test('web CLI Key creation is session-only and never persists the returned Key', async () => {
+  const h = harness(product(), schema(false));
+  const requests = [];
+  const secret = 'satellite_v1_fixture-key';
+  h.context.fetch = async (url, options = {}) => {
+    requests.push({url, ...options});
+    const payload = options.method === 'POST' ? {api_key: secret} : [{id:'fixture', name:'Laptop', prefix:'satellite_v1_fixture', created_at:'2026-09-27'}];
+    return {ok:true, status:200, json:async () => payload};
+  };
+  h.element('#cli-key-name').value = 'Laptop';
+  await Promise.all([h.context.createCLIKey({preventDefault() {}}), h.context.createCLIKey({preventDefault() {}})]);
+  const created = requests.filter(item => item.method === 'POST');
+  assert.equal(created.length, 1);
+  assert.equal(created[0].url, '/api/v1/me/api-keys');
+  assert.equal(created[0].headers['X-Satellite-Action'], '1');
+  assert.equal(created[0].headers.Authorization, undefined);
+  assert.equal(h.element('#cli-key-value').value, secret);
+  assert.equal(h.storage.size, 0);
+  assert.equal(h.element('#cli-key-list').innerHTML.includes(secret), false);
+  h.context.clearCLIKey();
+  assert.equal(h.element('#cli-key-value').value, '');
+});
+
+test('late CLI Key creation response cannot restore a dismissed Key', async () => {
+  const h = harness(product(), schema(false));
+  let resolve;
+  h.context.fetch = () => new Promise(done => { resolve = done; });
+  h.element('#cli-key-name').value = 'Laptop';
+  const pending = h.context.createCLIKey({preventDefault() {}});
+  h.context.clearCLIKey();
+  resolve({ok:true, status:201, json:async () => ({api_key:'satellite_v1_fixture-key'})});
+  await pending;
+  assert.equal(h.element('#cli-key-value').value, '');
+  assert.equal(h.storage.size, 0);
 });
 
 test('unified ERA5 profile saves a new Token and clears secret inputs', async () => {

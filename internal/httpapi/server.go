@@ -32,6 +32,7 @@ type Server struct {
 	auth       *authstore.Store
 	sessionTTL time.Duration
 	central    *central.Service
+	portalAuth bool
 }
 
 func New(registry *provider.Registry, store *state.Store, clients ...*downloader.Client) http.Handler {
@@ -39,20 +40,25 @@ func New(registry *provider.Registry, store *state.Store, clients ...*downloader
 	if len(clients) > 0 {
 		downloaderClient = clients[0]
 	}
-	return newHandler(registry, store, downloaderClient, nil, 0)
+	return newHandler(registry, store, downloaderClient, nil, 0, false)
 }
 
 func NewWithAuth(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration, services ...*central.Service) http.Handler {
-	return newHandler(registry, store, downloaderClient, auth, sessionTTL, services...)
+	return newHandler(registry, store, downloaderClient, auth, sessionTTL, true, services...)
 }
 
-func newHandler(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration, services ...*central.Service) http.Handler {
-	s := &Server{registry: registry, store: store, downloader: downloaderClient, auth: auth, sessionTTL: sessionTTL}
+func newHandler(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration, portalAuth bool, services ...*central.Service) http.Handler {
+	s := &Server{registry: registry, store: store, downloader: downloaderClient, auth: auth, sessionTTL: sessionTTL, portalAuth: portalAuth}
 	if len(services) > 0 {
 		s.central = services[0]
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("POST /login", s.accessLogin)
+	mux.HandleFunc("POST /logout", s.accessLogout)
+	mux.HandleFunc("POST /api/v1/auth/login", s.accessLogin)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.accessLogout)
+	mux.HandleFunc("GET /api/v1/auth/session", s.portalSession)
 	mux.HandleFunc("GET /api/v1/sources", s.sources)
 	mux.HandleFunc("GET /api/v1/catalog", s.catalog)
 	mux.HandleFunc("GET /api/v1/search", s.search)
@@ -67,6 +73,9 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
 	mux.HandleFunc("GET /api/v1/monitor/downloads", s.downloadMonitor)
 	mux.HandleFunc("GET /api/v1/monitor/links", s.linkMonitor)
+	mux.HandleFunc("GET /api/v1/me/api-keys", s.listAPIKeys)
+	mux.HandleFunc("POST /api/v1/me/api-keys", s.createAPIKey)
+	mux.HandleFunc("DELETE /api/v1/me/api-keys/{id}", s.revokeAPIKey)
 	mux.HandleFunc("POST /api/v1/access/login", s.accessLogin)
 	mux.HandleFunc("POST /api/v1/access/logout", s.accessLogout)
 	mux.HandleFunc("GET /api/v1/access/session", s.accessSession)
@@ -95,8 +104,22 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	if err != nil {
 		panic(err)
 	}
+	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := s.webUser(r); err == nil {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		data, err := fs.ReadFile(static, "login.html")
+		if err != nil {
+			http.Error(w, "login page unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(data)
+	})
 	mux.Handle("GET /", http.FileServerFS(static))
-	return withHeaders(mux)
+	return withHeaders(s.withPortalAuth(mux))
 }
 
 type monitorWindow struct {
@@ -237,13 +260,23 @@ func (s *Server) accessLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := decodeRequestJSON(w, r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	isForm := strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded")
+	if isForm {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		if err := r.ParseForm(); err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid login form"))
+			return
+		}
+		request.Username, request.Password = r.PostFormValue("username"), r.PostFormValue("password")
+	} else {
+		if err := decodeRequestJSON(w, r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	user, err := s.auth.VerifyPassword(r.Context(), request.Username, request.Password)
-	if err != nil || user.Role != "admin" {
-		writeError(w, http.StatusUnauthorized, errors.New("invalid administrator credentials"))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, errors.New("invalid portal credentials"))
 		return
 	}
 	ttl := s.sessionTTL
@@ -259,6 +292,10 @@ func (s *Server) accessLogin(w http.ResponseWriter, r *http.Request) {
 		Name: accessSessionCookie, Value: token, Path: "/", MaxAge: int(ttl.Seconds()),
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
+	if isForm {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": user})
 }
 
@@ -275,7 +312,7 @@ func (s *Server) accessLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) accessSession(w http.ResponseWriter, r *http.Request) {
 	user, err := s.adminUser(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		s.writeAdminError(w, r)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": user})
@@ -283,7 +320,7 @@ func (s *Server) accessSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) accessPools(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.adminUser(r); err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		s.writeAdminError(w, r)
 		return
 	}
 	if s.central == nil {
@@ -327,7 +364,7 @@ func (s *Server) deleteAccessAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) authorizeAdminMutation(w http.ResponseWriter, r *http.Request) bool {
 	if _, err := s.adminUser(r); err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		s.writeAdminError(w, r)
 		return false
 	}
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
@@ -340,7 +377,23 @@ func (s *Server) authorizeAdminMutation(w http.ResponseWriter, r *http.Request) 
 	return true
 }
 
+func (s *Server) writeAdminError(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.webUser(r); err == nil {
+		writeError(w, http.StatusForbidden, errors.New("administrator role required"))
+		return
+	}
+	writeError(w, http.StatusUnauthorized, errors.New("portal session required"))
+}
+
 func (s *Server) adminUser(r *http.Request) (authstore.User, error) {
+	user, err := s.webUser(r)
+	if err != nil || user.Role != "admin" {
+		return authstore.User{}, errors.New("admin session required")
+	}
+	return user, nil
+}
+
+func (s *Server) webUser(r *http.Request) (authstore.User, error) {
 	if s.auth == nil {
 		return authstore.User{}, errors.New("auth unavailable")
 	}
@@ -348,11 +401,7 @@ func (s *Server) adminUser(r *http.Request) (authstore.User, error) {
 	if err != nil {
 		return authstore.User{}, err
 	}
-	user, err := s.auth.VerifySession(r.Context(), cookie.Value)
-	if err != nil || user.Role != "admin" {
-		return authstore.User{}, errors.New("admin session required")
-	}
-	return user, nil
+	return s.auth.VerifySession(r.Context(), cookie.Value)
 }
 
 func decodeRequestJSON(w http.ResponseWriter, r *http.Request, target any) error {
@@ -486,6 +535,9 @@ func (s *Server) downloaderProviders(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
+	}
+	for i := range items {
+		items[i].AuthRef = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"providers": items})
 }

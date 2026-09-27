@@ -13,8 +13,23 @@ Provider proxy route settings belong to the centre too. A future CLI settings
 API must expose only non-secret settings or references to centrally configured
 proxies, with server-side authorization; proxy credentials are not CLI settings.
 
-Public administration remains at `/api/v1/access/*`, requires an administrator
-session and rejects cross-origin mutations. Secret values are write-only.
+The CLI authenticates only with a Satellite API Key created on the web page.
+`GET/POST/DELETE /api/v1/me/api-keys` are owner-web-session-only; mutations
+also require `X-Satellite-Action: 1` and reject foreign origins. The full Key is
+returned once with `Cache-Control: no-store`. Only its SHA-256 digest and public
+ID are stored; list responses contain no Secret. Revocation and disabling an
+owner take effect at the next request. Keys cannot read/mutate provider access
+pools or manage other Keys, even with an accompanying web cookie. The CLI uses
+`satellite config set` for hidden input and private `0600` configuration, sends
+Bearer authorization only to the configured centre and never follows redirects.
+
+The entire web portal is session-protected, not just the access page. The
+`/login` page and login assets are public; unauthenticated pages redirect there
+and data APIs return 401. Login is at `/api/v1/auth/login` (or `POST /login`),
+session status at `/api/v1/auth/session`, and logout at `/api/v1/auth/logout`.
+`/api/v1/access/*` uses that same portal session, requires the administrator
+role and rejects cross-origin mutations; it does not ask for a second password.
+Legacy access-login endpoints remain compatible aliases. Secret values are write-only.
 The access page includes CDS credentials and ERA5 account binding.
 
 Configuration (choose production paths explicitly):

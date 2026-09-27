@@ -25,7 +25,9 @@ jobs:
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Check web JavaScript syntax
-        run: node --check web/static/app.js
+        run: |
+          node --check web/static/app.js
+          node --check web/static/login.js
       - name: Test ERA5 request controls without a browser
         run: node --test web/era5.test.mjs
       - name: Vet

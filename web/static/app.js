@@ -65,6 +65,10 @@ async function json(url, options = {}) {
   let payload = {};
   try { payload = await response.json(); } catch {}
   if (!response.ok) {
+    if (response.status === 401 && typeof window !== 'undefined') {
+      clearCLIKey();
+      window.location.replace('/login');
+    }
     const error = new Error(payload.error || `HTTP ${response.status}`);
     error.status = response.status;
     throw error;
@@ -89,6 +93,7 @@ function setSidebar(expanded, persist = false) {
 }
 
 function setView(id) {
+  if (id !== 'cli-view') clearCLIKey();
   if (id !== 'monitor-view') clearTimeout(state.monitor.poll);
   if (id !== 'downloads-view') clearTimeout(state.downloads.poll);
   document.querySelectorAll('.view').forEach(node => node.classList.toggle('active', node.id === id));
@@ -1741,23 +1746,63 @@ const credentialGuides = {
 };
 
 async function loadAccess() {
-  $('#access-login-error').textContent = '';
+  $('#access-error').textContent = '';
   try {
-    const session = await json('/api/v1/access/session');
-    state.access.user = session.user;
-    $('#access-user').textContent = session.user?.username ? `${session.user.username} · admin` : '管理员';
-    $('#access-login').classList.add('hidden');
-    $('#access-manager').classList.remove('hidden');
-    $('#logout-access').classList.remove('hidden');
-    $('#refresh-access').classList.remove('hidden');
     await loadAccessPools();
   } catch (error) {
-    state.access.user = null;
-    $('#access-user').textContent = '';
-    $('#access-manager').classList.add('hidden');
-    $('#access-login').classList.remove('hidden');
-    $('#logout-access').classList.add('hidden');
+    $('#access-error').textContent = error.message;
   }
+}
+
+let cliKeyGeneration = 0;
+
+function clearCLIKey() {
+  cliKeyGeneration++;
+  $('#cli-key-value').value = '';
+  $('#cli-key-new').classList.add('hidden');
+}
+
+async function loadCLIKeys() {
+  const keys = await json('/api/v1/me/api-keys');
+  const node = $('#cli-key-list');
+  node.innerHTML = keys.length ? keys.map(key => `<div class="cli-key-row"><div><strong>${esc(key.name)}</strong><code>${esc(key.prefix)}</code><small>创建 ${esc(key.created_at)}${key.last_used_at ? ' · 最近使用 ' + esc(key.last_used_at) : ''}${key.revoked_at ? ' · 已撤销' : ''}</small></div>${key.revoked_at ? '' : `<button type="button" data-cli-key-revoke="${esc(key.id)}">撤销</button>`}</div>`).join('') : '<div class="pool-empty">暂无 API Key</div>';
+}
+
+async function createCLIKey(event) {
+  event.preventDefault();
+  const button = $('#cli-key-create');
+  if (button.disabled) return;
+  clearCLIKey();
+  const generation = cliKeyGeneration;
+  $('#cli-key-error').textContent = '';
+  button.disabled = true;
+  try {
+    const payload = await json('/api/v1/me/api-keys', {method:'POST', headers:{'Content-Type':'application/json', 'X-Satellite-Action':'1'}, body:JSON.stringify({name:$('#cli-key-name').value.trim()})});
+    if (generation !== cliKeyGeneration) return;
+    $('#cli-key-value').value = payload.api_key;
+    $('#cli-key-new').classList.remove('hidden');
+    $('#cli-key-name').value = '';
+    await loadCLIKeys();
+  } catch (error) { if (generation === cliKeyGeneration) $('#cli-key-error').textContent = error.message; }
+  finally { button.disabled = false; }
+}
+
+async function revokeCLIKey(event) {
+  const button = event.target.closest('[data-cli-key-revoke]');
+  if (!button || !confirm('撤销这个 CLI API Key？')) return;
+  button.disabled = true;
+  $('#cli-key-error').textContent = '';
+  try {
+    await json('/api/v1/me/api-keys/' + encodeURIComponent(button.dataset.cliKeyRevoke), {method:'DELETE', headers:{'X-Satellite-Action':'1'}});
+    clearCLIKey();
+    await loadCLIKeys();
+  } catch (error) { $('#cli-key-error').textContent = error.message; }
+  finally { button.disabled = false; }
+}
+
+async function copyCLIKey() {
+  try { await navigator.clipboard.writeText($('#cli-key-value').value); }
+  catch { $('#cli-key-error').textContent = '剪贴板不可用'; }
 }
 
 async function loadAccessPools() {
@@ -2023,20 +2068,12 @@ async function deletePoolItem(kind, id) {
   } catch (error) { alert(error.message); }
 }
 
-async function loginAccess(event) {
-  event.preventDefault();
-  $('#access-login-error').textContent = '';
+async function logoutPortal() {
+  clearCLIKey();
   try {
-    await json('/api/v1/access/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:$('#access-username').value, password:$('#access-password').value})});
-    $('#access-password').value = '';
-    await loadAccess();
-  } catch (error) { $('#access-login-error').textContent = error.message; }
-}
-
-async function logoutAccess() {
-  try { await json('/api/v1/access/logout', {method:'POST'}); } catch {}
-  state.access.user = null;
-  await loadAccess();
+    await json('/api/v1/auth/logout', {method:'POST'});
+    window.location.replace('/login');
+  } catch (error) { $('#service-label').textContent = error.message; }
 }
 
 async function health() {
@@ -2057,6 +2094,7 @@ function bind() {
   document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', () => {
     setView(node.dataset.view);
     if (node.dataset.view === 'access-view') loadAccess();
+    if (node.dataset.view === 'cli-view') loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; });
     if (node.dataset.view === 'monitor-view') loadMonitor(true);
     if (node.dataset.view === 'downloads-view') loadDownloads(true);
   }));
@@ -2202,9 +2240,13 @@ function bind() {
     localStorage.setItem('satellite-data-monitor-source', state.monitor.selected);
     renderMonitor();
   });
-  $('#access-login-form').addEventListener('submit', loginAccess);
+  $('#portal-logout').addEventListener('click', logoutPortal);
+  $('#refresh-cli-keys').addEventListener('click', () => { clearCLIKey(); loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; }); });
+  $('#cli-key-form').addEventListener('submit', createCLIKey);
+  $('#cli-key-list').addEventListener('click', revokeCLIKey);
+  $('#cli-key-copy').addEventListener('click', copyCLIKey);
+  $('#cli-key-dismiss').addEventListener('click', clearCLIKey);
   $('#refresh-access').addEventListener('click', loadAccess);
-  $('#logout-access').addEventListener('click', logoutAccess);
   document.querySelectorAll('[data-pool-new]').forEach(node => node.addEventListener('click', () => openPoolForm(node.dataset.poolNew)));
   document.querySelectorAll('[data-form-cancel]').forEach(node => node.addEventListener('click', () => closePoolForm(node.dataset.formCancel)));
   $('#account-source').addEventListener('change', () => { rebuildAccessSelects(); credentialFields(); });
@@ -2237,6 +2279,10 @@ function bind() {
 }
 
 async function boot() {
+  const session = await json('/api/v1/auth/session');
+  state.access.user = session.user;
+  $('#portal-user').textContent = session.user.username;
+  document.querySelectorAll('[data-admin-only]').forEach(node => node.classList.toggle('hidden', session.user.role !== 'admin'));
   setSidebar(localStorage.getItem(SIDEBAR_KEY) === '1');
   timezoneEl.value = state.displayZone;
   fillYears();

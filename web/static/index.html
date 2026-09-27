@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=9">
+  <link rel="stylesheet" href="/styles.css?v=11">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <aside class="sidebar" aria-label="功能导航">
@@ -21,11 +21,13 @@
       <button class="nav-item" type="button" data-view="downloads-view"><span class="nav-icon">⇩</span><span class="nav-label">下载任务</span></button>
       <button class="nav-item" type="button" data-view="sync-view"><span class="nav-icon">↻</span><span class="nav-label">同步订阅</span></button>
       <button class="nav-item" type="button" data-view="monitor-view"><span class="nav-icon">∿</span><span class="nav-label">运行监控</span></button>
-      <button class="nav-item" type="button" data-view="access-view"><span class="nav-icon">⌘</span><span class="nav-label">访问凭据</span></button>
+      <button class="nav-item" type="button" data-view="cli-view"><span class="nav-icon">⌨</span><span class="nav-label">CLI</span></button>
+      <button class="nav-item" type="button" data-view="access-view" data-admin-only><span class="nav-icon">⌘</span><span class="nav-label">访问凭据</span></button>
     </nav>
     <div class="sidebar-status" title="Satellite Data 服务状态">
       <i id="service-dot"></i><span class="nav-label" id="service-label">连接中</span>
     </div>
+    <div class="portal-account"><span id="portal-user" class="nav-label"></span><button id="portal-logout" type="button" title="退出门户">退出</button></div>
   </aside>
 
   <main>
@@ -265,30 +267,34 @@
       </section>
     </section>
 
-    <section class="view" id="access-view">
+    <section class="view" id="cli-view">
+      <header class="simple-header"><div class="brand">CLI</div><button id="refresh-cli-keys" type="button">刷新</button></header>
+      <section class="cli-key-manager" aria-label="CLI API Key">
+        <div class="pool-head"><strong>API Key</strong></div>
+        <form id="cli-key-form" class="cli-key-form">
+          <label>名称<input id="cli-key-name" maxlength="80" required autocomplete="off"></label>
+          <button id="cli-key-create" type="submit">创建</button>
+        </form>
+        <div id="cli-key-new" class="cli-key-new hidden">
+          <label>新 Key · 仅此次显示<input id="cli-key-value" type="password" readonly autocomplete="off"></label>
+          <button id="cli-key-copy" type="button">复制</button>
+          <button id="cli-key-dismiss" type="button">关闭</button>
+        </div>
+        <div id="cli-key-error" class="form-error"></div>
+        <div id="cli-key-list" class="pool-list"></div>
+      </section>
+    </section>
+
+    <section class="view" id="access-view" data-admin-only>
       <header class="simple-header">
         <div><div class="brand">访问池</div><div class="subbrand">访问配置 · IP 代理池</div></div>
         <div class="controls">
-          <span id="access-user" class="access-user"></span>
           <button id="refresh-access" type="button">刷新</button>
-          <button id="logout-access" type="button" class="hidden">退出管理</button>
         </div>
       </header>
 
-      <section id="access-login" class="access-login hidden">
-        <div>
-          <strong>管理员解锁</strong>
-          <p>使用 NSMC Data 的管理员账号。管理会话只用于访问池，不影响公开数据日历。</p>
-        </div>
-        <form id="access-login-form" class="access-login-form">
-          <input id="access-username" name="username" autocomplete="username" placeholder="管理员账号" required>
-          <input id="access-password" name="password" type="password" autocomplete="current-password" placeholder="密码" required>
-          <button type="submit">解锁</button>
-        </form>
-        <div id="access-login-error" class="form-error"></div>
-      </section>
-
-      <section id="access-manager" class="hidden">
+      <div id="access-error" class="form-error"></div>
+      <section id="access-manager">
         <div class="access-summary">
           <article><span>访问配置</span><strong id="access-account-count">0</strong></article>
           <article><span>待绑定凭据</span><strong id="access-credential-count">0</strong></article>
@@ -335,6 +341,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=17"></script>
+  <script type="module" src="/app.js?v=19"></script>
 </body>
 </html>
