@@ -10,6 +10,7 @@ import (
 
 	"github.com/nuist-fy-lab/satellite-data/internal/app"
 	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
+	"github.com/nuist-fy-lab/satellite-data/internal/central"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
 
@@ -72,5 +73,39 @@ func TestAccessManagementRequiresAdminSession(t *testing.T) {
 	handler.ServeHTTP(pools, poolsReq)
 	if pools.Code != http.StatusServiceUnavailable {
 		t.Fatalf("authenticated pools status=%d body=%s", pools.Code, pools.Body.String())
+	}
+
+	vault, err := central.OpenVault(filepath.Join(dir, "central.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessStore, err := central.OpenStore(filepath.Join(dir, "central.sqlite3"), vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer accessStore.Close()
+	handler = NewWithAuth(registry, dataStore, nil, auth, time.Hour, central.NewService(accessStore))
+	requestBody := `{"alias":"ERA5","source_id":"era5","proxy_mode":"direct","enabled":true,"secret":{"token":"fixture-CDS"}}`
+	profile := func(origin string, withCookie bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/access/profiles", strings.NewReader(requestBody))
+		req.Header.Set("Content-Type", "application/json")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if withCookie {
+			req.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}
+	if w := profile("", false); w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthed profile status=%d", w.Code)
+	}
+	if w := profile("https://other.example", true); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin profile status=%d", w.Code)
+	}
+	if w := profile("http://example.com", true); w.Code != http.StatusOK || strings.Contains(w.Body.String(), "fixture-CDS") {
+		t.Fatalf("profile save status=%d or secret leaked", w.Code)
 	}
 }

@@ -107,6 +107,64 @@ function uniqueSorted(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), undefined, {numeric: true}));
 }
 
+// Mission periods are not file-coverage intervals. An end is shown only for
+// missions with a confirmed end of science observations.
+const missionPeriods = {
+  'CloudSat': {start: 2006, end: '2023-12-20'},
+  'CALIPSO': {start: 2006, end: '2023-08-01'},
+  'Terra': {start: 2000}, 'Aqua': {start: 2002},
+  'Suomi-NPP': {start: 2011}, 'NOAA-20': {start: 2017}, 'NOAA-21': {start: 2022},
+  'GOES-16': {start: 2017}, 'GOES-17': {start: 2018, status: '在轨存储'},
+  'GOES-18': {start: 2022}, 'GOES-19': {start: 2024},
+  'Himawari-8': {start: 2015, status: '备用'}, 'Himawari-9': {start: 2022},
+  'EarthCARE': {start: 2024}, 'MTG': {start: 2022},
+};
+
+function satelliteTimelineData(collections) {
+  const bySatellite = new Map();
+  for (const product of collections) {
+    if (!product.satellite || product.satellite === 'ECMWF') continue;
+    for (const name of product.satellite.split(' / ')) {
+      const year = Number(String(product.metadata?.time_start || '').slice(0, 4));
+      const found = bySatellite.get(name) || {name, filter: product.satellite, dataStart: null};
+      if (year >= 1990 && year <= new Date().getUTCFullYear() && (!found.dataStart || year < found.dataStart)) found.dataStart = year;
+      bySatellite.set(name, found);
+    }
+  }
+  return [...bySatellite.values()].map(row => ({
+    ...row, start: missionPeriods[row.name]?.start || row.dataStart,
+    end: missionPeriods[row.name]?.end || null,
+    status: missionPeriods[row.name]?.status || '',
+  })).sort((a, b) => (a.start || 9999) - (b.start || 9999) || a.name.localeCompare(b.name));
+}
+
+function renderSatelliteTimelines() {
+  const node = $('#satellite-timeline-rows');
+  const rows = satelliteTimelineData(state.collections);
+  $('#satellite-timelines').classList.toggle('hidden', rows.length === 0);
+  node.replaceChildren();
+  const origin = Date.UTC(1999, 0, 1);
+  const now = Date.now();
+  const horizon = Date.UTC(new Date().getUTCFullYear() + 1, 0, 1);
+  const percent = timestamp => Math.max(0, Math.min(100, (timestamp - origin) / (horizon - origin) * 100));
+  for (const row of rows) {
+    const start = row.start ? Date.UTC(row.start, 0, 1) : null;
+    const end = row.end ? Date.parse(row.end + 'T23:59:59Z') : now;
+    const from = start === null ? 0 : percent(start);
+    const to = percent(end);
+    const status = row.end ? '历史归档 · END' : (row.status || '终点未确认');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `satellite-timeline${row.end ? ' ended' : ''}${row.filter === satelliteEl.value ? ' selected' : ''}`;
+    button.dataset.satellite = row.filter;
+    button.setAttribute('aria-label', `${row.name}，${row.start || '起点待核实'} 至 ${row.end || status}，${status}`);
+    button.innerHTML = `<span class="timeline-name">${esc(row.name)}</span><span class="timeline-dates"><span>${esc(row.start || '起点待核实')}</span><span>${esc(row.end || '至今')}</span></span>
+      <span class="timeline-track"><i class="timeline-fill" style="--timeline-start:${from}%;--timeline-end:${to}%"></i>${row.end ? `<i class="timeline-end" style="left:${to}%"></i>` : ''}</span>
+      <span class="timeline-status">${esc(status)}</span>`;
+    node.append(button);
+  }
+}
+
 function fillSelect(node, values, allLabel = '') {
   const previous = node.value;
   node.replaceChildren();
@@ -175,6 +233,7 @@ function fillMonths() {
 
 function updateSelectedProduct() {
   state.selected = selectedCollection();
+  renderSatelliteTimelines();
   state.dayState.clear();
   state.coverage.requestSeq++;
   state.coverage.fileSeq++;
@@ -1706,10 +1765,10 @@ async function loadAccessPools() {
   state.access.credentials = payload.credentials || [];
   state.access.proxies = payload.proxies || [];
   state.access.accounts = payload.accounts || [];
+  const bound = new Set(state.access.accounts.map(item => item.credential_id).filter(Boolean));
   $('#access-account-count').textContent = state.access.accounts.length;
-  $('#access-credential-count').textContent = state.access.credentials.length;
+  $('#access-credential-count').textContent = state.access.credentials.filter(item => !bound.has(item.id)).length;
   $('#access-proxy-count').textContent = state.access.proxies.length;
-  renderCredentialList();
   renderAccountList();
   renderProxyList();
   rebuildAccessSelects();
@@ -1719,25 +1778,6 @@ function poolStatePill(item) {
   const stateName = item.enabled === false ? 'disabled' : (item.state || 'ready');
   const label = {ready: '可用', auth_required: '需认证', degraded: '降级', disabled: '已停用'}[stateName] || stateName;
   return `<span class="pool-pill ${esc(stateName)}">${esc(label)}</span>`;
-}
-
-function renderCredentialList() {
-  const node = $('#credential-list');
-  node.replaceChildren();
-  if (!state.access.credentials.length) {
-    node.innerHTML = '<div class="pool-empty">暂无凭据</div>';
-    return;
-  }
-  for (const item of state.access.credentials) {
-    const row = document.createElement('div');
-    row.className = 'pool-row';
-    row.innerHTML = `
-      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(accessKindLabels[item.kind] || item.kind)} · ${esc(item.secret_hint || 'Secret 已保存')}</small></div>
-      <div class="pool-actions"><button type="button" data-edit-credential="${item.id}">编辑</button><button type="button" data-delete-credential="${item.id}">删除</button></div></div>
-      <div class="pool-meta">${poolStatePill(item)}${credentialExpiryPill(item)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
-      ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
-    node.append(row);
-  }
 }
 
 function credentialExpiryPill(item) {
@@ -1763,19 +1803,28 @@ function credentialExpiryPill(item) {
 function renderAccountList() {
   const node = $('#account-list');
   node.replaceChildren();
-  if (!state.access.accounts.length) {
-    node.innerHTML = '<div class="pool-empty">暂无账号路由</div>';
-    return;
-  }
+  const credentialById = new Map(state.access.credentials.map(item => [item.id, item]));
+  const bound = new Set(state.access.accounts.map(item => item.credential_id).filter(Boolean));
+  if (!state.access.accounts.length && !state.access.credentials.length) node.innerHTML = '<div class="pool-empty">暂无访问配置</div>';
   for (const item of state.access.accounts) {
     const route = item.proxy_mode === 'direct' ? '直连' : item.proxy_mode === 'auto' ? '代理池' : `固定 · ${item.proxy_alias || '—'}`;
+    const stored = credentialById.get(item.credential_id);
     const row = document.createElement('div');
     row.className = 'pool-row';
     row.innerHTML = `
-      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(item.source_id)} · ${esc(item.credential_alias || '匿名')} · ${esc(route)}</small></div>
+      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(item.source_id)} · ${esc(stored ? `${accessKindLabels[stored.kind] || stored.kind} · Secret 已保存` : '匿名')} · ${esc(route)}</small></div>
       <div class="pool-actions"><button type="button" data-edit-account="${item.id}">编辑</button><button type="button" data-delete-account="${item.id}">删除</button></div></div>
-      <div class="pool-meta">${poolStatePill(item)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
+      <div class="pool-meta">${poolStatePill(item)}${stored ? credentialExpiryPill(stored) : ''}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
       ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
+    node.append(row);
+  }
+  for (const item of state.access.credentials) {
+    if (bound.has(item.id)) continue;
+    const row = document.createElement('div');
+    row.className = 'pool-row';
+    row.innerHTML = `<div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(accessKindLabels[item.kind] || item.kind)} · 已加密，尚未绑定 Provider</small></div>
+      <div class="pool-actions"><button type="button" data-bind-credential="${item.id}">绑定</button><button type="button" data-delete-credential="${item.id}">删除</button></div></div>
+      <div class="pool-meta"><span class="pool-pill">待绑定</span>${credentialExpiryPill(item)}</div>`;
     node.append(row);
   }
 }
@@ -1805,13 +1854,19 @@ function formatAccessTime(value) {
 }
 
 function credentialFields() {
-  const kind = $('#credential-kind').value;
+  const kind = providerKinds[$('#account-source').value];
   const node = $('#credential-secret-fields');
   const note = $('#credential-secret-note');
   const password = (id, label, placeholder = '') => `<label>${label}<input id="${id}" type="password" autocomplete="new-password" placeholder="${placeholder}"></label>`;
+  if (!kind) {
+    node.replaceChildren();
+    note.textContent = '该 Provider 无需凭据。';
+    renderCredentialGuide();
+    return;
+  }
   if (['laads','earthdata','earthcare','cds'].includes(kind)) {
     node.innerHTML = `<div class="secret-grid">${password('credential-token','Token','编辑时留空即保留')}</div>`;
-    note.textContent = '新增必须填写 Token；编辑时留空表示保留原 Token。';
+    note.textContent = '可沿用上方已加密 Token；填写新 Token 则为此配置创建独立凭据。';
   } else if (kind === 'eumetsat') {
     node.innerHTML = `<div class="secret-grid">${password('credential-consumer-key','Consumer Key','从 EUMETSAT API Key Management 复制')}${password('credential-consumer-secret','Consumer Secret','从 EUMETSAT API Key Management 复制')}</div>`;
     note.textContent = '这里只填写官网 User credentials 区域的 Consumer Key + Consumer Secret。API Token 无需填写，中心会自动申请并刷新；编辑时两项都留空表示保留原凭据。';
@@ -1823,7 +1878,7 @@ function credentialFields() {
 }
 
 function renderCredentialGuide() {
-  const kind = $('#credential-kind').value;
+  const kind = providerKinds[$('#account-source').value];
   const guide = credentialGuides[kind];
   const node = $('#credential-guide');
   if (!guide) {
@@ -1847,12 +1902,16 @@ function renderCredentialGuide() {
 function rebuildAccessSelects() {
   const credentialSelect = $('#account-credential');
   const previousCredential = credentialSelect.value;
-  credentialSelect.replaceChildren(new Option('匿名 / 无凭据', ''));
+  credentialSelect.replaceChildren(new Option('新凭据 / 无凭据', ''));
   const required = providerKinds[$('#account-source').value] || '';
-  for (const item of state.access.credentials.filter(item => required && item.kind === required)) {
-    credentialSelect.add(new Option(`${item.alias} · ${accessKindLabels[item.kind] || item.kind}`, String(item.id)));
+  const profileByCredential = new Map(state.access.accounts.filter(item => item.credential_id).map(item => [item.credential_id, item.alias]));
+  for (const item of state.access.credentials) {
+    if (item.kind !== required) continue;
+    credentialSelect.add(new Option(`${profileByCredential.get(item.id) || item.alias} · ${accessKindLabels[item.kind] || item.kind}`, String(item.id)));
   }
   if ([...credentialSelect.options].some(option => option.value === previousCredential)) credentialSelect.value = previousCredential;
+  $('#account-credential-row').classList.toggle('hidden', !required);
+  credentialFields();
 
   const proxySelect = $('#account-proxy');
   const previousProxy = proxySelect.value;
@@ -1862,18 +1921,10 @@ function rebuildAccessSelects() {
   $('#account-proxy-row').classList.toggle('hidden', $('#account-proxy-mode').value !== 'fixed');
 }
 
-function openPoolForm(kind, item = null) {
+function openPoolForm(kind, item = null, savedCredential = null) {
   $(`#${kind}-form`).classList.remove('hidden');
   $(`#${kind}-error`).textContent = '';
-  if (kind === 'credential') {
-    $('#credential-id').value = item?.id || '';
-    $('#credential-alias').value = item?.alias || '';
-    $('#credential-kind').value = item?.kind || 'laads';
-    $('#credential-kind').disabled = Boolean(item);
-    $('#credential-priority').value = item?.priority ?? 0;
-    $('#credential-enabled').checked = item?.enabled ?? true;
-    credentialFields();
-  } else if (kind === 'proxy') {
+  if (kind === 'proxy') {
     $('#proxy-id').value = item?.id || '';
     $('#proxy-alias').value = item?.alias || '';
     $('#proxy-url').value = '';
@@ -1882,55 +1933,21 @@ function openPoolForm(kind, item = null) {
     $('#proxy-enabled').checked = item?.enabled ?? true;
   } else {
     $('#account-id').value = item?.id || '';
-    $('#account-alias').value = item?.alias || '';
-    $('#account-source').value = item?.source_id || 'goes';
+    $('#account-alias').value = item?.alias || (savedCredential ? `${savedCredential.alias} access`.slice(0, 64) : '');
+    $('#account-source').value = item?.source_id || ({cds:'era5',laads:'modis',earthdata:'calipso',earthcare:'earthcare',eumetsat:'mtg',cloudsat:'cloudsat'}[savedCredential?.kind] || 'goes');
     $('#account-proxy-mode').value = item?.proxy_mode || 'direct';
     $('#account-priority').value = item?.priority ?? 0;
     $('#account-enabled').checked = item?.enabled ?? true;
     rebuildAccessSelects();
-    $('#account-credential').value = item?.credential_id ? String(item.credential_id) : '';
+    $('#account-credential').value = item?.credential_id ? String(item.credential_id) : savedCredential ? String(savedCredential.id) : '';
     $('#account-proxy').value = item?.proxy_id ? String(item.proxy_id) : '';
   }
 }
 
 function closePoolForm(kind) {
   $(`#${kind}-form`).classList.add('hidden');
-  if (kind === 'credential') {
-    $('#credential-kind').disabled = false;
-    $('#credential-secret-fields').replaceChildren();
-  }
+  if (kind === 'account') $('#credential-secret-fields').replaceChildren();
   if (kind === 'proxy') $('#proxy-url').value = '';
-}
-
-async function saveCredential(event) {
-  event.preventDefault();
-  const kind = $('#credential-kind').value;
-  const currentId = Number($('#credential-id').value || 0);
-  const alias = $('#credential-alias').value.trim();
-  if (duplicateAlias(state.access.credentials, alias, currentId)) {
-    $('#credential-error').textContent = `凭据别名“${alias}”已存在，请编辑已有凭据或换一个别名。`;
-    return;
-  }
-  const secret = {};
-  if (['laads','earthdata','earthcare','cds'].includes(kind)) secret.token = $('#credential-token')?.value || '';
-  else if (kind === 'eumetsat') {
-    secret.consumer_key = $('#credential-consumer-key')?.value || '';
-    secret.consumer_secret = $('#credential-consumer-secret')?.value || '';
-  } else {
-    secret.username = $('#credential-username')?.value || '';
-    secret.password = $('#credential-password')?.value || '';
-  }
-  Object.keys(secret).forEach(key => { if (!secret[key]) delete secret[key]; });
-  const payload = {
-    alias, kind, secret,
-    priority: Number($('#credential-priority').value || 0), enabled: $('#credential-enabled').checked,
-  };
-  if (currentId) payload.id = currentId;
-  try {
-    await json('/api/v1/access/credentials', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-    closePoolForm('credential');
-    await loadAccessPools();
-  } catch (error) { $('#credential-error').textContent = error.message; }
 }
 
 async function saveProxy(event) {
@@ -1964,14 +1981,28 @@ async function saveAccount(event) {
   }
   const credential = $('#account-credential').value;
   const proxy = $('#account-proxy').value;
+  const kind = providerKinds[$('#account-source').value];
+  const secret = {};
+  if (['laads','earthdata','earthcare','cds'].includes(kind)) secret.token = $('#credential-token')?.value || '';
+  else if (kind === 'eumetsat') {
+    secret.consumer_key = $('#credential-consumer-key')?.value || '';
+    secret.consumer_secret = $('#credential-consumer-secret')?.value || '';
+  } else if (kind === 'cloudsat') {
+    secret.username = $('#credential-username')?.value || '';
+    secret.password = $('#credential-password')?.value || '';
+  }
+  Object.keys(secret).forEach(key => { if (!secret[key]) delete secret[key]; });
+  const newSecret = Object.keys(secret).length > 0;
+  if (newSecret && credential && !confirm('新凭据将仅用于当前配置，原加密凭据保留。继续吗？')) return;
   const payload = {
     alias, source_id: $('#account-source').value,
-    credential_id: credential ? Number(credential) : null, proxy_mode: $('#account-proxy-mode').value,
+    credential_id: !newSecret && credential ? Number(credential) : null, secret,
+    proxy_mode: $('#account-proxy-mode').value,
     proxy_id: proxy ? Number(proxy) : null, priority: Number($('#account-priority').value || 0), enabled: $('#account-enabled').checked,
   };
   if (currentId) payload.id = currentId;
   try {
-    await json('/api/v1/access/accounts', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    await json('/api/v1/access/profiles', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     closePoolForm('account');
     await loadAccessPools();
   } catch (error) { $('#account-error').textContent = error.message; }
@@ -1984,7 +2015,7 @@ function duplicateAlias(items, alias, currentId = 0) {
 }
 
 async function deletePoolItem(kind, id) {
-  if (!confirm('确认删除这条配置？关联账号可能会立即失去可用路由。')) return;
+  if (!confirm(kind === 'account' ? '确认删除此访问配置？已加密凭据会保留为待绑定项。' : '确认删除这条配置？关联账号可能会立即失去可用路由。')) return;
   try {
     const resource = kind === 'proxy' ? 'proxies' : `${kind}s`;
     await json(`/api/v1/access/${resource}/${id}`, {method:'DELETE'});
@@ -2176,18 +2207,10 @@ function bind() {
   $('#logout-access').addEventListener('click', logoutAccess);
   document.querySelectorAll('[data-pool-new]').forEach(node => node.addEventListener('click', () => openPoolForm(node.dataset.poolNew)));
   document.querySelectorAll('[data-form-cancel]').forEach(node => node.addEventListener('click', () => closePoolForm(node.dataset.formCancel)));
-  $('#credential-kind').addEventListener('change', credentialFields);
   $('#account-source').addEventListener('change', rebuildAccessSelects);
-  $('#account-proxy-mode').addEventListener('change', rebuildAccessSelects);
-  $('#credential-form').addEventListener('submit', saveCredential);
+  $('#account-proxy-mode').addEventListener('change', () => $('#account-proxy-row').classList.toggle('hidden', $('#account-proxy-mode').value !== 'fixed'));
   $('#proxy-form').addEventListener('submit', saveProxy);
   $('#account-form').addEventListener('submit', saveAccount);
-  $('#credential-list').addEventListener('click', event => {
-    const edit = event.target.closest('[data-edit-credential]');
-    const remove = event.target.closest('[data-delete-credential]');
-    if (edit) openPoolForm('credential', state.access.credentials.find(item => item.id === Number(edit.dataset.editCredential)));
-    if (remove) deletePoolItem('credential', Number(remove.dataset.deleteCredential));
-  });
   $('#proxy-list').addEventListener('click', event => {
     const edit = event.target.closest('[data-edit-proxy]');
     const remove = event.target.closest('[data-delete-proxy]');
@@ -2197,8 +2220,19 @@ function bind() {
   $('#account-list').addEventListener('click', event => {
     const edit = event.target.closest('[data-edit-account]');
     const remove = event.target.closest('[data-delete-account]');
+    const bind = event.target.closest('[data-bind-credential]');
+    const discard = event.target.closest('[data-delete-credential]');
     if (edit) openPoolForm('account', state.access.accounts.find(item => item.id === Number(edit.dataset.editAccount)));
     if (remove) deletePoolItem('account', Number(remove.dataset.deleteAccount));
+    if (bind) openPoolForm('account', null, state.access.credentials.find(item => item.id === Number(bind.dataset.bindCredential)));
+    if (discard) deletePoolItem('credential', Number(discard.dataset.deleteCredential));
+  });
+  $('#satellite-timeline-rows').addEventListener('click', event => {
+    const row = event.target.closest('[data-satellite]');
+    if (!row || ![...satelliteEl.options].some(option => option.value === row.dataset.satellite)) return;
+    satelliteEl.value = row.dataset.satellite;
+    rebuildFilters('satellite');
+    persistFilters();
   });
 }
 

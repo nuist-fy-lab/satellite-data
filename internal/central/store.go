@@ -310,6 +310,14 @@ func (s *Store) Pools(ctx context.Context) (downloader.AccessPools, error) {
 	}); err != nil {
 		return pools, err
 	}
+	credentials := make(map[int64]string, len(pools.Credentials))
+	for _, item := range pools.Credentials {
+		credentials[item.ID] = item.Alias
+	}
+	proxies := make(map[int64]string, len(pools.Proxies))
+	for _, item := range pools.Proxies {
+		proxies[item.ID] = item.Alias
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id,credential_id,proxy_id,metadata FROM accounts ORDER BY alias COLLATE NOCASE`)
 	if err != nil {
 		return pools, err
@@ -339,15 +347,11 @@ func (s *Store) Pools(ctx context.Context) (downloader.AccessPools, error) {
 		}
 		item.CredentialAlias = ""
 		item.ProxyAlias = ""
-		for _, credential := range pools.Credentials {
-			if item.CredentialID != nil && credential.ID == *item.CredentialID {
-				item.CredentialAlias = credential.Alias
-			}
+		if item.CredentialID != nil {
+			item.CredentialAlias = credentials[*item.CredentialID]
 		}
-		for _, proxy := range pools.Proxies {
-			if item.ProxyID != nil && proxy.ID == *item.ProxyID {
-				item.ProxyAlias = proxy.Alias
-			}
+		if item.ProxyID != nil {
+			item.ProxyAlias = proxies[*item.ProxyID]
 		}
 		pools.Accounts = append(pools.Accounts, item)
 	}

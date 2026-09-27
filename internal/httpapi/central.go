@@ -68,6 +68,22 @@ func (s *Server) centralAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"account": item})
 }
+func (s *Server) centralProfile(w http.ResponseWriter, r *http.Request) {
+	if !s.centralMutation(w, r) {
+		return
+	}
+	var payload central.ProfileSpec
+	if err := decodeRequestJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	item, err := s.central.Store.UpsertProfile(r.Context(), payload)
+	if err != nil {
+		centralPoolError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"profile": item})
+}
 func (s *Server) centralDelete(w http.ResponseWriter, r *http.Request) {
 	if !s.centralMutation(w, r) {
 		return

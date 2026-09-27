@@ -77,6 +77,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("DELETE /api/v1/access/proxies/{id}", s.deleteAccessProxy)
 	mux.HandleFunc("POST /api/v1/access/accounts", s.accessAccount)
 	mux.HandleFunc("DELETE /api/v1/access/accounts/{id}", s.deleteAccessAccount)
+	mux.HandleFunc("POST /api/v1/access/profiles", s.centralProfile)
 	mux.HandleFunc("POST /api/v1/access/central/credentials", s.centralCredential)
 	mux.HandleFunc("POST /api/v1/access/central/proxies", s.centralProxy)
 	mux.HandleFunc("POST /api/v1/access/central/accounts", s.centralAccount)

@@ -116,19 +116,21 @@ test('stale process schema cannot replace the selected dataset form', async () =
   assert.equal(h.element('#era5-variables').options.length, 0);
 });
 
-test('CDS access form saves a Token to the centre and clears secret inputs', async () => {
+test('unified ERA5 profile saves a new Token and clears secret inputs', async () => {
   const h = harness(product(), schema(false));
-  h.element('#credential-kind').value = 'cds';
+  h.element('#account-source').value = 'era5';
   h.context.credentialFields();
   assert.match(h.element('#credential-secret-fields').innerHTML, /credential-token/);
   assert.match(h.element('#credential-secret-fields').innerHTML, /type="password"/);
   h.element('#credential-token').value = 'fixture-cds-token';
-  h.element('#credential-alias').value = 'CDS';
-  h.element('#credential-enabled').checked = true;
-  await h.context.saveCredential({preventDefault() {}});
+  h.element('#account-alias').value = 'ERA5';
+  h.element('#account-proxy-mode').value = 'direct';
+  h.element('#account-enabled').checked = true;
+  await h.context.saveAccount({preventDefault() {}});
   const request = h.requests.find(item => item.method === 'POST');
-  assert.equal(request.url, '/api/v1/access/credentials');
+  assert.equal(request.url, '/api/v1/access/profiles');
   assert.deepEqual(JSON.parse(request.body).secret, {token: 'fixture-cds-token'});
+  assert.equal(JSON.parse(request.body).source_id, 'era5');
   assert.equal(h.storage.size, 0);
   assert.equal(h.element('#credential-secret-fields').innerHTML, '');
 });
@@ -139,4 +141,34 @@ test('ERA5 account selector offers only CDS credentials', () => {
   vm.runInContext(`state.access.credentials = [{id: 4, alias: 'CDS', kind: 'cds'}, {id: 5, alias: 'NASA', kind: 'laads'}];`, h.context);
   h.context.rebuildAccessSelects();
   assert.deepEqual(h.element('#account-credential').options.map(option => option.value), ['', '4']);
+});
+
+test('unified profile binds existing CDS token without sending it to the browser', async () => {
+  const h = harness(product(), schema(false));
+  vm.runInContext(`state.access.credentials = [{id: 7, alias: 'CDS', kind: 'cds'}];`, h.context);
+  h.element('#account-source').value = 'era5';
+  h.context.rebuildAccessSelects();
+  h.element('#account-credential').value = '7';
+  h.element('#account-alias').value = 'ERA5';
+  h.element('#account-proxy-mode').value = 'direct';
+  h.element('#account-enabled').checked = true;
+  await h.context.saveAccount({preventDefault() {}});
+  const request = h.requests.find(item => item.method === 'POST');
+  assert.equal(request.url, '/api/v1/access/profiles');
+  assert.equal(JSON.parse(request.body).credential_id, 7);
+  assert.deepEqual(JSON.parse(request.body).secret, {});
+});
+
+test('each satellite gets a timeline; only confirmed mission ends show END', () => {
+  const h = harness(product(), schema(false));
+  const rows = vm.runInContext(`satelliteTimelineData([
+    {satellite:'CloudSat',metadata:{}},
+    {satellite:'GOES-17',metadata:{time_end:'2023-01-04T00:00:00Z'}},
+    {satellite:'Terra / Aqua',metadata:{time_start:'2000-01-01T00:00:00Z'}},
+    {satellite:'ECMWF',metadata:{temporal_start:'1940-01-01T00:00:00Z'}}
+  ])`, h.context);
+  assert.equal(rows.length, 4);
+  assert.deepEqual([...rows].map(row => row.name), ['Terra', 'Aqua', 'CloudSat', 'GOES-17']);
+  assert.equal(rows.find(row => row.name === 'CloudSat').end, '2023-12-20');
+  assert.equal(rows.find(row => row.name === 'GOES-17').end, null);
 });

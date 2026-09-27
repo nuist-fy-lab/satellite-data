@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=8">
+  <link rel="stylesheet" href="/styles.css?v=9">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <aside class="sidebar" aria-label="功能导航">
@@ -105,6 +105,10 @@
           <div id="era5-status" role="status"></div>
         </section>
         <div id="year-layout">
+          <section id="satellite-timelines" class="satellite-timelines hidden" aria-label="卫星任务时间轴">
+            <div class="timeline-heading"><strong>卫星任务时间轴</strong><span>历史归档 / 持续运行</span></div>
+            <div id="satellite-timeline-rows" class="satellite-timeline-rows"></div>
+          </section>
           <div class="calendar-axis" aria-hidden="true">
             <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
           </div>
@@ -263,7 +267,7 @@
 
     <section class="view" id="access-view">
       <header class="simple-header">
-        <div><div class="brand">访问池</div><div class="subbrand">账号池 · 加密凭据池 · IP 代理池</div></div>
+        <div><div class="brand">访问池</div><div class="subbrand">访问配置 · IP 代理池</div></div>
         <div class="controls">
           <span id="access-user" class="access-user"></span>
           <button id="refresh-access" type="button">刷新</button>
@@ -286,36 +290,22 @@
 
       <section id="access-manager" class="hidden">
         <div class="access-summary">
-          <article><span>账号</span><strong id="access-account-count">0</strong></article>
-          <article><span>凭据</span><strong id="access-credential-count">0</strong></article>
+          <article><span>访问配置</span><strong id="access-account-count">0</strong></article>
+          <article><span>待绑定凭据</span><strong id="access-credential-count">0</strong></article>
           <article><span>代理</span><strong id="access-proxy-count">0</strong></article>
         </div>
 
         <div class="access-grid">
           <section class="pool-card">
-            <div class="pool-head"><div><strong>凭据池</strong><small>Secret AES-GCM 加密落库，仅显示掩码</small></div><button type="button" data-pool-new="credential">新增</button></div>
-            <form id="credential-form" class="pool-form hidden">
-              <input type="hidden" id="credential-id">
-              <label>别名<input id="credential-alias" maxlength="64" required placeholder="例如 LAADS 主账号"></label>
-              <label>类型<select id="credential-kind"><option value="laads">LAADS · MODIS / VIIRS</option><option value="earthdata">Earthdata · CALIPSO</option><option value="earthcare">ESA MAAP · EarthCARE</option><option value="eumetsat">EUMETSAT · MTG</option><option value="cloudsat">CloudSat DPC</option><option value="cds">CDS · ERA5 / ERA5-Land</option></select></label>
-              <aside id="credential-guide" class="credential-guide"></aside>
-              <div id="credential-secret-fields"></div>
-              <small class="expiry-readonly-note">有效期以官方凭据字段为准；CDS 未提供到期字段。</small>
-              <div class="form-line"><label>优先级<input id="credential-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="credential-enabled" type="checkbox" checked>启用</label></div>
-              <small id="credential-secret-note">新增必须填写 Secret；编辑时留空表示保留原 Secret。</small>
-              <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="credential">取消</button></div>
-              <div id="credential-error" class="form-error"></div>
-            </form>
-            <div id="credential-list" class="pool-list"></div>
-          </section>
-
-          <section class="pool-card">
-            <div class="pool-head"><div><strong>账号池</strong><small>Provider → 凭据 → 代理策略</small></div><button type="button" data-pool-new="account">新增</button></div>
+            <div class="pool-head"><div><strong>访问配置</strong><small>Provider · 加密凭据 · 代理策略</small></div><button type="button" data-pool-new="account">新增</button></div>
             <form id="account-form" class="pool-form hidden">
               <input type="hidden" id="account-id">
-              <label>别名<input id="account-alias" maxlength="64" required placeholder="例如 MODIS 主路由"></label>
+              <label>别名<input id="account-alias" maxlength="64" required placeholder="例如 ERA5 主访问"></label>
               <label>Provider<select id="account-source"><option value="goes">GOES</option><option value="himawari8">Himawari 8</option><option value="himawari9">Himawari 9</option><option value="modis">MODIS</option><option value="viirs">VIIRS</option><option value="mtg">MTG</option><option value="earthcare">EarthCARE</option><option value="calipso">CALIPSO</option><option value="cloudsat">CloudSat</option><option value="era5">ERA5 / ERA5-Land</option></select></label>
-              <label>凭据<select id="account-credential"></select></label>
+              <label id="account-credential-row">沿用已加密凭据<select id="account-credential"></select></label>
+              <aside id="credential-guide" class="credential-guide"></aside>
+              <div id="credential-secret-fields"></div>
+              <small id="credential-secret-note">填入新 Secret 会为当前配置创建独立凭据；留空沿用上方选择。</small>
               <label>代理策略<select id="account-proxy-mode"><option value="direct">Direct · 直连</option><option value="auto">Auto · 代理池轮转</option><option value="fixed">Fixed · 固定代理</option></select></label>
               <label id="account-proxy-row" class="hidden">固定代理<select id="account-proxy"></select></label>
               <div class="form-line"><label>优先级<input id="account-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="account-enabled" type="checkbox" checked>启用</label></div>
@@ -345,6 +335,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=16"></script>
+  <script type="module" src="/app.js?v=17"></script>
 </body>
 </html>

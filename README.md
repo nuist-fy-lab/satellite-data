@@ -96,7 +96,11 @@ persist upstream; retain the returned `jobID` to query after a daemon restart.
 The UI retains only the latest job ID, not secrets or signed result URLs.
 There is no automatic retry of a submission with an uncertain outcome.
 
-In Access Credentials, add a CDS Personal Access Token and bind an ERA5 account.
+In Access Credentials, create one ERA5 access profile with a CDS Personal Access
+Token. Previously saved but unbound CDS Tokens appear in the same list as
+"pending binding" and can be attached without re-entering the Secret. A
+profile saves the provider route, proxy policy and any new encrypted credential
+in one transaction; existing shared credentials keep their references.
 Accept the requested dataset licence in that CDS account first. All provider
 credentials, accounts, proxies and authentication now belong to the centre;
 Secrets are encrypted at rest and write-only. The downloader uses private
