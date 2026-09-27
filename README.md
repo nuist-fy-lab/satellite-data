@@ -3,10 +3,12 @@
 Unified multi-satellite scientific data discovery, download, archive and synchronization service for `nuist-fy-lab`.
 
 The project deliberately separates provider-specific discovery from transfer.
-The CLI is a thin control client. `satellited` owns official catalogues,
+The CLI is a thin control client, never a download worker or credential manager.
+The centre's `satellited` owns official catalogues,
 calendar/index state and provider-isolated discovery queues; the separate
 `satellite-data-downloader` service owns resumable transfer, verification,
-staging and archive promotion.
+staging and archive promotion. Both services are centre-side components; files
+are never fetched or archived by the CLI.
 
 The two services communicate over a local Unix socket. Download discovery is
 chunked and pipelined: each provider has its own discovery loop, assets are
@@ -143,7 +145,19 @@ satellite download submit \
 satellite download status --id 1 --json
 ```
 
-`SATELLITE_SERVER` selects the API endpoint. Provider credentials are never stored in the CLI.
+`SATELLITE_SERVER` selects the centre API endpoint. The CLI's scope is download
+task submission, catalogue/task/status queries and ordinary settings changes.
+It has no credential/account commands, Vault, encryption key, provider login,
+or local file-transfer responsibility. Provider status reports configuration status,
+not account or credential references. All provider accounts and Secrets remain
+in the centre and are managed through its protected administration interface.
+
+Ordinary settings, including adding, removing or changing provider proxy routes,
+must be implemented through a centre-owned settings API, not by editing local
+account/Vault data. Proxy authentication is a Secret and remains centre-only;
+CLI settings must not accept or return proxy passwords or credential payloads.
+The current CLI command list above does not yet include proxy settings commands.
+
 `download submit` takes inclusive UTC dates and supports repeatable `--time HH:MM` or `--hourly`.
 The hourly shortcut requests all 24 nominal `HH:00` UTC slots each day.
 `--band` is available only for products with

@@ -217,7 +217,6 @@ func (c *client) downloadProviders() error {
 		Providers []struct {
 			SourceID       string         `json:"source_id"`
 			Enabled        bool           `json:"enabled"`
-			AuthRef        string         `json:"auth_ref"`
 			AuthConfigured bool           `json:"auth_configured"`
 			States         map[string]int `json:"states"`
 		} `json:"providers"`
@@ -226,8 +225,8 @@ func (c *client) downloadProviders() error {
 		return err
 	}
 	for _, item := range payload.Providers {
-		fmt.Printf("%-12s enabled=%-5t auth=%-10s configured=%-5t states=%v\n",
-			item.SourceID, item.Enabled, item.AuthRef, item.AuthConfigured, item.States)
+		fmt.Printf("%-12s enabled=%-5t configured=%-5t states=%v\n",
+			item.SourceID, item.Enabled, item.AuthConfigured, item.States)
 	}
 	return nil
 }

@@ -5,6 +5,14 @@ authentication and the AES-GCM Vault. `satellite-data-downloader` owns only task
 queues, transfers, verification and archive promotion. It no longer reads tokens
 from environment variables or opens a master key.
 
+The CLI only controls the centre: submitting download tasks, querying catalogues
+and task status, and changing ordinary settings. It never handles provider
+credentials/accounts, encryption, provider authentication or actual file
+transfers. Centre-side discovery and download workers perform all downloads.
+Provider proxy route settings belong to the centre too. A future CLI settings
+API must expose only non-secret settings or references to centrally configured
+proxies, with server-side authorization; proxy credentials are not CLI settings.
+
 Public administration remains at `/api/v1/access/*`, requires an administrator
 session and rejects cross-origin mutations. Secret values are write-only.
 The access page includes CDS credentials and ERA5 account binding.

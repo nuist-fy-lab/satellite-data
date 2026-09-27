@@ -2,11 +2,56 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestDownloadProvidersOmitsAccessDetails(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/downloader/providers" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"providers":[{"source_id":"goes18","enabled":true,"auth_configured":true,"auth_ref":"internal-account-ref","credentials":{"alias":"internal-credential"},"states":{"queued":2}}]}`))
+	}))
+	defer server.Close()
+
+	output, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	previous := os.Stdout
+	os.Stdout = output
+	defer func() { os.Stdout = previous }()
+	c := &client{base: server.URL, http: &http.Client{Timeout: time.Second}}
+	if err := c.downloadProviders(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if requests != 1 || !strings.Contains(text, "goes18") || !strings.Contains(text, "configured=true") || !strings.Contains(text, "queued:2") {
+		t.Fatalf("requests=%d output=%q", requests, text)
+	}
+	for _, forbidden := range []string{"auth_ref", "internal-account-ref", "internal-credential"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("CLI exposes access detail %q", forbidden)
+		}
+	}
+}
 
 func TestDownloadSubmitInclusiveDates(t *testing.T) {
 	var request struct {
