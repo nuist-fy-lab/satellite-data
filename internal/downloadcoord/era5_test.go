@@ -67,6 +67,12 @@ func fakeTransferClient(t *testing.T) (*downloader.Client, *sync.Mutex, *[]downl
 			if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
 				t.Error(err)
 			}
+			if spec.SourceID == "era5" && spec.AuthRef != "cds" {
+				t.Error("ERA5 transfer requires the centre CDS authorization reference")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "provider requires auth_ref cds"})
+				return
+			}
 			specs = append(specs, spec)
 			_ = json.NewEncoder(w).Encode(map[string]any{"created": true, "task": downloader.Task{ID: int64(len(specs)), Key: spec.AssetID, Name: spec.Name}})
 		case "/v1/tasks/status":
@@ -147,7 +153,7 @@ func TestOneERA5OrderSchedulesAndArchivesMultiplePartsAfterRestart(t *testing.T)
 	}
 	mu.Lock()
 	for _, spec := range *specs {
-		if spec.SourceID != "era5" || strings.Contains(spec.URL, "signature") || !strings.HasSuffix(spec.URL, "/download") {
+		if spec.SourceID != "era5" || spec.AuthRef != "cds" || strings.Contains(spec.URL, "signature") || !strings.HasSuffix(spec.URL, "/download") {
 			t.Errorf("unsafe transfer specification: %+v", spec)
 		}
 	}

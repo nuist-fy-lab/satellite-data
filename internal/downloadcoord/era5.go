@@ -113,7 +113,7 @@ func (c *Coordinator) advanceERA5(ctx context.Context, request state.DownloadReq
 	// The downloader receives a stable centre-resolved URL, never an expiring signed URL.
 	task, _, err := c.downloader.Enqueue(ctx, downloader.TaskSpec{
 		SourceID: "era5", CollectionID: request.CollectionID, GranuleID: "era5:" + part.JobID,
-		AssetID: asset.ID, Name: asset.Name, URL: "https://cds.climate.copernicus.eu/api/retrieve/v1/jobs/" + part.JobID + "/download",
+		AssetID: asset.ID, Name: asset.Name, AuthRef: "cds", URL: "https://cds.climate.copernicus.eu/api/retrieve/v1/jobs/" + part.JobID + "/download",
 		RelativeDir: path.Join(archiveRelativeDir("era5", product, part.Start), part.JobID), Size: asset.Size, ETag: asset.ETag, MediaType: asset.MediaType,
 	})
 	if err != nil {
