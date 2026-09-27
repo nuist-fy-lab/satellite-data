@@ -67,6 +67,22 @@ jobs:
         run: |
           cd dist
           sha256sum satellite satellited > SHA256SUMS
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: browser-actions/setup-firefox@2ddc1281882c66dd6a359947714eed0a4b91afc1
+        id: firefox
+        with:
+          firefox-version: 'latest-esr'
+      - uses: browser-actions/setup-geckodriver@fac5b0424c584257f32cf12c5eb4ba86014c34f8
+        with:
+          token: ${{ github.token }}
+      - name: Check desktop and mobile layouts in cloud Firefox
+        env:
+          FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/satellite-visual" --no-save --ignore-scripts selenium-webdriver@4.35.0
+          NODE_PATH="$RUNNER_TEMP/satellite-visual/node_modules" node web/visual-check.mjs
       - name: Publish and verify PR binaries
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -79,6 +95,7 @@ jobs:
           gh release create "$tag" dist/satellite dist/satellited --repo "$GITHUB_REPOSITORY" \
             --target "$SOURCE_SHA" --title "CI PR ${PR_NUMBER} ${SOURCE_SHA:0:12}" \
             --notes "Cloud-verified PR binaries for $SOURCE_SHA" --prerelease
+          gh release upload "$tag" dist/visual/*.png --repo "$GITHUB_REPOSITORY"
           mkdir -p verify
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir verify
           target="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .target_commitish)"
