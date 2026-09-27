@@ -59,6 +59,7 @@ type ProviderStatus struct {
 }
 
 type Credential struct {
+	Storage         string `json:"storage,omitempty"`
 	ID              int64  `json:"id"`
 	Alias           string `json:"alias"`
 	Kind            string `json:"kind"`
@@ -77,6 +78,7 @@ type Credential struct {
 }
 
 type Proxy struct {
+	Storage       string   `json:"storage,omitempty"`
 	ID            int64    `json:"id"`
 	Alias         string   `json:"alias"`
 	Scheme        string   `json:"scheme"`
@@ -92,6 +94,7 @@ type Proxy struct {
 }
 
 type Account struct {
+	Storage         string `json:"storage,omitempty"`
 	ID              int64  `json:"id"`
 	Alias           string `json:"alias"`
 	SourceID        string `json:"source_id"`
@@ -165,56 +168,6 @@ func (c *Client) Retry(ctx context.Context, id int64) error {
 
 func (c *Client) Health(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodGet, "/healthz", nil, nil)
-}
-
-func (c *Client) AccessPools(ctx context.Context) (AccessPools, error) {
-	var payload AccessPools
-	if err := c.doJSON(ctx, http.MethodGet, "/v1/access", nil, &payload); err != nil {
-		return AccessPools{}, err
-	}
-	return payload, nil
-}
-
-func (c *Client) UpsertCredential(ctx context.Context, payload any) (Credential, error) {
-	var response struct {
-		Credential Credential `json:"credential"`
-	}
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/credentials", payload, &response); err != nil {
-		return Credential{}, err
-	}
-	return response.Credential, nil
-}
-
-func (c *Client) DeleteCredential(ctx context.Context, id int64) error {
-	return c.doJSON(ctx, http.MethodDelete, "/v1/credentials/"+strconv.FormatInt(id, 10), nil, nil)
-}
-
-func (c *Client) UpsertProxy(ctx context.Context, payload any) (Proxy, error) {
-	var response struct {
-		Proxy Proxy `json:"proxy"`
-	}
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/proxies", payload, &response); err != nil {
-		return Proxy{}, err
-	}
-	return response.Proxy, nil
-}
-
-func (c *Client) DeleteProxy(ctx context.Context, id int64) error {
-	return c.doJSON(ctx, http.MethodDelete, "/v1/proxies/"+strconv.FormatInt(id, 10), nil, nil)
-}
-
-func (c *Client) UpsertAccount(ctx context.Context, payload any) (Account, error) {
-	var response struct {
-		Account Account `json:"account"`
-	}
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/accounts", payload, &response); err != nil {
-		return Account{}, err
-	}
-	return response.Account, nil
-}
-
-func (c *Client) DeleteAccount(ctx context.Context, id int64) error {
-	return c.doJSON(ctx, http.MethodDelete, "/v1/accounts/"+strconv.FormatInt(id, 10), nil, nil)
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body any, target any) error {

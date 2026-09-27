@@ -1627,15 +1627,23 @@ async function loadMonitor(schedule = true) {
 }
 
 const accessKindLabels = {
-  laads: 'LAADS', earthdata: 'Earthdata', earthcare: 'ESA MAAP', eumetsat: 'EUMETSAT', cloudsat: 'CloudSat DPC',
+  laads: 'LAADS', earthdata: 'Earthdata', earthcare: 'ESA MAAP', eumetsat: 'EUMETSAT', cloudsat: 'CloudSat DPC', cds: 'CDS',
 };
-const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat'};
+const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat', era5: 'cds'};
 const credentialGuides = {
+  cds: {
+    title: 'Copernicus CDS Personal Access Token',
+    summary: '用于 ERA5 与 ERA5-Land，使用 CDS 个人访问 Token。',
+    steps: ['登录 Copernicus Climate Data Store。', '在个人资料的 API 区域复制 Personal Access Token。', '先在数据集页面接受使用条款，再将完整 Token 填入下方并绑定 ERA5 账号。'],
+    note: '凭据由中心加密保存。已提交的 CDS 任务绑定原账号与凭据，修改 Token 后需恢复原凭据才能继续查询该任务。',
+    url: 'https://cds.climate.copernicus.eu/profile',
+    link: '打开 CDS 个人资料',
+  },
   laads: {
     title: 'LAADS Download Token',
     summary: '用于 MODIS 与 VIIRS。优先使用 LAADS 自己生成的下载 Token，而不是通用 Earthdata Token。',
     steps: ['登录 NASA LAADS DAAC。', '在 Token / Download Token 区域生成或复制当前 Token。', '把完整 Token 粘贴到下方 Token 输入框；保存后网页只保留掩码。'],
-    note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。下载器会优先读取 LAADS Token 自带的 exp 到期字段；只有 Token 本身不提供 exp 时才显示“官网未提供”。',
+    note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。中心会优先读取 LAADS Token 自带的 exp 到期字段；只有 Token 本身不提供 exp 时才显示“官网未提供”。',
     url: 'https://ladsweb.modaps.eosdis.nasa.gov/',
     link: '打开 LAADS DAAC',
   },
@@ -1643,7 +1651,7 @@ const credentialGuides = {
     title: 'NASA Earthdata User Token',
     summary: '当前用于 CALIPSO。需要 Earthdata Login 账号生成 User Token。',
     steps: ['登录 Earthdata Login。', '进入 Generate Token / User Token 页面并生成 Token。', '点击 Show Token，复制完整值后粘贴到下方。'],
-    note: 'Earthdata User Token 当前有效 60 天；保存后下载器会自动读取 Token 的 exp 字段显示到期时间，无需手填。',
+    note: 'Earthdata User Token 当前有效 60 天；保存后中心会自动读取 Token 的 exp 字段显示到期时间，无需手填。',
     url: 'https://urs.earthdata.nasa.gov/',
     link: '打开 Earthdata Login',
   },
@@ -1651,15 +1659,15 @@ const credentialGuides = {
     title: 'ESA MAAP EarthCARE Token',
     summary: '用于 EarthCARE 数据访问。需要 ESA EO / MAAP 账号，并生成 EarthCARE MAAP 长期访问 Token。',
     steps: ['登录 ESA MAAP，并确保账号有 EarthCARE 数据访问权限。', '打开 MAAP Token 页面生成长期 Token。', '复制生成的 Token 粘贴到下方；不要填写示例里的 CLIENT_SECRET。'],
-    note: 'offline token 当前有效 90 天；下载器会自动读取 Token 的 exp 字段。部分 Cal/Val 或 Commissioning 集合仍取决于你的 ESA 账号权限。',
+    note: 'offline token 当前有效 90 天；中心会自动读取 Token 的 exp 字段。部分 Cal/Val 或 Commissioning 集合仍取决于你的 ESA 账号权限。',
     url: 'https://portal.maap.eo.esa.int/ini/services/auth/token/90dToken.php',
     link: '生成 ESA MAAP Token',
   },
   eumetsat: {
     title: 'EUMETSAT API 凭据 · Consumer Key / Consumer Secret',
-    summary: '用于 MTG。这里只保存 API Key Management 提供的 Consumer Key + Consumer Secret；下载器会用 OAuth2 client_credentials 自动换取短期 Access Token。',
+    summary: '用于 MTG。这里只保存 API Key Management 提供的 Consumer Key + Consumer Secret；中心会用 OAuth2 client_credentials 自动换取短期 Access Token。',
     steps: ['登录 EUMETSAT Data Store / User Portal。', '进入 API Key Management，在 User credentials 区域找到 Consumer key 与 Consumer secret。', '只把这两个值分别复制到下方两个输入框；页面下方的一小时 API token 不需要复制。'],
-    note: '本凭据表单只接收 Consumer Key + Consumer Secret。下载器会自动向 EUMETSAT /token 端点申请并续期 Bearer Access Token。',
+    note: '本凭据表单只接收 Consumer Key + Consumer Secret。中心会自动向 EUMETSAT /token 端点申请并续期 Bearer Access Token。',
     url: 'https://api.eumetsat.int/api-key/',
     link: '打开 EUMETSAT API Key',
   },
@@ -1801,12 +1809,12 @@ function credentialFields() {
   const node = $('#credential-secret-fields');
   const note = $('#credential-secret-note');
   const password = (id, label, placeholder = '') => `<label>${label}<input id="${id}" type="password" autocomplete="new-password" placeholder="${placeholder}"></label>`;
-  if (['laads','earthdata','earthcare'].includes(kind)) {
+  if (['laads','earthdata','earthcare','cds'].includes(kind)) {
     node.innerHTML = `<div class="secret-grid">${password('credential-token','Token','编辑时留空即保留')}</div>`;
     note.textContent = '新增必须填写 Token；编辑时留空表示保留原 Token。';
   } else if (kind === 'eumetsat') {
     node.innerHTML = `<div class="secret-grid">${password('credential-consumer-key','Consumer Key','从 EUMETSAT API Key Management 复制')}${password('credential-consumer-secret','Consumer Secret','从 EUMETSAT API Key Management 复制')}</div>`;
-    note.textContent = '这里只填写官网 User credentials 区域的 Consumer Key + Consumer Secret。API Token 无需填写，下载器会自动申请并刷新；编辑时两项都留空表示保留原凭据。';
+    note.textContent = '这里只填写官网 User credentials 区域的 Consumer Key + Consumer Secret。API Token 无需填写，中心会自动申请并刷新；编辑时两项都留空表示保留原凭据。';
   } else {
     node.innerHTML = `<div class="secret-grid"><label>用户名<input id="credential-username" autocomplete="off" placeholder="编辑时留空即保留"></label>${password('credential-password','密码')}</div>`;
     note.textContent = '新增必须填写账号凭据；编辑时留空表示保留原凭据。';
@@ -1887,7 +1895,11 @@ function openPoolForm(kind, item = null) {
 
 function closePoolForm(kind) {
   $(`#${kind}-form`).classList.add('hidden');
-  if (kind === 'credential') $('#credential-kind').disabled = false;
+  if (kind === 'credential') {
+    $('#credential-kind').disabled = false;
+    $('#credential-secret-fields').replaceChildren();
+  }
+  if (kind === 'proxy') $('#proxy-url').value = '';
 }
 
 async function saveCredential(event) {
@@ -1900,7 +1912,7 @@ async function saveCredential(event) {
     return;
   }
   const secret = {};
-  if (['laads','earthdata','earthcare'].includes(kind)) secret.token = $('#credential-token')?.value || '';
+  if (['laads','earthdata','earthcare','cds'].includes(kind)) secret.token = $('#credential-token')?.value || '';
   else if (kind === 'eumetsat') {
     secret.consumer_key = $('#credential-consumer-key')?.value || '';
     secret.consumer_secret = $('#credential-consumer-secret')?.value || '';

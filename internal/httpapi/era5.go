@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
 
+	"github.com/nuist-fy-lab/satellite-data/internal/central"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/era5"
 )
@@ -46,11 +48,14 @@ func (s *Server) era5Submit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	p := s.era5Provider(w)
-	if p == nil {
+	if s.era5Provider(w) == nil {
 		return
 	}
-	job, err := p.Submit(r.Context(), submission)
+	if s.central == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("central access store unavailable"))
+		return
+	}
+	job, err := s.central.Submit(r.Context(), submission)
 	if err != nil {
 		writeERA5Error(w, err)
 		return
@@ -65,11 +70,14 @@ func (s *Server) era5Job(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
 		return
 	}
-	p := s.era5Provider(w)
-	if p == nil {
+	if s.era5Provider(w) == nil {
 		return
 	}
-	job, err := p.Job(r.Context(), r.PathValue("id"))
+	if s.central == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("central access store unavailable"))
+		return
+	}
+	job, err := s.central.Job(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeERA5Error(w, err)
 		return
@@ -83,11 +91,14 @@ func (s *Server) era5Result(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
 		return
 	}
-	p := s.era5Provider(w)
-	if p == nil {
+	if s.era5Provider(w) == nil {
 		return
 	}
-	asset, err := p.Result(r.Context(), r.PathValue("id"))
+	if s.central == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("central access store unavailable"))
+		return
+	}
+	asset, err := s.central.Result(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeERA5Error(w, err)
 		return
@@ -99,6 +110,13 @@ func writeERA5Error(w http.ResponseWriter, err error) {
 	status := http.StatusBadGateway
 	var response *era5.HTTPError
 	switch {
+	case errors.Is(err, central.ErrNoRoute):
+		status = http.StatusServiceUnavailable
+	case errors.Is(err, central.ErrChangedCredential):
+		status = http.StatusConflict
+	case errors.Is(err, sql.ErrNoRows):
+		status = http.StatusNotFound
+		err = errors.New("CDS centre job route not found")
 	case errors.Is(err, era5.ErrCredentialsRequired):
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, provider.ErrUnsupportedCollection):

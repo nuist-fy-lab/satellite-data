@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
+	"github.com/nuist-fy-lab/satellite-data/internal/central"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
@@ -30,6 +31,7 @@ type Server struct {
 	downloader *downloader.Client
 	auth       *authstore.Store
 	sessionTTL time.Duration
+	central    *central.Service
 }
 
 func New(registry *provider.Registry, store *state.Store, clients ...*downloader.Client) http.Handler {
@@ -40,12 +42,15 @@ func New(registry *provider.Registry, store *state.Store, clients ...*downloader
 	return newHandler(registry, store, downloaderClient, nil, 0)
 }
 
-func NewWithAuth(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration) http.Handler {
-	return newHandler(registry, store, downloaderClient, auth, sessionTTL)
+func NewWithAuth(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration, services ...*central.Service) http.Handler {
+	return newHandler(registry, store, downloaderClient, auth, sessionTTL, services...)
 }
 
-func newHandler(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration) http.Handler {
+func newHandler(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration, services ...*central.Service) http.Handler {
 	s := &Server{registry: registry, store: store, downloader: downloaderClient, auth: auth, sessionTTL: sessionTTL}
+	if len(services) > 0 {
+		s.central = services[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /api/v1/sources", s.sources)
@@ -72,6 +77,10 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("DELETE /api/v1/access/proxies/{id}", s.deleteAccessProxy)
 	mux.HandleFunc("POST /api/v1/access/accounts", s.accessAccount)
 	mux.HandleFunc("DELETE /api/v1/access/accounts/{id}", s.deleteAccessAccount)
+	mux.HandleFunc("POST /api/v1/access/central/credentials", s.centralCredential)
+	mux.HandleFunc("POST /api/v1/access/central/proxies", s.centralProxy)
+	mux.HandleFunc("POST /api/v1/access/central/accounts", s.centralAccount)
+	mux.HandleFunc("DELETE /api/v1/access/central/{kind}/{id}", s.centralDelete)
 	mux.HandleFunc("GET /api/products", s.products)
 	mux.HandleFunc("GET /api/year", s.year)
 	mux.HandleFunc("GET /api/day", s.day)
@@ -276,126 +285,43 @@ func (s *Server) accessPools(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
 		return
 	}
-	if s.downloader == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("satellite downloader is not configured"))
+	if s.central == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("central access store unavailable"))
 		return
 	}
-	pools, err := s.downloader.AccessPools(r.Context())
+	pools, err := s.central.Store.Pools(r.Context())
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, err)
+		writeError(w, http.StatusServiceUnavailable, errors.New("central access store unavailable"))
 		return
 	}
 	writeJSON(w, http.StatusOK, pools)
 }
 
 func (s *Server) accessCredential(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	var payload map[string]any
-	if err := decodeRequestJSON(w, r, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	item, err := s.downloader.UpsertCredential(r.Context(), payload)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"credential": item})
+	s.centralCredential(w, r)
 }
 
 func (s *Server) deleteAccessCredential(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, errors.New("invalid credential id"))
-		return
-	}
-	if err := s.downloader.DeleteCredential(r.Context(), id); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	r.SetPathValue("kind", "credentials")
+	s.centralDelete(w, r)
 }
 
 func (s *Server) accessProxy(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	var payload map[string]any
-	if err := decodeRequestJSON(w, r, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	item, err := s.downloader.UpsertProxy(r.Context(), payload)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"proxy": item})
+	s.centralProxy(w, r)
 }
 
 func (s *Server) deleteAccessProxy(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, errors.New("invalid proxy id"))
-		return
-	}
-	if err := s.downloader.DeleteProxy(r.Context(), id); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	r.SetPathValue("kind", "proxies")
+	s.centralDelete(w, r)
 }
 
 func (s *Server) accessAccount(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	var payload map[string]any
-	if err := decodeRequestJSON(w, r, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	item, err := s.downloader.UpsertAccount(r.Context(), payload)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"account": item})
+	s.centralAccount(w, r)
 }
 
 func (s *Server) deleteAccessAccount(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, errors.New("invalid account id"))
-		return
-	}
-	if err := s.downloader.DeleteAccount(r.Context(), id); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) authorizeMutation(w http.ResponseWriter, r *http.Request) bool {
-	if !s.authorizeAdminMutation(w, r) {
-		return false
-	}
-	if s.downloader == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("satellite downloader is not configured"))
-		return false
-	}
-	return true
+	r.SetPathValue("kind", "accounts")
+	s.centralDelete(w, r)
 }
 
 func (s *Server) authorizeAdminMutation(w http.ResponseWriter, r *http.Request) bool {

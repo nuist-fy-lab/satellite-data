@@ -15,6 +15,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/app"
 	"github.com/nuist-fy-lab/satellite-data/internal/archiveevent"
 	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
+	"github.com/nuist-fy-lab/satellite-data/internal/central"
 	"github.com/nuist-fy-lab/satellite-data/internal/config"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
@@ -30,7 +31,36 @@ func main() {
 	addr := flag.String("addr", envOr("SATELLITED_ADDR", "127.0.0.1:8080"), "HTTP listen address")
 	stateDB := flag.String("state-db", envOr("SATELLITED_STATE_DB", defaultStateDB()), "persistent state database")
 	archiveRoot := flag.String("archive", envOr("SATELLITED_ARCHIVE", defaultArchiveRoot()), "local satellite archive root")
+	migrateAccess := flag.Bool("migrate-access", false, "import legacy downloader access into an empty central vault and exit")
+	legacyDB := flag.String("legacy-access-db", "", "stopped downloader database path (migration only)")
+	legacyKey := flag.String("legacy-access-key", "", "legacy private master key path (migration only)")
 	flag.Parse()
+	centralVault, err := central.OpenVault(runtimeConfig.AccessMasterKey)
+	if err != nil {
+		slog.Error("open central credential vault", "error", err)
+		os.Exit(1)
+	}
+	centralStore, err := central.OpenStore(runtimeConfig.AccessDB, centralVault)
+	if err != nil {
+		slog.Error("open central access store", "error", err)
+		os.Exit(1)
+	}
+	defer centralStore.Close()
+	if *migrateAccess {
+		if *legacyDB == "" || *legacyKey == "" {
+			slog.Error("migration requires legacy-access-db and legacy-access-key paths")
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		counts, err := centralStore.ImportLegacy(ctx, *legacyDB, *legacyKey)
+		if err != nil {
+			slog.Error("access migration failed; destination unchanged", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("access migration committed", "credentials", counts.Credentials, "proxies", counts.Proxies, "accounts", counts.Accounts)
+		return
+	}
 
 	registry, err := app.NewRegistry()
 	if err != nil {
@@ -71,6 +101,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer authStore.Close()
+	centralService := central.NewService(centralStore)
+	go func() {
+		if err := central.RunGateway(ctx, runtimeConfig.CentralSocket, centralService); err != nil && ctx.Err() == nil {
+			slog.Error("central access gateway stopped", "error", err)
+			stop()
+		}
+	}()
 	coordinator, err := downloadcoord.New(registry, store, downloaderClient)
 	if err != nil {
 		slog.Error("initialize download coordinator", "error", err)
@@ -86,7 +123,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              *addr,
-		Handler:           httpapi.NewWithAuth(registry, store, downloaderClient, authStore, runtimeConfig.SessionTTL),
+		Handler:           httpapi.NewWithAuth(registry, store, downloaderClient, authStore, runtimeConfig.SessionTTL, centralService),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      2 * time.Minute,

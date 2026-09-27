@@ -297,10 +297,10 @@
             <form id="credential-form" class="pool-form hidden">
               <input type="hidden" id="credential-id">
               <label>别名<input id="credential-alias" maxlength="64" required placeholder="例如 LAADS 主账号"></label>
-              <label>类型<select id="credential-kind"><option value="laads">LAADS · MODIS / VIIRS</option><option value="earthdata">Earthdata · CALIPSO</option><option value="earthcare">ESA MAAP · EarthCARE</option><option value="eumetsat">EUMETSAT · MTG</option><option value="cloudsat">CloudSat DPC</option></select></label>
+              <label>类型<select id="credential-kind"><option value="laads">LAADS · MODIS / VIIRS</option><option value="earthdata">Earthdata · CALIPSO</option><option value="earthcare">ESA MAAP · EarthCARE</option><option value="eumetsat">EUMETSAT · MTG</option><option value="cloudsat">CloudSat DPC</option><option value="cds">CDS · ERA5 / ERA5-Land</option></select></label>
               <aside id="credential-guide" class="credential-guide"></aside>
               <div id="credential-secret-fields"></div>
-              <small class="expiry-readonly-note">凭据有效期由下载器从官方凭据 / 服务字段自动读取，无需手动填写。</small>
+              <small class="expiry-readonly-note">有效期以官方凭据字段为准；CDS 未提供到期字段。</small>
               <div class="form-line"><label>优先级<input id="credential-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="credential-enabled" type="checkbox" checked>启用</label></div>
               <small id="credential-secret-note">新增必须填写 Secret；编辑时留空表示保留原 Secret。</small>
               <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="credential">取消</button></div>
@@ -314,7 +314,7 @@
             <form id="account-form" class="pool-form hidden">
               <input type="hidden" id="account-id">
               <label>别名<input id="account-alias" maxlength="64" required placeholder="例如 MODIS 主路由"></label>
-              <label>Provider<select id="account-source"><option value="goes">GOES</option><option value="modis">MODIS</option><option value="viirs">VIIRS</option><option value="mtg">MTG</option><option value="earthcare">EarthCARE</option><option value="calipso">CALIPSO</option><option value="cloudsat">CloudSat</option></select></label>
+              <label>Provider<select id="account-source"><option value="goes">GOES</option><option value="himawari8">Himawari 8</option><option value="himawari9">Himawari 9</option><option value="modis">MODIS</option><option value="viirs">VIIRS</option><option value="mtg">MTG</option><option value="earthcare">EarthCARE</option><option value="calipso">CALIPSO</option><option value="cloudsat">CloudSat</option><option value="era5">ERA5 / ERA5-Land</option></select></label>
               <label>凭据<select id="account-credential"></select></label>
               <label>代理策略<select id="account-proxy-mode"><option value="direct">Direct · 直连</option><option value="auto">Auto · 代理池轮转</option><option value="fixed">Fixed · 固定代理</option></select></label>
               <label id="account-proxy-row" class="hidden">固定代理<select id="account-proxy"></select></label>

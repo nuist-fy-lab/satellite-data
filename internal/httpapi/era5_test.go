@@ -4,7 +4,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
+	"github.com/nuist-fy-lab/satellite-data/internal/central"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/era5"
@@ -43,7 +43,7 @@ func TestERA5RequiresAdminAndNeverUsesTheDownloaderForSubmissions(t *testing.T) 
 		t.Fatal(err)
 	}
 	var calls atomic.Int64
-	p := era5.New(&http.Client{Transport: cdsTransport(func(r *http.Request) (*http.Response, error) {
+	client := &http.Client{Transport: cdsTransport(func(r *http.Request) (*http.Response, error) {
 		calls.Add(1)
 		body := `{"id":"reanalysis-era5-single-levels","inputs":{"variable":{}}}`
 		code := http.StatusOK
@@ -52,8 +52,18 @@ func TestERA5RequiresAdminAndNeverUsesTheDownloaderForSubmissions(t *testing.T) 
 			code = http.StatusAccepted
 		}
 		return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
-	})})
-	handler := NewWithAuth(provider.NewRegistry(p), store, nil, auth, time.Hour)
+	})}
+	p := era5.New(client)
+	vault, err := central.OpenVault(filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, err := central.OpenStore(filepath.Join(dir, "access.db"), vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer access.Close()
+	handler := NewWithAuth(provider.NewRegistry(p), store, nil, auth, time.Hour, central.NewService(access, client))
 	body := `{"collection":"era5:reanalysis-era5-single-levels","inputs":{"variable":["2m_temperature"]}}`
 	for _, endpoint := range []struct{ method, url string }{
 		{http.MethodPost, "/api/v1/era5/requests"},
@@ -83,17 +93,18 @@ func TestERA5RequiresAdminAndNeverUsesTheDownloaderForSubmissions(t *testing.T) 
 	if w.Code != http.StatusForbidden || calls.Load() != 0 {
 		t.Fatal("cross-origin mutation accepted")
 	}
-	t.Setenv("CDS_API_TOKEN_FILE", "")
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, request(""))
 	if w.Code != http.StatusServiceUnavailable || calls.Load() != 0 {
 		t.Fatalf("unconfigured token: status=%d calls=%d", w.Code, calls.Load())
 	}
-	tokenFile := filepath.Join(dir, "cds-token")
-	if err := os.WriteFile(tokenFile, []byte("test-only-placeholder"), 0600); err != nil {
+	credential, err := access.UpsertCredential(t.Context(), central.CredentialSpec{Alias: "CDS", Kind: "cds", Secret: central.Secret{Token: "test-only-placeholder"}, Enabled: true})
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CDS_API_TOKEN_FILE", tokenFile)
+	if _, err := access.UpsertAccount(t.Context(), central.AccountSpec{Alias: "ERA5", SourceID: "era5", CredentialID: &credential.ID, Enabled: true, ProxyMode: "direct"}); err != nil {
+		t.Fatal(err)
+	}
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, request(""))
 	if w.Code != http.StatusAccepted || w.Header().Get("Location") != "/api/v1/era5/requests/request-1" || calls.Load() != 2 {

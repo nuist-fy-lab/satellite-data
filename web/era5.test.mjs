@@ -18,7 +18,7 @@ function harness(product, schema) {
         get value() { return value || this.options.find(option => option.selected)?.value || this.options[0]?.value || ''; },
         set value(next) { value = next; },
         get selectedOptions() { return this.options.filter(option => option.selected); },
-        replaceChildren() { this.options = []; value = ''; },
+        replaceChildren() { this.options = []; this.innerHTML = ''; value = ''; },
         add(option) { this.options.push(option); },
         classList: {add() {}, remove() {}, toggle() {}},
       });
@@ -114,4 +114,29 @@ test('stale process schema cannot replace the selected dataset form', async () =
   const h = harness(product(), schema(false));
   await h.context.prepareERA5(h.context.testProduct, 0);
   assert.equal(h.element('#era5-variables').options.length, 0);
+});
+
+test('CDS access form saves a Token to the centre and clears secret inputs', async () => {
+  const h = harness(product(), schema(false));
+  h.element('#credential-kind').value = 'cds';
+  h.context.credentialFields();
+  assert.match(h.element('#credential-secret-fields').innerHTML, /credential-token/);
+  assert.match(h.element('#credential-secret-fields').innerHTML, /type="password"/);
+  h.element('#credential-token').value = 'fixture-cds-token';
+  h.element('#credential-alias').value = 'CDS';
+  h.element('#credential-enabled').checked = true;
+  await h.context.saveCredential({preventDefault() {}});
+  const request = h.requests.find(item => item.method === 'POST');
+  assert.equal(request.url, '/api/v1/access/credentials');
+  assert.deepEqual(JSON.parse(request.body).secret, {token: 'fixture-cds-token'});
+  assert.equal(h.storage.size, 0);
+  assert.equal(h.element('#credential-secret-fields').innerHTML, '');
+});
+
+test('ERA5 account selector offers only CDS credentials', () => {
+  const h = harness(product(), schema(false));
+  h.element('#account-source').value = 'era5';
+  vm.runInContext(`state.access.credentials = [{id: 4, alias: 'CDS', kind: 'cds'}, {id: 5, alias: 'NASA', kind: 'laads'}];`, h.context);
+  h.context.rebuildAccessSelects();
+  assert.deepEqual(h.element('#account-credential').options.map(option => option.value), ['', '4']);
 });

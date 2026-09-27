@@ -1,0 +1,67 @@
+# Central Access Ownership
+
+`satellite-data` owns all provider credentials, accounts, proxies, expiry metadata,
+authentication and the AES-GCM Vault. `satellite-data-downloader` owns only task
+queues, transfers, verification and archive promotion. It no longer reads tokens
+from environment variables or opens a master key.
+
+Public administration remains at `/api/v1/access/*`, requires an administrator
+session and rejects cross-origin mutations. Secret values are write-only.
+The access page includes CDS credentials and ERA5 account binding.
+
+Configuration (choose production paths explicitly):
+
+- Centre: `SATELLITE_ACCESS_DB=/var/lib/satellite-data/access.sqlite3`
+- Centre: `SATELLITE_ACCESS_MASTER_KEY=/etc/satellite-data/master.key`
+- Both processes: centre `SATELLITE_CENTRAL_SOCKET` and downloader
+  `SATDOWN_CENTRAL_SOCKET`, e.g. `/run/satellite-data/central.sock`
+
+The socket is `0600`; both daemons must run as the same trusted service user.
+The private fetch endpoint accepts only provider-allowlisted HTTPS asset URLs,
+injects authentication centrally and streams the original status, Range, ETag
+and content headers. No credentials or proxy passwords are returned to the
+downloader. The centre must be reachable even for anonymous provider downloads.
+
+## Coordinated Migration
+
+Deploy only the matching, cloud-verified release artifacts. Do not rebuild on
+the server. This change does not auto-migrate, auto-deploy or delete old data.
+
+1. Keep both previous release binaries and service configurations for rollback.
+2. Stop centre and downloader, and take local protected backups of the legacy
+   SQLite database (including WAL state) and master key. Do not copy Secrets
+   across machines or print them. Keep the original legacy database/key.
+3. Set the centre paths above and import on the machine that already has the
+   legacy files. The destination access database must be empty:
+
+   ```sh
+   /opt/satellite-data/satellited -migrate-access \
+     -legacy-access-db "$HOME/.local/state/satellite-data-downloader/downloader.sqlite3" \
+     -legacy-access-key "$HOME/.config/satellite-data-downloader/master.key"
+   ```
+
+   Only paths are arguments. The importer reads the source in read-only mode,
+   decrypts in memory, re-encrypts under the centre key, preserves item IDs and
+   commits all records atomically. A nonempty target or invalid payload aborts
+   without overwriting anything. Counts, never Secret values, are reported.
+4. Remove old token environment entries from active service configuration;
+   credentials that only existed in environment files must be entered through
+   the centre access page by their owner. Do not paste values into commands.
+5. Start centre first, then downloader. Validate both systemd services,
+   processes, sockets, health checks, access pools and one actual resumable
+   transfer; inspect recent logs for new errors.
+
+## Rollback
+
+Stop both daemons, restore the previous binaries and service configuration,
+then start the previous centre/downloader pair using the untouched legacy
+database and key. Queue tables retain their existing layout. The new centre
+access database/key should be retained separately, not copied into the old
+downloader database. Do not remove either key until rollback is no longer needed.
+
+## ERA5 Jobs
+
+CDS submissions are explicitly initiated by an administrator; browsing does
+not enqueue jobs. The centre persists each accepted job's account, credential
+ID and credential fingerprint. After a restart it uses the same identity and
+refuses to poll an unknown job or a job whose original Token has changed.

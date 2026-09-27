@@ -96,11 +96,12 @@ persist upstream; retain the returned `jobID` to query after a daemon restart.
 The UI retains only the latest job ID, not secrets or signed result URLs.
 There is no automatic retry of a submission with an uncertain outcome.
 
-Create the credential privately with `bash deploy/setup-cds-token.sh`, then
-configure `CDS_API_TOKEN_FILE` for `satellited` to reference that file. File
-permissions must be 0600 or 0400. Accept the requested dataset licence in your
-CDS account first. Tokens remain on the service host; the API never accepts
-or returns the token. Existing downloader credential kinds are unchanged.
+In Access Credentials, add a CDS Personal Access Token and bind an ERA5 account.
+Accept the requested dataset licence in that CDS account first. All provider
+credentials, accounts, proxies and authentication now belong to the centre;
+Secrets are encrypted at rest and write-only. The downloader uses private
+centre IPC and no longer has a Vault or token environment fallback. See
+`docs/central-access.md` for coordinated migration and rollback.
 
 ```text
 GET  /api/v1/era5/schema?collection=era5:reanalysis-era5-single-levels

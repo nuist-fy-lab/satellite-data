@@ -30,7 +30,7 @@ var datasets = []struct{ id, level, cadence, resolution string }{
 	{"reanalysis-era5-land-monthly-means", "land", "monthly", "0.1 degrees"},
 }
 
-var ErrCredentialsRequired = errors.New("CDS Personal Access Token is not configured; set CDS_API_TOKEN_FILE to a private token file and accept the dataset licence in CDS")
+var ErrCredentialsRequired = errors.New("CDS Personal Access Token is not configured; add a central CDS credential and ERA5 account, and accept the dataset licence in CDS")
 var ErrInvalidRequest = errors.New("invalid CDS request")
 
 type Provider struct {
@@ -46,7 +46,19 @@ func New(client *http.Client) *Provider {
 	if client == nil {
 		client = &http.Client{Timeout: 60 * time.Second}
 	}
-	return &Provider{client: client, base: apiBase, token: tokenFromFile}
+	return &Provider{client: client, base: apiBase, token: func() (string, error) { return "", ErrCredentialsRequired }}
+}
+
+// A centre-owned route keeps its credential in memory for this API operation.
+func NewWithToken(client *http.Client, token string) *Provider {
+	p := New(client)
+	p.token = func() (string, error) {
+		if token == "" {
+			return "", ErrCredentialsRequired
+		}
+		return token, nil
+	}
+	return p
 }
 
 func (p *Provider) Source() model.Source {

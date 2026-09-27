@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -191,32 +189,9 @@ func TestProtectedRequestsDoNotFollowRedirectsOrEchoErrors(t *testing.T) {
 	}
 }
 
-func TestTokenFileRequiresPrivatePermissions(t *testing.T) {
-	t.Setenv("CDS_API_TOKEN_FILE", "")
-	if _, err := tokenFromFile(); !errors.Is(err, ErrCredentialsRequired) {
-		t.Fatal("missing token accepted")
-	}
-	filename := filepath.Join(t.TempDir(), "cds-token")
-	if err := os.WriteFile(filename, []byte("test-only-placeholder\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CDS_API_TOKEN_FILE", filename)
-	if token, err := tokenFromFile(); err != nil || token != "test-only-placeholder" {
-		t.Fatal("private token file rejected")
-	}
-	if err := os.Chmod(filename, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tokenFromFile(); err == nil {
-		t.Fatal("world-readable token file accepted")
-	}
-	if err := os.Chmod(filename, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filename, []byte("invalid\r\nheader"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tokenFromFile(); err == nil {
-		t.Fatal("multi-line token accepted")
+func TestCatalogueProviderCannotUseLegacyTokenEnvironment(t *testing.T) {
+	t.Setenv("CDS_API_TOKEN_FILE", "/unused/private-token")
+	if _, err := New(nil).token(); !errors.Is(err, ErrCredentialsRequired) {
+		t.Fatal("catalogue provider unexpectedly owns a credential")
 	}
 }
