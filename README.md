@@ -40,6 +40,7 @@ The first working slice implements anonymous public-cloud discovery for:
 | EarthCARE | ESA MAAP STAC + OIDC-protected HTTPS science assets | discovery implemented |
 | CALIPSO | NASA CMR + Earthdata Login protected ASDC HTTPS | discovery implemented |
 | CloudSat | CIRA DPC THREDDS catalog + authenticated HTTPServer; OPeNDAP for subsets | discovery implemented |
+| ERA5 / ERA5-Land | CDS STAC catalogue + asynchronous authenticated subset requests | catalogue, request UI and API implemented; downloader archive integration pending |
 
 The provider choices intentionally avoid retired FTP endpoints, HTML scraping, and legacy NASA APIs.
 
@@ -58,6 +59,7 @@ internal/
     calipso/
     cloudsat/
     earthcare/
+    era5/
     eumetsat/
     goes/
     himawari/
@@ -76,6 +78,49 @@ GET /api/v1/search?source=goes18&collection=goes18:ABI-L1b-RadF&start=2026-09-22
 ```
 
 Interactive searches are intentionally limited to seven days. Larger historical requests will be represented as persistent backfill jobs rather than huge synchronous API responses.
+
+### ERA5
+
+ERA5 is ECMWF reanalysis, not satellite observations. The provider reads the
+official CDS STAC metadata for hourly/monthly single levels, pressure levels,
+and ERA5-Land (six collections). Temporal extent is catalogue metadata, not
+proof that every variable/hour has a downloadable file. Calendar indexing and
+ordinary granule searches return HTTP 409 for these on-demand datasets; they
+never submit CDS jobs implicitly or fabricate official file availability.
+
+Selecting ERA5 in the catalogue opens a subset form using the current CDS
+process schema. It requests one UTC day (or one month for monthly products),
+with explicit variables, times, pressure levels, format and bounding box.
+Submission and job/result access require an administrator session. CDS jobs
+persist upstream; retain the returned `jobID` to query after a daemon restart.
+The UI retains only the latest job ID, not secrets or signed result URLs.
+There is no automatic retry of a submission with an uncertain outcome.
+
+Create the credential privately with `bash deploy/setup-cds-token.sh`, then
+configure `CDS_API_TOKEN_FILE` for `satellited` to reference that file. File
+permissions must be 0600 or 0400. Accept the requested dataset licence in your
+CDS account first. Tokens remain on the service host; the API never accepts
+or returns the token. Existing downloader credential kinds are unchanged.
+
+```text
+GET  /api/v1/era5/schema?collection=era5:reanalysis-era5-single-levels
+POST /api/v1/era5/requests
+GET  /api/v1/era5/requests/{jobID}
+GET  /api/v1/era5/requests/{jobID}/result
+```
+
+POST takes `{"collection":"era5:reanalysis-era5-single-levels","inputs":{...}}`.
+`inputs` use the official process schema (for example `variable`, `year`,
+`month`, `day`, `time`, `area`, `data_format`, `download_format`). The API sends
+the CDS `inputs` envelope and returns immediately rather than waiting in an
+index worker. Result assets are returned only from CDS job results, with real
+file size and HTTPS location. The result link downloads directly from CDS;
+**automatic transfer/resume/verification/archive promotion through the separate
+downloader is not implemented for ERA5**. ERA5 therefore advertises `catalog`
+and `retrieval`, not `search`, `download` or `subscription`.
+
+The link monitor includes CDS API TCP reachability. A current c2ln1 network
+snapshot is in `docs/era5-network-2026-09-27.md`.
 
 ## CLI
 

@@ -22,6 +22,7 @@ const state = {
   },
   yearPoll: 0,
   dayPoll: 0,
+  era5: {schema: null, seq: 0, submitting: false, checking: false},
   monitor: {
     window: localStorage.getItem('satellite-data-monitor-window') || '1h',
     selected: localStorage.getItem('satellite-data-monitor-source') || 'earthcare',
@@ -188,6 +189,16 @@ function updateSelectedProduct() {
   renderCoverageShell();
   renderCalendar();
   const product = state.selected;
+  const onDemand = product?.metadata?.availability_mode === 'on-demand';
+  state.era5.seq++;
+  state.era5.schema = null;
+  $('#era5-panel').classList.toggle('hidden', !onDemand);
+  $('#era5-submit').disabled = true;
+  $('#query-month').disabled = onDemand;
+  $('#clear-calendar').disabled = onDemand;
+  for (const node of [yearEl, monthEl, timezoneEl]) node.disabled = onDemand;
+  $('#calendar-help').classList.toggle('hidden', onDemand);
+  $('#year-layout').classList.toggle('hidden', onDemand);
   if (!product) {
     $('#product-title').textContent = state.collections.length ? '当前筛选无产品' : '读取产品目录…';
     $('#product-meta').textContent = '';
@@ -203,7 +214,120 @@ function updateSelectedProduct() {
   metadata.push(product.metadata?.local_covered ? '本地已覆盖' : '本地未覆盖');
   $('#product-meta').textContent = metadata.join(' · ');
   persistFilters();
+  if (onDemand) {
+    clearTimeout(state.yearPoll);
+    clearTimeout(state.dayPoll);
+    $('#product-title').textContent = product.metadata.title || product.product;
+    $('#product-meta').textContent = [product.metadata.temporal_start?.slice(0, 10), product.metadata.temporal_end?.slice(0, 10)].filter(Boolean).join(' 至 ') + ' · CDS 按需生成 · 本地未归档';
+    prepareERA5(product, state.era5.seq);
+    return;
+  }
   loadYear();
+}
+
+async function prepareERA5(product, seq) {
+  $('#era5-status').textContent = '读取 CDS 参数…';
+  try {
+    const schema = await json('/api/v1/era5/schema?collection=' + encodeURIComponent(product.id));
+    if (seq !== state.era5.seq) return;
+    state.era5.schema = schema;
+    for (const [id, key] of [['variables', 'variable'], ['pressure', 'pressure_level'], ['type', 'product_type'], ['format', 'data_format'], ['time', 'time']]) {
+      const node = $('#era5-' + id);
+      const definition = schema.inputs[key]?.schema || {};
+      const values = definition.enum || definition.items?.enum || [];
+      node.replaceChildren();
+      for (const value of values) node.add(new Option(String(value).replaceAll('_', ' '), value));
+      node.disabled = !values.length;
+      if (definition.default && !node.multiple) node.value = definition.default;
+      if (key === 'time') for (const option of node.options) option.selected = product.cadence !== 'monthly' || option.value === '00:00';
+    }
+    const monthly = product.cadence === 'monthly';
+    const date = $('#era5-date');
+    date.type = monthly ? 'month' : 'date';
+    date.min = (product.metadata.temporal_start || '').slice(0, monthly ? 7 : 10);
+    date.max = (product.metadata.temporal_end || '').slice(0, monthly ? 7 : 10);
+    date.value = date.max;
+    $('#era5-pressure-field').classList.toggle('hidden', !schema.inputs.pressure_level);
+    $('#era5-pressure').required = Boolean(schema.inputs.pressure_level);
+    $('#era5-type-field').classList.toggle('hidden', !schema.inputs.product_type);
+    $('#era5-time-field').classList.toggle('hidden', !schema.inputs.time);
+    $('#era5-time').required = Boolean(schema.inputs.time);
+    $('#era5-area').disabled = !schema.inputs.area;
+    $('#era5-status').textContent = '';
+    $('#era5-submit').disabled = state.era5.submitting;
+    $('#era5-job-id').value ||= localStorage.getItem('satellite-data-era5-job') || '';
+  } catch (error) {
+    if (seq === state.era5.seq) $('#era5-status').textContent = error.message;
+  }
+}
+
+function selectedValues(node) { return [...node.selectedOptions].map(option => option.value); }
+
+async function submitERA5(event) {
+  event.preventDefault();
+  if (!state.era5.schema || state.era5.submitting) return;
+  const schema = state.era5.schema;
+  const collection = state.selected.id;
+  const seq = state.era5.seq;
+  const date = $('#era5-date').value.split('-');
+  const inputs = {variable: selectedValues($('#era5-variables')), year: [date[0]], month: [date[1]]};
+  if (schema.inputs.day) inputs.day = [date[2]];
+  if (schema.inputs.time) inputs.time = selectedValues($('#era5-time'));
+  if (schema.inputs.pressure_level) inputs.pressure_level = selectedValues($('#era5-pressure'));
+  if (schema.inputs.product_type) inputs.product_type = [$('#era5-type').value];
+  if (schema.inputs.data_format) inputs.data_format = $('#era5-format').value;
+  if (schema.inputs.download_format) inputs.download_format = 'unarchived';
+  if (schema.inputs.area) {
+    inputs.area = ['north', 'west', 'south', 'east'].map(key => Number($('#era5-' + key).value));
+    if (inputs.area[0] < inputs.area[2] || inputs.area[1] > inputs.area[3]) {
+      $('#era5-status').textContent = '区域边界无效';
+      return;
+    }
+  }
+  state.era5.submitting = true;
+  $('#era5-submit').disabled = true;
+  $('#era5-status').textContent = '提交中…';
+  $('#era5-result').classList.add('hidden');
+  try {
+    const job = await json('/api/v1/era5/requests', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({collection, inputs})});
+    localStorage.setItem('satellite-data-era5-job', job.jobID);
+    if (seq !== state.era5.seq) return;
+    $('#era5-job-id').value = job.jobID;
+    $('#era5-status').textContent = `CDS ${job.status} · ${job.jobID}`;
+  } catch (error) {
+    if (seq === state.era5.seq) $('#era5-status').textContent = error.status === 401 ? '需要管理员登录' : `${error.message} · 提交状态未确认，请在 CDS 请求记录中核对后再重试`;
+  } finally {
+    state.era5.submitting = false;
+    $('#era5-submit').disabled = !state.era5.schema;
+  }
+}
+
+async function refreshERA5() {
+  const id = $('#era5-job-id').value.trim();
+  if (!id || state.era5.checking) return;
+  const seq = state.era5.seq;
+  state.era5.checking = true;
+  $('#era5-refresh').disabled = true;
+  $('#era5-result').classList.add('hidden');
+  try {
+    const job = await json('/api/v1/era5/requests/' + encodeURIComponent(id));
+    if (seq !== state.era5.seq) return;
+    $('#era5-status').textContent = `CDS ${job.status} · ${job.jobID}`;
+    localStorage.setItem('satellite-data-era5-job', job.jobID);
+    if (job.status === 'successful') {
+      const asset = await json('/api/v1/era5/requests/' + encodeURIComponent(id) + '/result');
+      if (seq !== state.era5.seq) return;
+      const node = $('#era5-result');
+      node.href = asset.url;
+      node.textContent = `下载结果 · ${(asset.size / 1048576).toFixed(1)} MiB`;
+      node.classList.remove('hidden');
+    }
+  } catch (error) {
+    if (seq === state.era5.seq) $('#era5-status').textContent = error.status === 401 ? '需要管理员登录' : error.message;
+  } finally {
+    state.era5.checking = false;
+    $('#era5-refresh').disabled = false;
+  }
 }
 
 function renderCalendar() {
@@ -273,15 +397,16 @@ function coverageStatus(row, officialState, cadence, hourly = false, mode = 'gri
 function renderCoverageShell() {
   const coverage = state.coverage;
   const visible = coverage.supported;
+  const onDemand = state.selected?.metadata?.availability_mode === 'on-demand';
   $('#coverage-tools').classList.toggle('hidden', !visible);
-  $('.legend').classList.toggle('hidden', visible);
-  $('#year-layout').classList.toggle('hidden', visible && coverage.view !== 'year');
+  $('.legend').classList.toggle('hidden', visible || onDemand);
+  $('#year-layout').classList.toggle('hidden', onDemand || (visible && coverage.view !== 'year'));
   $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');
   $('#day-coverage').classList.toggle('hidden', !visible || coverage.view !== 'day');
   $('#calendar-help').textContent = visible
     ? '绿色 完整 · 浅绿 部分 · 橙色 未下载 · 蓝色 处理中 · 红色 错误 · 斜纹 官方缺时次 · 灰色 待索引'
     : '年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。';
-  $('#calendar-help').classList.remove('hidden');
+  $('#calendar-help').classList.toggle('hidden', onDemand);
   document.querySelectorAll('[data-coverage-view]').forEach(button => {
     const active = button.dataset.coverageView === coverage.view;
     button.classList.toggle('active', active);
@@ -411,7 +536,7 @@ function dayTip(day) {
 
 async function loadYear(schedulePoll = true) {
   clearTimeout(state.yearPoll);
-  if (!state.selected) return;
+  if (!state.selected || state.selected.metadata?.availability_mode === 'on-demand') return;
   if (bandCoverageSupported(state.selected)) {
     await loadCoverageYear(schedulePoll);
     return;
@@ -435,6 +560,7 @@ async function loadYear(schedulePoll = true) {
 }
 
 async function queryDay(day) {
+  if (state.selected?.metadata?.availability_mode === 'on-demand') return;
   if (state.coverage.supported) {
     await openCoverageDay(day);
     return;
@@ -443,7 +569,7 @@ async function queryDay(day) {
 }
 
 async function queryMonth() {
-  if (!state.selected) return;
+  if (!state.selected || state.selected.metadata?.availability_mode === 'on-demand') return;
   const year = Number(yearEl.value);
   const month = Number(monthEl.value || 0);
   const start = new Date(Date.UTC(year, month, 1));
@@ -1992,6 +2118,8 @@ function bind() {
   });
   $('#close-detail').addEventListener('click', closeDetail);
   $('#refresh-sources').addEventListener('click', loadSources);
+  $('#era5-form').addEventListener('submit', submitERA5);
+  $('#era5-refresh').addEventListener('click', refreshERA5);
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
   $('#refresh-downloads').addEventListener('click', () => loadDownloads(true, true));
   $('#download-monitor-provider').addEventListener('change', event => {

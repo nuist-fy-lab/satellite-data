@@ -17,6 +17,7 @@ const (
 	CapabilitySearch       Capability = "search"
 	CapabilityDownload     Capability = "download"
 	CapabilitySubscription Capability = "subscription"
+	CapabilityRetrieval    Capability = "retrieval"
 )
 
 type Source struct {

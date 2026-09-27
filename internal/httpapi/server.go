@@ -51,6 +51,10 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/sources", s.sources)
 	mux.HandleFunc("GET /api/v1/catalog", s.catalog)
 	mux.HandleFunc("GET /api/v1/search", s.search)
+	mux.HandleFunc("GET /api/v1/era5/schema", s.era5Schema)
+	mux.HandleFunc("POST /api/v1/era5/requests", s.era5Submit)
+	mux.HandleFunc("GET /api/v1/era5/requests/{id}", s.era5Job)
+	mux.HandleFunc("GET /api/v1/era5/requests/{id}/result", s.era5Result)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
 	mux.HandleFunc("GET /api/v1/downloads/catalog", s.downloadCatalog)
@@ -384,6 +388,17 @@ func (s *Server) deleteAccessAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authorizeMutation(w http.ResponseWriter, r *http.Request) bool {
+	if !s.authorizeAdminMutation(w, r) {
+		return false
+	}
+	if s.downloader == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("satellite downloader is not configured"))
+		return false
+	}
+	return true
+}
+
+func (s *Server) authorizeAdminMutation(w http.ResponseWriter, r *http.Request) bool {
 	if _, err := s.adminUser(r); err != nil {
 		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
 		return false
@@ -394,10 +409,6 @@ func (s *Server) authorizeMutation(w http.ResponseWriter, r *http.Request) bool 
 			writeError(w, http.StatusForbidden, errors.New("cross-origin access mutation rejected"))
 			return false
 		}
-	}
-	if s.downloader == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("satellite downloader is not configured"))
-		return false
 	}
 	return true
 }
@@ -589,8 +600,11 @@ func (s *Server) day(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid day"))
 		return
 	}
-	if _, _, err := s.store.ProductSource(r.Context(), product); err != nil {
+	if _, selected, err := s.store.ProductSource(r.Context(), product); err != nil {
 		writeError(w, http.StatusNotFound, errors.New("unknown product"))
+		return
+	} else if selected.Metadata["availability_mode"] == "on-demand" {
+		writeError(w, http.StatusConflict, provider.ErrOnDemand)
 		return
 	}
 	if !at.After(time.Now().UTC()) {
@@ -620,8 +634,11 @@ func (s *Server) indexRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid end day"))
 		return
 	}
-	if _, _, err := s.store.ProductSource(r.Context(), product); err != nil {
+	if _, selected, err := s.store.ProductSource(r.Context(), product); err != nil {
 		writeError(w, http.StatusNotFound, errors.New("unknown product"))
+		return
+	} else if selected.Metadata["availability_mode"] == "on-demand" {
+		writeError(w, http.StatusConflict, provider.ErrOnDemand)
 		return
 	}
 	todayEnd := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 1)
@@ -692,7 +709,9 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		status := http.StatusBadGateway
-		if errors.Is(err, provider.ErrUnsupportedCollection) || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "window") || strings.Contains(err.Error(), "after start") {
+		if errors.Is(err, provider.ErrOnDemand) {
+			status = http.StatusConflict
+		} else if errors.Is(err, provider.ErrUnsupportedCollection) || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "window") || strings.Contains(err.Error(), "after start") {
 			status = http.StatusBadRequest
 		}
 		writeError(w, status, err)

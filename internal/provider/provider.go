@@ -12,6 +12,7 @@ import (
 )
 
 var ErrUnsupportedCollection = errors.New("unsupported collection")
+var ErrOnDemand = errors.New("on-demand dataset: use the ERA5 request API with explicit variables, dates and area; there is no published granule listing")
 
 type Provider interface {
 	Source() model.Source
@@ -134,6 +135,8 @@ func catalogSource(sourceID string) string {
 		return "ESA MAAP OpenSearch/STAC catalogue"
 	case "cloudsat":
 		return "CloudSat DPC THREDDS catalogue"
+	case "era5":
+		return "Copernicus Climate Data Store STAC catalogue"
 	default:
 		if len(sourceID) >= 4 && sourceID[:4] == "goes" {
 			return "NOAA Open Data Dissemination (NODD) object catalogue"

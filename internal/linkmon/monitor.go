@@ -31,6 +31,7 @@ var defaultTargets = []Target{
 	{SourceID: "mtg", Name: "MTG", Host: "api.eumetsat.int", Port: 443},
 	{SourceID: "earthcare", Name: "EarthCARE", Host: "catalog.maap.eo.esa.int", Port: 443},
 	{SourceID: "calipso", Name: "CALIPSO", Host: "data.asdc.earthdata.nasa.gov", Port: 443},
+	{SourceID: "era5", Name: "ERA5 CDS", Host: "cds.climate.copernicus.eu", Port: 443},
 }
 
 func Targets() []Target {

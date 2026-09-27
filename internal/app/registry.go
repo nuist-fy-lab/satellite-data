@@ -8,6 +8,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/calipso"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/cloudsat"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/earthcare"
+	"github.com/nuist-fy-lab/satellite-data/internal/provider/era5"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/eumetsat"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/goes"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/himawari"
@@ -38,5 +39,6 @@ func NewRegistry() (*provider.Registry, error) {
 	providers = append(providers, earthcare.New(nil))
 	providers = append(providers, calipso.New(nil))
 	providers = append(providers, cloudsat.New(nil))
+	providers = append(providers, era5.New(nil))
 	return provider.NewRegistry(providers...), nil
 }

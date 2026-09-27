@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=7">
+  <link rel="stylesheet" href="/styles.css?v=8">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <aside class="sidebar" aria-label="功能导航">
@@ -88,6 +88,22 @@
           </div>
           <span id="coverage-status" role="status"></span>
         </div>
+        <section id="era5-panel" class="era5-panel hidden" aria-label="ERA5 CDS 请求">
+          <form id="era5-form" class="era5-form">
+            <label>变量<select id="era5-variables" multiple size="6" required></select></label>
+            <label id="era5-pressure-field" class="hidden">气压层 (hPa)<select id="era5-pressure" multiple size="6"></select></label>
+            <div class="era5-options">
+              <label>日期 · UTC<input id="era5-date" type="date" required></label>
+              <label id="era5-type-field">产品类型<select id="era5-type"></select></label>
+              <label>格式<select id="era5-format"></select></label>
+              <label id="era5-time-field">时次 · UTC<select id="era5-time" multiple size="4"></select></label>
+              <fieldset id="era5-area"><legend>区域</legend><label>北<input id="era5-north" type="number" min="-90" max="90" value="90" step="any" required></label><label>西<input id="era5-west" type="number" min="-180" max="180" value="-180" step="any" required></label><label>南<input id="era5-south" type="number" min="-90" max="90" value="-90" step="any" required></label><label>东<input id="era5-east" type="number" min="-180" max="180" value="180" step="any" required></label></fieldset>
+              <button id="era5-submit" type="submit" disabled>提交 CDS 请求</button>
+            </div>
+          </form>
+          <div class="era5-job"><label>CDS Job ID<input id="era5-job-id" type="text" maxlength="128" autocomplete="off"></label><button id="era5-refresh" type="button">查询状态</button><a id="era5-result" class="hidden" target="_blank" rel="noopener noreferrer">下载结果</a></div>
+          <div id="era5-status" role="status"></div>
+        </section>
         <div id="year-layout">
           <div class="calendar-axis" aria-hidden="true">
             <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
@@ -329,6 +345,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=15"></script>
+  <script type="module" src="/app.js?v=16"></script>
 </body>
 </html>

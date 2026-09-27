@@ -19,10 +19,17 @@ jobs:
         with:
           go-version: '1.26.6'
           cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Check web JavaScript syntax
         run: node --check web/static/app.js
+      - name: Test ERA5 request controls without a browser
+        run: node --test web/era5.test.mjs
+      - name: Check CDS token setup script
+        run: bash -n deploy/setup-cds-token.sh
       - name: Vet
         run: go vet ./...
       - name: Test
