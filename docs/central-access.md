@@ -101,3 +101,19 @@ CDS submissions are explicitly initiated by an administrator; browsing does
 not enqueue jobs. The centre persists each accepted job's account, credential
 ID and credential fingerprint. After a restart it uses the same identity and
 refuses to poll an unknown job or a job whose original Token has changed.
+
+The unified `/api/v1/downloads` endpoint accepts ERA5 date ranges and data-only
+inputs under the same administrator authorization. Its persistent order survives
+CLI disconnects and centre restarts. The centre splits it into daily or monthly
+CDS requests, saves a pre-POST checkpoint, polls accepted Job IDs and forwards
+successful results to the downloader. A crash with an unknown POST outcome must
+not cause an automatic resubmission. An order is complete only when its transfer
+tasks have been verified and promoted, not when CDS merely generated results.
+
+The downloader receives a stable `cds.climate.copernicus.eu` job reference.
+On every transfer/resume the centre checks the persisted credential binding and
+resolves the current result URL. CDS credentials are sent only to the API, never
+to asset object storage. Unknown result hosts are rejected. Deploy matching
+centre/downloader cloud artifacts together; the old downloader lacks ERA5 workers.
+The new order tables are additive. A rollback retains them and all queued tasks;
+the old centre cannot advance ERA5 orders until the matching new pair is restored.

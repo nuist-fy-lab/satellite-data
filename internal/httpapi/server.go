@@ -419,12 +419,14 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	var payload struct {
-		Source     string   `json:"source"`
-		Collection string   `json:"collection"`
-		Start      string   `json:"start"`
-		End        string   `json:"end"`
-		Band       int      `json:"band"`
-		Times      []string `json:"times"`
+		Source     string                     `json:"source"`
+		Collection string                     `json:"collection"`
+		Product    string                     `json:"product"`
+		Start      string                     `json:"start"`
+		End        string                     `json:"end"`
+		Band       int                        `json:"band"`
+		Times      []string                   `json:"times"`
+		Inputs     map[string]json.RawMessage `json:"inputs"`
 	}
 	if err := decoder.Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid download request JSON"))
@@ -432,6 +434,13 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	payload.Source = strings.TrimSpace(payload.Source)
 	payload.Collection = strings.TrimSpace(payload.Collection)
+	if payload.Product != "" {
+		if payload.Collection != "" && payload.Collection != payload.Product {
+			writeError(w, http.StatusBadRequest, errors.New("conflicting product and collection"))
+			return
+		}
+		payload.Collection = strings.TrimSpace(payload.Product)
+	}
 	start, err := parseTime(payload.Start)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid start time; use RFC3339 or YYYY-MM-DD"))
@@ -447,8 +456,46 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("unknown collection"))
 		return
 	}
+	if payload.Source == "" {
+		payload.Source = productSource
+	}
 	if productSource != payload.Source {
 		writeError(w, http.StatusBadRequest, errors.New("collection does not belong to source"))
+		return
+	}
+	if payload.Source == "era5" {
+		if !s.authorizeERA5(w, r, true) {
+			return
+		}
+		if payload.Band != 0 {
+			writeError(w, http.StatusBadRequest, errors.New("ERA5 uses variables, not --band"))
+			return
+		}
+		if payload.Inputs == nil {
+			payload.Inputs = make(map[string]json.RawMessage)
+		}
+		if len(payload.Times) > 0 {
+			if _, exists := payload.Inputs["time"]; exists {
+				writeError(w, http.StatusBadRequest, errors.New("time must be specified once"))
+				return
+			}
+			selection, err := (downloadfilter.Selection{Times: payload.Times}).Normalize(payload.Source, payload.Collection)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			payload.Inputs["time"], _ = json.Marshal(selection.Times)
+		}
+		request, err := s.store.EnqueueERA5Order(r.Context(), payload.Collection, start, end, payload.Inputs)
+		if err != nil {
+			writeERA5Error(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"download": request})
+		return
+	}
+	if len(payload.Inputs) != 0 {
+		writeError(w, http.StatusBadRequest, errors.New("inputs are only supported by on-demand products"))
 		return
 	}
 	providerID, ok := downloadcoord.ProviderForSource(payload.Source)
@@ -488,9 +535,11 @@ func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
 // only concrete assets and never needs to know about satellites or bands.
 func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 	source := strings.TrimSpace(r.URL.Query().Get("source"))
-	if _, err := s.registry.Provider(source); err != nil {
-		writeError(w, http.StatusNotFound, err)
-		return
+	if source != "" {
+		if _, err := s.registry.Provider(source); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
 	}
 	products, err := s.store.Products(r.Context(), source)
 	if err != nil {
@@ -499,11 +548,15 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	type option struct {
 		model.Product
-		Bands []downloadfilter.Band `json:"bands"`
+		Bands     []downloadfilter.Band `json:"bands"`
+		OrderMode string                `json:"order_mode"`
 	}
 	items := make([]option, 0, len(products))
 	for _, product := range products {
-		item := option{Product: product, Bands: []downloadfilter.Band{}}
+		item := option{Product: product, Bands: []downloadfilter.Band{}, OrderMode: "archive"}
+		if product.SourceID == "era5" {
+			item.OrderMode = "on-demand"
+		}
 		if profile := downloadfilter.ForProduct(product.SourceID, product.ProductKey); profile != nil {
 			item.Bands = profile.Bands
 		}
@@ -666,6 +719,26 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	values := r.URL.Query()
 	sourceID := strings.TrimSpace(values.Get("source"))
 	collectionID := strings.TrimSpace(values.Get("collection"))
+	if key := strings.TrimSpace(values.Get("product")); key != "" {
+		if collectionID != "" && collectionID != key {
+			writeError(w, http.StatusBadRequest, errors.New("conflicting product and collection"))
+			return
+		}
+		collectionID = key
+	}
+	if prefix, suffix, ok := strings.Cut(collectionID, ":"); ok {
+		if sourceID != "" && sourceID != prefix {
+			writeError(w, http.StatusBadRequest, errors.New("collection does not belong to source"))
+			return
+		}
+		if suffix == "" {
+			writeError(w, http.StatusBadRequest, errors.New("collection is required"))
+			return
+		}
+		sourceID = prefix
+	} else if sourceID != "" && collectionID != "" {
+		collectionID = sourceID + ":" + collectionID
+	}
 	start, err := parseTime(values.Get("start"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid start time; use RFC3339 or YYYY-MM-DD"))
@@ -681,11 +754,24 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	granules, err := p.Search(r.Context(), model.Query{
+	band := 0
+	if value := values.Get("band"); value != "" {
+		band, err = strconv.Atoi(value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid band"))
+			return
+		}
+	}
+	selection, err := (downloadfilter.Selection{Band: band}).Normalize(sourceID, collectionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	granules, err := searchGranules(r.Context(), p, model.Query{
 		CollectionID: collectionID,
 		Start:        start,
 		End:          end,
-	})
+	}, selection)
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, provider.ErrOnDemand) {

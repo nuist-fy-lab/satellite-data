@@ -14,6 +14,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
+	"github.com/nuist-fy-lab/satellite-data/internal/provider/era5"
 	"github.com/nuist-fy-lab/satellite-data/internal/slotaxis"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
@@ -22,18 +23,23 @@ type Coordinator struct {
 	registry   *provider.Registry
 	store      *state.Store
 	downloader *downloader.Client
+	cds        CDSOrders
 	wg         sync.WaitGroup
 }
 
-func New(registry *provider.Registry, store *state.Store, client *downloader.Client) (*Coordinator, error) {
+func New(registry *provider.Registry, store *state.Store, client *downloader.Client, cds ...CDSOrders) (*Coordinator, error) {
 	if registry == nil || store == nil || client == nil {
 		return nil, errors.New("download coordinator requires registry, store and downloader client")
 	}
-	return &Coordinator{registry: registry, store: store, downloader: client}, nil
+	c := &Coordinator{registry: registry, store: store, downloader: client}
+	if len(cds) > 0 {
+		c.cds = cds[0]
+	}
+	return c, nil
 }
 
 func (c *Coordinator) Run(ctx context.Context) {
-	for _, providerID := range []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "earthcare", "calipso", "cloudsat"} {
+	for _, providerID := range []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "earthcare", "calipso", "cloudsat", "era5"} {
 		providerID := providerID
 		c.wg.Add(1)
 		go func() {
@@ -52,7 +58,7 @@ func ProviderForSource(sourceID string) (string, bool) {
 	switch sourceID {
 	case "goes16", "goes17", "goes18", "goes19":
 		return "goes", true
-	case "modis", "viirs", "mtg", "earthcare", "calipso", "cloudsat":
+	case "modis", "viirs", "mtg", "earthcare", "calipso", "cloudsat", "era5":
 		return sourceID, true
 	case "himawari8", "himawari9":
 		return sourceID, true
@@ -83,6 +89,13 @@ func (c *Coordinator) discoveryLoop(ctx context.Context, providerID string) {
 			continue
 		}
 		if err := c.advanceDiscovery(ctx, request); err != nil {
+			var response *era5.HTTPError
+			invalidInputs := errors.As(err, &response) && (response.Status == 400 || response.Status == 422)
+			if errors.Is(err, era5.ErrSubmissionUncertain) || errors.Is(err, era5.ErrInvalidRequest) || invalidInputs {
+				_ = c.store.FailDownloadOrder(context.WithoutCancel(ctx), request.ID, err)
+				timer.Reset(25 * time.Millisecond)
+				continue
+			}
 			delay := discoveryRetryDelay(request.FailureCount + 1)
 			_ = c.store.RetryDownloadDiscovery(context.WithoutCancel(ctx), request.ID, err, delay)
 			slog.Warn("advance download discovery", "provider", providerID, "request", request.ID, "error", err)
@@ -94,6 +107,9 @@ func (c *Coordinator) discoveryLoop(ctx context.Context, providerID string) {
 }
 
 func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.DownloadRequest) error {
+	if request.ProviderID == "era5" {
+		return c.advanceERA5(ctx, request)
+	}
 	p, err := c.registry.Provider(request.SourceID)
 	if err != nil {
 		return err

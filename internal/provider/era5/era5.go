@@ -65,8 +65,8 @@ func (p *Provider) Source() model.Source {
 	return model.Source{
 		ID: "era5", Name: "ERA5 / ERA5-Land", Tier: model.TierToken,
 		Method:       "CDS STAC catalogue + authenticated asynchronous subset requests",
-		Capabilities: []model.Capability{model.CapabilityCatalog, model.CapabilityRetrieval},
-		Description:  "ECMWF reanalysis, not satellite observations. Catalogue and request schemas are public; retrieval requires a CDS Personal Access Token and accepted licences. Files are generated on demand, not published granules. Downloader archive integration is not yet available.",
+		Capabilities: []model.Capability{model.CapabilityCatalog, model.CapabilityRetrieval, model.CapabilityDownload},
+		Description:  "ECMWF reanalysis, not satellite observations. Catalogue and request schemas are public; retrieval requires a central CDS account and accepted licences. Persistent centre orders generate files on demand and schedule transfer, verification and archive promotion.",
 	}
 }
 
@@ -204,6 +204,8 @@ type Job struct {
 	Updated   string `json:"updated,omitempty"`
 }
 
+var ErrSubmissionUncertain = errors.New("CDS submission outcome is uncertain; inspect CDS requests before any resubmission")
+
 func (p *Provider) Submit(ctx context.Context, submission Submission) (Job, error) {
 	id, err := datasetID(submission.CollectionID)
 	if err != nil {
@@ -229,8 +231,14 @@ func (p *Provider) Submit(ctx context.Context, submission Submission) (Job, erro
 	err = p.request(ctx, http.MethodPost, "/retrieve/v1/processes/"+id+"/execution", struct {
 		Inputs map[string]json.RawMessage `json:"inputs"`
 	}{submission.Inputs}, token, &job)
+	if err != nil {
+		var response *HTTPError
+		if !errors.As(err, &response) || response.Status >= 500 {
+			return job, fmt.Errorf("%w: %v", ErrSubmissionUncertain, err)
+		}
+	}
 	if err == nil && (!validJobID.MatchString(job.ID) || job.Status == "") {
-		err = errors.New("CDS returned an invalid job; check your CDS requests before resubmitting")
+		err = ErrSubmissionUncertain
 	}
 	return job, err
 }

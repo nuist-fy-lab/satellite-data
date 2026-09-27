@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -34,9 +35,17 @@ func allowedHost(source, host string) bool {
 		return host == "data.asdc.earthdata.nasa.gov"
 	case "cloudsat":
 		return host == "dpc-thredds.cira.colostate.edu"
+	case "era5":
+		return host == "cds.climate.copernicus.eu"
 	default:
 		return false
 	}
+}
+
+var cdsDownloadPath = regexp.MustCompile(`^/api/retrieve/v1/jobs/([A-Za-z0-9][A-Za-z0-9_-]{0,127})/download$`)
+
+func cdsAssetHost(host string) bool {
+	return host == "object-store.os-api.cci1.ecmwf.int" || host == "object-store.os-api.cci2.ecmwf.int"
 }
 
 func (s *Service) Gateway() http.Handler {
@@ -77,13 +86,43 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "asset URL is not allowed for provider", http.StatusBadRequest)
 		return
 	}
-	route, err := s.resolve(r.Context(), request.SourceID, nil)
+	var binding *Binding
+	var cdsJobID string
+	if request.SourceID == "era5" {
+		match := cdsDownloadPath.FindStringSubmatch(u.Path)
+		if len(match) != 2 || u.RawQuery != "" || u.Fragment != "" {
+			http.Error(w, "invalid CDS job download reference", http.StatusBadRequest)
+			return
+		}
+		cdsJobID = match[1]
+		original, err := s.Store.Binding(r.Context(), cdsJobID)
+		if err != nil {
+			http.Error(w, "CDS centre job route not found", http.StatusNotFound)
+			return
+		}
+		binding = &original
+	}
+	route, err := s.resolve(r.Context(), request.SourceID, binding)
 	if err != nil {
 		http.Error(w, "centre access route is unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	defer route.client.CloseIdleConnections()
 	s.Store.markUsed(r.Context(), route)
+	if cdsJobID != "" {
+		route.client.Timeout = 60 * time.Second
+		asset, err := route.provider.Result(r.Context(), cdsJobID)
+		route.client.Timeout = 0
+		if err != nil {
+			http.Error(w, "CDS result is unavailable", http.StatusBadGateway)
+			return
+		}
+		u, err = url.Parse(asset.URL)
+		if err != nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") || !cdsAssetHost(u.Hostname()) {
+			http.Error(w, "CDS result host is not allowed", http.StatusBadGateway)
+			return
+		}
+	}
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
 	if err != nil {
 		http.Error(w, "invalid asset request", http.StatusBadRequest)
@@ -96,7 +135,7 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	if request.IfRange != "" {
 		upstream.Header.Set("If-Range", request.IfRange)
 	}
-	if route.authorizer != nil {
+	if route.authorizer != nil && cdsJobID == "" {
 		if err := route.authorizer.Authorize(r.Context(), upstream); err != nil {
 			s.Store.markResult(context.WithoutCancel(r.Context()), route, false)
 			http.Error(w, "centre provider credential was rejected", http.StatusUnauthorized)
@@ -111,7 +150,10 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 			return errors.New("unsafe asset redirect")
 		}
 		host := next.URL.Hostname()
-		if !allowedHost(request.SourceID, host) && !strings.HasSuffix(host, ".s3.amazonaws.com") && !strings.HasSuffix(host, ".amazonaws.com") && host != "storage.googleapis.com" {
+		if cdsJobID != "" && !cdsAssetHost(host) {
+			return errors.New("CDS asset redirect host is not allowed")
+		}
+		if cdsJobID == "" && !allowedHost(request.SourceID, host) && !strings.HasSuffix(host, ".s3.amazonaws.com") && !strings.HasSuffix(host, ".amazonaws.com") && host != "storage.googleapis.com" {
 			return errors.New("asset redirect host is not allowed")
 		}
 		if host != u.Hostname() {

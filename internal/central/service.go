@@ -202,10 +202,20 @@ func (s *Service) Submit(ctx context.Context, submission era5.Submission) (era5.
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := s.Store.SaveBinding(persistCtx, job.ID, Binding{AccountID: route.accountID, CredentialID: route.credentialID, TokenHash: route.fingerprint}); err != nil {
-		return era5.Job{}, fmt.Errorf("CDS accepted job %s but the centre route could not be saved; inspect CDS before resubmitting", job.ID)
+		return job, fmt.Errorf("%w: CDS accepted job %s but the centre route could not be saved", era5.ErrSubmissionUncertain, job.ID)
 	}
 	s.Store.markResult(context.WithoutCancel(ctx), route, true)
 	return job, nil
+}
+
+func (s *Service) Process(ctx context.Context, collection string) (era5.Process, error) {
+	route, err := s.resolve(ctx, "era5", nil)
+	if err != nil {
+		return era5.Process{}, err
+	}
+	defer route.client.CloseIdleConnections()
+	route.client.Timeout = 60 * time.Second
+	return route.provider.Process(ctx, collection)
 }
 
 func (s *Service) Job(ctx context.Context, id string) (era5.Job, error) {

@@ -82,6 +82,9 @@ func initDownloadSchema(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+	if _, err := db.Exec(era5OrderSchema); err != nil {
+		return err
+	}
 	rows, err := db.Query(`PRAGMA table_info(download_requests)`)
 	if err != nil {
 		return err
@@ -164,7 +167,7 @@ func (s *Store) ClaimDownloadRequest(ctx context.Context, providerID string) (Do
 	err = tx.QueryRowContext(ctx, `
 		SELECT id FROM download_requests
 		WHERE provider_id=? AND state IN ('pending','retry_wait') AND next_attempt_ns<=?
-		ORDER BY id LIMIT 1`, providerID, now.UnixNano()).Scan(&id)
+		ORDER BY next_attempt_ns,id LIMIT 1`, providerID, now.UnixNano()).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DownloadRequest{}, false, nil
 	}
@@ -229,9 +232,9 @@ func (s *Store) AdvanceDownloadRequest(ctx context.Context, id int64, nextCursor
 	_, err = tx.ExecContext(ctx, `
 		UPDATE download_requests
 		SET cursor_ts=?,state=?,granules_discovered=granules_discovered+?,assets_queued=assets_queued+?,
-		    failure_count=0,next_attempt_ns=0,last_error='',completed_at=?,updated_at=?
+		    failure_count=0,next_attempt_ns=?,last_error='',completed_at=?,updated_at=?
 		WHERE id=?`,
-		formatTime(nextCursor), state, granules, added, completed, formatTime(now), id)
+		formatTime(nextCursor), state, granules, added, now.UnixNano(), completed, formatTime(now), id)
 	if err != nil {
 		return err
 	}
@@ -282,7 +285,8 @@ func (s *Store) ActiveDownloadRequests(ctx context.Context, limit int) ([]Downlo
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, downloadRequestSelect+`
-		WHERE state IN ('pending','discovering','retry_wait','transferring','waiting_auth') ORDER BY id LIMIT ?`, limit)
+		WHERE state IN ('pending','discovering','retry_wait','transferring','waiting_auth')
+		ORDER BY CASE WHEN state IN ('transferring','waiting_auth') THEN 0 ELSE 1 END,updated_at,id LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

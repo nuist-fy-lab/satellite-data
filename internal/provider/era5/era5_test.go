@@ -84,7 +84,7 @@ func TestSearchNeverSubmitsOrInventsGranules(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, capability := range p.Source().Capabilities {
-		if capability == model.CapabilitySearch || capability == model.CapabilityDownload || capability == model.CapabilitySubscription {
+		if capability == model.CapabilitySearch || capability == model.CapabilitySubscription {
 			t.Fatal("advertised an unsupported capability")
 		}
 	}

@@ -108,7 +108,7 @@ func main() {
 			stop()
 		}
 	}()
-	coordinator, err := downloadcoord.New(registry, store, downloaderClient)
+	coordinator, err := downloadcoord.New(registry, store, downloaderClient, centralService)
 	if err != nil {
 		slog.Error("initialize download coordinator", "error", err)
 		os.Exit(1)

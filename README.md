@@ -130,10 +130,12 @@ POST takes `{"collection":"era5:reanalysis-era5-single-levels","inputs":{...}}`.
 `month`, `day`, `time`, `area`, `data_format`, `download_format`). The API sends
 the CDS `inputs` envelope and returns immediately rather than waiting in an
 index worker. Result assets are returned only from CDS job results, with real
-file size and HTTPS location. The result link downloads directly from CDS;
-**automatic transfer/resume/verification/archive promotion through the separate
-downloader is not implemented for ERA5**. ERA5 therefore advertises `catalog`
-and `retrieval`, not `search`, `download` or `subscription`.
+file size and HTTPS location. These low-level job endpoints remain available
+for explicit CDS operations. For a complete automatically archived retrieval,
+submit one persistent order to `/api/v1/downloads` instead. The centre splits
+dates, persists CDS submission checkpoints, polls jobs and enqueues results
+for resumable transfer, verification and archive promotion. ERA5 advertises
+`catalog`, `retrieval` and `download`, not published-granule `search` or `subscription`.
 
 The link monitor includes CDS API TCP reachability. A current c2ln1 network
 snapshot is in `docs/era5-network-2026-09-27.md`.
@@ -151,6 +153,9 @@ username/password, provider Token or Vault setup.
 ```text
 satellite config set
 satellite source list
+satellite product list --search temperature --json
+satellite product list --source earthcare --level L2
+satellite product show --product goes18:ABI-L1b-RadF
 satellite catalog list --source goes18
 satellite query list \
   --source goes18 \
@@ -161,6 +166,12 @@ satellite download submit \
   --source goes18 --collection goes18:ABI-L1b-RadF \
   --start 2023-06-01 --end 2023-06-30 --band 6 --hourly
 satellite download status --id 1 --json
+satellite query list --product goes18:ABI-L1b-RadF --day 2024-01-01 --band 6
+satellite download submit --product goes18:ABI-L1b-RadF --day 2024-01-01 --band 6 --hourly
+satellite download submit \
+  --product era5:reanalysis-era5-single-levels \
+  --start 2024-01-01 --end 2024-01-02 \
+  --variable 2m_temperature --area 32.25,118.5,32,118.75
 satellite era5 schema --collection era5:reanalysis-era5-single-levels
 satellite era5 submit \
   --collection era5:reanalysis-era5-single-levels \
@@ -178,8 +189,34 @@ submit or inspect CDS jobs. For other products or multiple values, pass an
 official CDS `inputs` JSON object via `--inputs-file request.json` instead of
 the convenience flags. A submission is sent **once**; on an interrupted POST,
 check CDS requests before repeating it. `status` polls explicitly and `result`
-prints metadata without exposing the signed result URL. The CLI does not
-transfer or archive CDS files; the web portal has the direct result link.
+prints metadata without exposing the signed result URL. These low-level
+`era5 submit/status/result` commands do not create centre archive orders.
+Use `download submit` above for automatic scheduling and archive completion;
+`download status --id NUMBER` reports that one persistent order.
+
+For every source, `product list` (also `catalog list`) browses the centre's stored
+official catalogue, including keys, instruments, levels, versions, date metadata
+and supported bands. Source is optional and inferred from a full
+`--product SOURCE:PRODUCT` key; upstream IDs with additional colons are preserved.
+`product show` prints full selection metadata. `query list` takes one UTC `--day`
+or an exclusive `--start/--end` interval up to 31 days. The centre handles query
+segmentation, deduplication and band filtering; queries never enqueue orders.
+For ERA5, querying without date flags displays the official schema rather than
+inventing published granules.
+
+One `download submit` creates a persistent order for any supported product.
+The CLI sends it once and can disconnect immediately. The centre owns discovery,
+batching, retries, credentials and completion monitoring; the separate downloader
+owns transfer, verification and archive promotion. Long orders yield between
+segments so another order on the same provider can progress.
+ERA5 orders accept repeatable/comma-separated `--variable` and `--pressure-level`,
+optional `--area north,west,south,east`, `--time`, and `--data-format`.
+Advanced unified-order `--inputs-file` selections omit year/month/day: the centre
+derives dates from start/end. Hourly products split by UTC day; monthly products
+require complete months and split by month. The centre supplies dataset-aware
+date field types, product type and format defaults. An uncertain CDS POST fails
+the persistent order safely without repeating it; an operator must reconcile
+the existing CDS requests before resubmitting.
 
 `SATELLITE_CONFIG` selects a different private config file. `SATELLITE_SERVER`
 and `SATELLITE_API_KEY` can override the saved centre connection in an existing

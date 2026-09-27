@@ -38,6 +38,8 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./...
+      - name: Race-check persistent orders and centre dispatch
+        run: go test -race ./internal/state ./internal/downloadcoord ./internal/httpapi ./internal/central
 
   build:
     runs-on: ubuntu-latest
