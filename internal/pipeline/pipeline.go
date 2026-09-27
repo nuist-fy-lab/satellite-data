@@ -371,6 +371,8 @@ func allowedHost(sourceID, host string) bool {
 		return host == "data.asdc.earthdata.nasa.gov"
 	case "cloudsat":
 		return host == "dpc-thredds.cira.colostate.edu"
+	case "era5":
+		return host == "cds.climate.copernicus.eu"
 	case "himawari8":
 		return host == "noaa-himawari8.s3.amazonaws.com"
 	case "himawari9":

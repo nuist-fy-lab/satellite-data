@@ -40,6 +40,7 @@ func Load() Config {
 		provider("earthcare", true, 2, 1, 10*time.Minute, "earthcare"),
 		provider("calipso", true, 3, 2, 10*time.Minute, "earthdata"),
 		provider("cloudsat", true, 2, 2, 10*time.Minute, "cloudsat"),
+		provider("era5", true, 2, 2, 10*time.Minute, "cds"),
 	}
 	return Config{
 		SocketPath:         env("SATDOWN_SOCKET", filepath.Join(state, "downloader.sock")),
