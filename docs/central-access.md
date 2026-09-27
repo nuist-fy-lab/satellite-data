@@ -5,8 +5,8 @@ authentication and the AES-GCM Vault. `satellite-data-downloader` owns only task
 queues, transfers, verification and archive promotion. It no longer reads tokens
 from environment variables or opens a master key.
 
-The CLI only controls the centre: submitting download tasks, querying catalogues
-and task status, and changing ordinary settings. It never handles provider
+The CLI only controls the centre: submitting download tasks and administrator-owned
+ERA5 requests, querying catalogues and task status, and changing ordinary settings. It never handles provider
 credentials/accounts, encryption, provider authentication or actual file
 transfers. Centre-side discovery and download workers perform all downloads.
 Provider proxy route settings belong to the centre too. A future CLI settings
@@ -29,6 +29,12 @@ token namespaces. NSMC Keys/sessions cannot be listed, authenticated or revoked
 through Satellite, even by rewriting a token prefix. Existing NSMC sessions and
 Keys are left untouched. Old Satellite access-page cookies must log in once at
 the new portal entry; thereafter the credential page uses that same session.
+
+ERA5 job submission and polling also accept Satellite CLI Keys belonging to an
+enabled administrator. Nonadmin Keys remain read-only for ordinary operational
+routes and cannot read CDS jobs; even admin Keys cannot manage credentials or
+Keys. CDS provider credentials never leave the centre. A CLI result displays
+asset metadata without printing the signed download URL.
 
 The entire web portal is session-protected, not just the access page. The
 `/login` page and login assets are public; unauthenticated pages redirect there

@@ -161,7 +161,25 @@ satellite download submit \
   --source goes18 --collection goes18:ABI-L1b-RadF \
   --start 2023-06-01 --end 2023-06-30 --band 6 --hourly
 satellite download status --id 1 --json
+satellite era5 schema --collection era5:reanalysis-era5-single-levels
+satellite era5 submit \
+  --collection era5:reanalysis-era5-single-levels \
+  --variable 2m_temperature --product-type reanalysis \
+  --year 2024 --month 01 --day 01 --time 00:00 \
+  --area 32.25,-118.75,32,-118.5 \
+  --data-format netcdf --download-format unarchived
+satellite era5 status --id JOB_ID
+satellite era5 result --id JOB_ID
 ```
+
+ERA5 submission, status and result commands require an administrator-owned CLI
+API Key. The provider Token remains in the centre; ordinary user Keys cannot
+submit or inspect CDS jobs. For other products or multiple values, pass an
+official CDS `inputs` JSON object via `--inputs-file request.json` instead of
+the convenience flags. A submission is sent **once**; on an interrupted POST,
+check CDS requests before repeating it. `status` polls explicitly and `result`
+prints metadata without exposing the signed result URL. The CLI does not
+transfer or archive CDS files; the web portal has the direct result link.
 
 `SATELLITE_CONFIG` selects a different private config file. `SATELLITE_SERVER`
 and `SATELLITE_API_KEY` can override the saved centre connection in an existing

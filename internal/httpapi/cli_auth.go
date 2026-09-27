@@ -54,7 +54,7 @@ func (s *Server) withPortalAuth(next http.Handler) http.Handler {
 
 func cliRouteAllowed(method, path string) bool {
 	if method == http.MethodPost {
-		return path == "/api/v1/downloads" || path == "/api/index"
+		return path == "/api/v1/downloads" || path == "/api/index" || path == "/api/v1/era5/requests"
 	}
 	if method != http.MethodGet {
 		return false
@@ -63,7 +63,16 @@ func cliRouteAllowed(method, path string) bool {
 	case "/api/v1/sources", "/api/v1/catalog", "/api/v1/search", "/api/v1/downloads", "/api/v1/downloader/providers", "/api/v1/monitor/downloads", "/api/v1/monitor/links", "/api/v1/era5/schema", "/api/products", "/api/year", "/api/day":
 		return true
 	}
-	return strings.HasPrefix(path, "/api/v1/downloads/") || strings.HasPrefix(path, "/api/coverage/")
+	return strings.HasPrefix(path, "/api/v1/downloads/") || strings.HasPrefix(path, "/api/coverage/") || era5JobRoute(path)
+}
+
+func era5JobRoute(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/api/v1/era5/requests/")
+	if !ok {
+		return false
+	}
+	id := strings.TrimSuffix(rest, "/result")
+	return id != "" && !strings.Contains(id, "/")
 }
 
 func (s *Server) cliUser(r *http.Request) (authstore.User, error) {

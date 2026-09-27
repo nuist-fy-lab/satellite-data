@@ -57,6 +57,14 @@ func main() {
 		err = c.downloadStatus(args[2:])
 	case "download providers":
 		err = c.downloadProviders()
+	case "era5 schema":
+		err = c.era5Schema(args[2:])
+	case "era5 submit":
+		err = c.era5Submit(args[2:])
+	case "era5 status":
+		err = c.era5Status(args[2:])
+	case "era5 result":
+		err = c.era5Result(args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -394,6 +402,11 @@ func usage() {
   satellite download list [--limit 50] [--json]
   satellite download status --id 1 [--json]
   satellite download providers
+  satellite era5 schema --collection era5:reanalysis-era5-single-levels
+  satellite era5 submit --collection era5:reanalysis-era5-single-levels --variable 2m_temperature --product-type reanalysis --year 2024 --month 01 --day 01 --time 00:00 --area 32.25,-118.75,32,-118.5 --data-format netcdf --download-format unarchived [--json]
+  satellite era5 submit --collection era5:reanalysis-era5-single-levels --inputs-file request.json [--json]
+  satellite era5 status --id JOB_ID [--json]
+  satellite era5 result --id JOB_ID [--json]
 
 Environment:
   SATELLITE_CONFIG selects the private CLI config file.

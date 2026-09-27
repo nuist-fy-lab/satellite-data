@@ -50,6 +50,10 @@ func TestERA5RequiresAdminAndNeverUsesTheDownloaderForSubmissions(t *testing.T) 
 		if r.Method == http.MethodPost {
 			body = `{"jobID":"request-1","status":"accepted"}`
 			code = http.StatusAccepted
+		} else if strings.HasSuffix(r.URL.Path, "/results") {
+			body = `{"asset":{"value":{"href":"https://cds.example/download?signature=private","file:size":128,"type":"application/x-netcdf"}}}`
+		} else if strings.HasSuffix(r.URL.Path, "/jobs/request-1") {
+			body = `{"jobID":"request-1","status":"successful"}`
 		}
 		return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}
@@ -112,6 +116,80 @@ func TestERA5RequiresAdminAndNeverUsesTheDownloaderForSubmissions(t *testing.T) 
 	}
 	if w.Header().Get("Cache-Control") != "no-store" || strings.Contains(w.Body.String(), "test-only-placeholder") {
 		t.Fatal("unsafe job response")
+	}
+	_, adminKey, err := auth.CreateAPIKey(t.Context(), user.ID, "admin CLI")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := auth.CreateUser(t.Context(), "reader", "correct horse battery staple", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readerKey, err := auth.CreateAPIKey(t.Context(), reader.ID, "reader CLI")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{readerKey, ""} {
+		for _, endpoint := range []struct{ method, path string }{
+			{http.MethodPost, "/api/v1/era5/requests"},
+			{http.MethodGet, "/api/v1/era5/requests/request-1"},
+			{http.MethodGet, "/api/v1/era5/requests/request-1/result"},
+		} {
+			r := httptest.NewRequest(endpoint.method, endpoint.path, strings.NewReader(body))
+			if key != "" {
+				r.Header.Set("Authorization", "Bearer "+key)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			want := http.StatusForbidden
+			if key == "" {
+				want = http.StatusUnauthorized
+			}
+			if w.Code != want {
+				t.Fatalf("key reached %s: status=%d", endpoint.path, w.Code)
+			}
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatal("nonadmin request reached CDS")
+	}
+	for _, endpoint := range []struct {
+		method, path string
+		status       int
+	}{
+		{http.MethodPost, "/api/v1/era5/requests", http.StatusAccepted},
+		{http.MethodGet, "/api/v1/era5/requests/request-1", http.StatusOK},
+		{http.MethodGet, "/api/v1/era5/requests/request-1/result", http.StatusOK},
+	} {
+		r := httptest.NewRequest(endpoint.method, endpoint.path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+adminKey)
+		r.AddCookie(&http.Cookie{Name: accessSessionCookie, Value: session})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != endpoint.status || w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("admin CLI %s: status=%d body=%s", endpoint.path, w.Code, w.Body.String())
+		}
+	}
+	if calls.Load() != 6 {
+		t.Fatalf("expected exactly one CDS submit and two polls: calls=%d", calls.Load())
+	}
+	cross := httptest.NewRequest(http.MethodPost, "/api/v1/era5/requests", strings.NewReader(body))
+	cross.Header.Set("Authorization", "Bearer "+adminKey)
+	cross.Header.Set("Origin", "https://other.example")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, cross)
+	if w.Code != http.StatusForbidden || calls.Load() != 6 {
+		t.Fatal("cross-origin CLI submission reached CDS")
+	}
+	for _, path := range []string{"/api/v1/me/api-keys", "/api/v1/access/pools", "/api/v1/era5/requests/request-1/extra"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Header.Set("Authorization", "Bearer "+adminKey)
+		r.AddCookie(&http.Cookie{Name: accessSessionCookie, Value: session})
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("admin CLI reached %s status=%d", path, w.Code)
+		}
 	}
 }
 

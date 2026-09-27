@@ -40,7 +40,7 @@ func (s *Server) era5Schema(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) era5Submit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if !s.authorizeAdminMutation(w, r) {
+	if !s.authorizeERA5(w, r, true) {
 		return
 	}
 	var submission era5.Submission
@@ -66,8 +66,7 @@ func (s *Server) era5Submit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) era5Job(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if _, err := s.adminUser(r); err != nil {
-		s.writeAdminError(w, r)
+	if !s.authorizeERA5(w, r, false) {
 		return
 	}
 	if s.era5Provider(w) == nil {
@@ -87,8 +86,7 @@ func (s *Server) era5Job(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) era5Result(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if _, err := s.adminUser(r); err != nil {
-		s.writeAdminError(w, r)
+	if !s.authorizeERA5(w, r, false) {
 		return
 	}
 	if s.era5Provider(w) == nil {
@@ -104,6 +102,28 @@ func (s *Server) era5Result(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, asset)
+}
+
+func (s *Server) authorizeERA5(w http.ResponseWriter, r *http.Request, mutation bool) bool {
+	if r.Header.Get("Authorization") != "" {
+		user, err := s.cliUser(r)
+		if err != nil || user.Role != "admin" {
+			writeError(w, http.StatusForbidden, errors.New("administrator role required"))
+			return false
+		}
+		if mutation && !sameOrigin(w, r) {
+			return false
+		}
+		return true
+	}
+	if mutation {
+		return s.authorizeAdminMutation(w, r)
+	}
+	if _, err := s.adminUser(r); err != nil {
+		s.writeAdminError(w, r)
+		return false
+	}
+	return true
 }
 
 func writeERA5Error(w http.ResponseWriter, err error) {
