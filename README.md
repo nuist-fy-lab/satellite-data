@@ -28,6 +28,15 @@ verified before replacing the release; the oldest generation drops out.
 Cloud builds also upload a two-day Actions artifact so an authenticated CLI
 can publish the same binaries if the workflow token cannot create a Release.
 
+The centre's state and index share one SQLite file, `state.sqlite3` (default:
+`~/.local/state/satellite-data/state.sqlite3`); it is separate from NSMC's
+`index.sqlite3` and from the satellite downloader's database. On an existing
+installation, stop `satellited` before changing `SATELLITED_STATE_DB` from
+`state.db`: make a restorable backup of the database and any `-wal`/`-shm`
+files while stopped, rename the database and any remaining sidecars together
+to `state.sqlite3`, then update the service environment and restart. The daemon
+refuses to create a new `state.sqlite3` beside an unmigrated `state.db`.
+
 ## Current milestone
 
 The first working slice implements anonymous public-cloud discovery for:

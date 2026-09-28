@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -69,6 +70,10 @@ func main() {
 	}
 	if err := os.MkdirAll(filepath.Dir(*stateDB), 0o750); err != nil {
 		slog.Error("create state directory", "error", err)
+		os.Exit(1)
+	}
+	if err := checkLegacyStateDB(*stateDB); err != nil {
+		slog.Error("open persistent state", "error", err)
 		os.Exit(1)
 	}
 	store, err := state.Open(*stateDB)
@@ -153,13 +158,31 @@ func envOr(name, fallback string) string {
 
 func defaultStateDB() string {
 	if root := os.Getenv("XDG_STATE_HOME"); root != "" {
-		return filepath.Join(root, "satellite-data", "state.db")
+		return filepath.Join(root, "satellite-data", "state.sqlite3")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "satellite-data.db"
+		return "satellite-data.sqlite3"
 	}
-	return filepath.Join(home, ".local", "state", "satellite-data", "state.db")
+	return filepath.Join(home, ".local", "state", "satellite-data", "state.sqlite3")
+}
+
+func checkLegacyStateDB(path string) error {
+	if filepath.Base(path) != "state.sqlite3" {
+		return nil
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	legacy := filepath.Join(filepath.Dir(path), "state.db")
+	if _, err := os.Stat(legacy); err == nil {
+		return fmt.Errorf("legacy state database %s exists; stop satellited and migrate it to %s before starting", legacy, path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func defaultArchiveRoot() string {
