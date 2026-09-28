@@ -149,6 +149,14 @@ func TestOwnedERA5OrdersAndLegacyVisibility(t *testing.T) {
 		handler.ServeHTTP(w, r)
 		return w
 	}
+	foreign := httptest.NewRequest(http.MethodPost, "/api/v1/downloads", strings.NewReader(`{"product":"era5:reanalysis-era5-single-levels","start":"2024-01-01","end":"2024-01-02","inputs":{"variable":["2m_temperature"]}}`))
+	foreign.Header.Set("Authorization", "Bearer "+key)
+	foreign.Header.Set("Origin", "https://untrusted.example")
+	blocked := httptest.NewRecorder()
+	handler.ServeHTTP(blocked, foreign)
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin ERA5 order accepted: %d", blocked.Code)
+	}
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/downloads", strings.NewReader(`{"product":"era5:reanalysis-era5-single-levels","start":"2024-01-01","end":"2024-01-02","inputs":{"variable":["2m_temperature"]}}`))
 	r.Header.Set("Authorization", "Bearer "+key)
 	w := httptest.NewRecorder()

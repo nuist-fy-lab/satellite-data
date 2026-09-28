@@ -93,6 +93,9 @@ func (s *Server) orderUser(w http.ResponseWriter, r *http.Request) (authstore.Us
 	var user authstore.User
 	var err error
 	if r.Header.Get("Authorization") != "" {
+		if !sameOrigin(w, r) {
+			return authstore.User{}, false
+		}
 		user, err = s.cliUser(r)
 	} else {
 		user, err = s.webUser(r)
