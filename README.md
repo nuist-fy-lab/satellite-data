@@ -102,7 +102,7 @@ never submit CDS jobs implicitly or fabricate official file availability.
 Selecting ERA5 in the catalogue opens a subset form using the current CDS
 process schema. It requests one UTC day (or one month for monthly products),
 with explicit variables, times, pressure levels, format and bounding box.
-Submission and job/result access require an administrator session. CDS jobs
+Direct CDS submission and job/result access require an administrator session. CDS jobs
 persist upstream; retain the returned `jobID` to query after a daemon restart.
 The UI retains only the latest job ID, not secrets or signed result URLs.
 There is no automatic retry of a submission with an uncertain outcome.
@@ -193,6 +193,14 @@ prints metadata without exposing the signed result URL. These low-level
 `era5 submit/status/result` commands do not create centre archive orders.
 Use `download submit` above for automatic scheduling and archive completion;
 `download status --id NUMBER` reports that one persistent order.
+Unlike the low-level CDS commands, unified `download submit --product era5:...`
+accepts an ordinary user's CLI Key or portal session. Each new order is bound
+to its submitter; ordinary users can list/read only their own orders, and
+administrators can inspect all orders. Orders created before this ownership
+migration have no owner and remain visible only to administrators.
+The service does not hard-code provider-published rate, volume or concurrency
+quotas as if they were guaranteed for every account; provider throttling is
+separate from local downloader worker limits.
 
 For every source, `product list` (also `catalog list`) browses the centre's stored
 official catalogue, including keys, instruments, levels, versions, date metadata

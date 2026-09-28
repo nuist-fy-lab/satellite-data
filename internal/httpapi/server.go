@@ -415,6 +415,10 @@ func decodeRequestJSON(w http.ResponseWriter, r *http.Request, target any) error
 }
 
 func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.orderUser(w, r)
+	if !ok {
+		return
+	}
 	defer r.Body.Close()
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
@@ -464,9 +468,6 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload.Source == "era5" {
-		if !s.authorizeERA5(w, r, true) {
-			return
-		}
 		if payload.Band != 0 {
 			writeError(w, http.StatusBadRequest, errors.New("ERA5 uses variables, not --band"))
 			return
@@ -486,7 +487,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 			}
 			payload.Inputs["time"], _ = json.Marshal(selection.Times)
 		}
-		request, err := s.store.EnqueueERA5Order(r.Context(), payload.Collection, start, end, payload.Inputs)
+		request, err := s.store.EnqueueERA5OrderOwned(r.Context(), user.ID, payload.Collection, start, end, payload.Inputs)
 		if err != nil {
 			writeERA5Error(w, err)
 			return
@@ -508,7 +509,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	request, err := s.store.EnqueueSelectedDownloadRequest(r.Context(), payload.Source, providerID, payload.Collection, start, end, selection)
+	request, err := s.store.EnqueueSelectedDownloadRequestOwned(r.Context(), user.ID, payload.Source, providerID, payload.Collection, start, end, selection)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -522,8 +523,18 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.orderUser(w, r)
+	if !ok {
+		return
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items, err := s.store.DownloadRequests(r.Context(), limit)
+	var items []state.DownloadRequest
+	var err error
+	if user.Role == "admin" {
+		items, err = s.store.DownloadRequests(r.Context(), limit)
+	} else {
+		items, err = s.store.DownloadRequestsOwned(r.Context(), limit, user.ID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -566,12 +577,21 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.orderUser(w, r)
+	if !ok {
+		return
+	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusBadRequest, errors.New("invalid download id"))
 		return
 	}
-	item, err := s.store.DownloadRequest(r.Context(), id)
+	var item state.DownloadRequest
+	if user.Role == "admin" {
+		item, err = s.store.DownloadRequest(r.Context(), id)
+	} else {
+		item, err = s.store.DownloadRequestOwned(r.Context(), id, user.ID)
+	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, errors.New("download request not found"))
 		return

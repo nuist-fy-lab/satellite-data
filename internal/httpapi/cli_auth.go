@@ -86,6 +86,24 @@ func (s *Server) cliUser(r *http.Request) (authstore.User, error) {
 	return s.auth.AuthenticateAPIKey(r.Context(), strings.TrimSpace(token))
 }
 
+func (s *Server) orderUser(w http.ResponseWriter, r *http.Request) (authstore.User, bool) {
+	if !s.portalAuth {
+		return authstore.User{Role: "admin"}, true
+	}
+	var user authstore.User
+	var err error
+	if r.Header.Get("Authorization") != "" {
+		user, err = s.cliUser(r)
+	} else {
+		user, err = s.webUser(r)
+	}
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, errors.New("portal session or CLI API key required"))
+		return authstore.User{}, false
+	}
+	return user, true
+}
+
 func sameOrigin(w http.ResponseWriter, r *http.Request) bool {
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
 		u, err := url.Parse(origin)

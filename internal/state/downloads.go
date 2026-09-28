@@ -51,6 +51,7 @@ ON download_request_tasks(downloader_task_id,request_id);
 
 type DownloadRequest struct {
 	ID                 int64                    `json:"id"`
+	OwnerUserID        string                   `json:"-"`
 	SourceID           string                   `json:"source_id"`
 	ProviderID         string                   `json:"provider_id"`
 	CollectionID       string                   `json:"collection_id"`
@@ -89,7 +90,7 @@ func initDownloadSchema(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	found := false
+	found := map[string]bool{}
 	for rows.Next() {
 		var cid, notNull, pk int
 		var name, dataType string
@@ -98,14 +99,24 @@ func initDownloadSchema(db *sql.DB) error {
 			rows.Close()
 			return err
 		}
-		found = found || name == "selection_json"
+		found[name] = true
 	}
 	err = rows.Err()
 	rows.Close()
-	if err != nil || found {
+	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`ALTER TABLE download_requests ADD COLUMN selection_json TEXT NOT NULL DEFAULT '{}'`)
+	if !found["selection_json"] {
+		if _, err := db.Exec(`ALTER TABLE download_requests ADD COLUMN selection_json TEXT NOT NULL DEFAULT '{}'`); err != nil {
+			return err
+		}
+	}
+	if !found["owner_user_id"] {
+		if _, err := db.Exec(`ALTER TABLE download_requests ADD COLUMN owner_user_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS download_requests_owner_idx ON download_requests(owner_user_id,id)`)
 	return err
 }
 
@@ -123,6 +134,10 @@ func (s *Store) EnqueueDownloadRequest(ctx context.Context, sourceID, providerID
 }
 
 func (s *Store) EnqueueSelectedDownloadRequest(ctx context.Context, sourceID, providerID, collectionID string, start, end time.Time, selection downloadfilter.Selection) (DownloadRequest, error) {
+	return s.EnqueueSelectedDownloadRequestOwned(ctx, "", sourceID, providerID, collectionID, start, end, selection)
+}
+
+func (s *Store) EnqueueSelectedDownloadRequestOwned(ctx context.Context, ownerUserID, sourceID, providerID, collectionID string, start, end time.Time, selection downloadfilter.Selection) (DownloadRequest, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	providerID = strings.TrimSpace(providerID)
 	collectionID = strings.TrimSpace(collectionID)
@@ -143,9 +158,9 @@ func (s *Store) EnqueueSelectedDownloadRequest(ctx context.Context, sourceID, pr
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO download_requests(
-		 source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,'pending',?,?)`,
-		sourceID, providerID, collectionID, formatTime(start), formatTime(end), formatTime(start), string(encoded), formatTime(now), formatTime(now))
+		 owner_user_id,source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,'pending',?,?)`,
+		ownerUserID, sourceID, providerID, collectionID, formatTime(start), formatTime(end), formatTime(start), string(encoded), formatTime(now), formatTime(now))
 	if err != nil {
 		return DownloadRequest{}, err
 	}
@@ -257,14 +272,32 @@ func (s *Store) DownloadRequest(ctx context.Context, id int64) (DownloadRequest,
 	return scanDownloadRequest(s.db.QueryRowContext(ctx, downloadRequestSelect+` WHERE id=?`, id))
 }
 
+func (s *Store) DownloadRequestOwned(ctx context.Context, id int64, ownerUserID string) (DownloadRequest, error) {
+	return scanDownloadRequest(s.db.QueryRowContext(ctx, downloadRequestSelect+` WHERE id=? AND owner_user_id=?`, id, ownerUserID))
+}
+
 func (s *Store) DownloadRequests(ctx context.Context, limit int) ([]DownloadRequest, error) {
+	return s.downloadRequests(ctx, limit, "", false)
+}
+
+func (s *Store) DownloadRequestsOwned(ctx context.Context, limit int, ownerUserID string) ([]DownloadRequest, error) {
+	return s.downloadRequests(ctx, limit, ownerUserID, true)
+}
+
+func (s *Store) downloadRequests(ctx context.Context, limit int, ownerUserID string, scoped bool) ([]DownloadRequest, error) {
 	if limit < 1 {
 		limit = 50
 	}
 	if limit > 500 {
 		limit = 500
 	}
-	rows, err := s.db.QueryContext(ctx, downloadRequestSelect+` ORDER BY id DESC LIMIT ?`, limit)
+	query := downloadRequestSelect + ` ORDER BY id DESC LIMIT ?`
+	args := []any{limit}
+	if scoped {
+		query = downloadRequestSelect + ` WHERE owner_user_id=? ORDER BY id DESC LIMIT ?`
+		args = []any{ownerUserID, limit}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +396,7 @@ func (s *Store) UpdateDownloadTransferState(ctx context.Context, requestID int64
 const downloadRequestSelect = `
 SELECT id,source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,state,
        granules_discovered,assets_queued,files_done,files_failed,files_waiting_auth,
-       failure_count,last_error,requested_at,completed_at,updated_at,selection_json
+       failure_count,last_error,requested_at,completed_at,updated_at,selection_json,owner_user_id
 FROM download_requests`
 
 func scanDownloadRequest(scanner interface{ Scan(...any) error }) (DownloadRequest, error) {
@@ -373,7 +406,7 @@ func scanDownloadRequest(scanner interface{ Scan(...any) error }) (DownloadReque
 		&item.ID, &item.SourceID, &item.ProviderID, &item.CollectionID,
 		&start, &end, &cursor, &item.State, &item.GranulesDiscovered, &item.AssetsQueued,
 		&item.FilesDone, &item.FilesFailed, &item.FilesWaitingAuth, &item.FailureCount,
-		&item.LastError, &requested, &completed, &updated, &selectionJSON,
+		&item.LastError, &requested, &completed, &updated, &selectionJSON, &item.OwnerUserID,
 	)
 	if err != nil {
 		return DownloadRequest{}, err

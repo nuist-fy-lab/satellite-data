@@ -27,6 +27,10 @@ type ERA5Part struct {
 }
 
 func (s *Store) EnqueueERA5Order(ctx context.Context, collection string, start, end time.Time, inputs map[string]json.RawMessage) (DownloadRequest, error) {
+	return s.EnqueueERA5OrderOwned(ctx, "", collection, start, end, inputs)
+}
+
+func (s *Store) EnqueueERA5OrderOwned(ctx context.Context, ownerUserID, collection string, start, end time.Time, inputs map[string]json.RawMessage) (DownloadRequest, error) {
 	if err := era5.ValidateOrder(collection, start, end, inputs); err != nil {
 		return DownloadRequest{}, err
 	}
@@ -40,7 +44,7 @@ func (s *Store) EnqueueERA5Order(ctx context.Context, collection string, start, 
 	}
 	defer tx.Rollback()
 	now := formatTime(time.Now())
-	result, err := tx.ExecContext(ctx, `INSERT INTO download_requests(source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at) VALUES('era5','era5',?,?,?,?,'{}','pending',?,?)`, collection, formatTime(start), formatTime(end), formatTime(start), now, now)
+	result, err := tx.ExecContext(ctx, `INSERT INTO download_requests(owner_user_id,source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at) VALUES(?,'era5','era5',?,?,?,?,'{}','pending',?,?)`, ownerUserID, collection, formatTime(start), formatTime(end), formatTime(start), now, now)
 	if err != nil {
 		return DownloadRequest{}, err
 	}
