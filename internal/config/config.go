@@ -10,6 +10,7 @@ import (
 
 type Provider struct {
 	SourceID            string
+	ArchiveRoot         string
 	Enabled             bool
 	TransferConcurrency int
 	VerifyConcurrency   int
@@ -57,6 +58,7 @@ func provider(source string, enabled bool, transfers, verifiers int, timeout tim
 	prefix := "SATDOWN_" + strings.ToUpper(strings.ReplaceAll(source, "-", "_"))
 	return Provider{
 		SourceID:            source,
+		ArchiveRoot:         strings.TrimSpace(os.Getenv(prefix + "_ARCHIVE_ROOT")),
 		Enabled:             envBool(prefix+"_ENABLED", enabled),
 		TransferConcurrency: envInt(prefix+"_TRANSFER_CONCURRENCY", transfers, 1, 32),
 		VerifyConcurrency:   envInt(prefix+"_VERIFY_CONCURRENCY", verifiers, 1, 32),

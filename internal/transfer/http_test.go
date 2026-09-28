@@ -32,6 +32,111 @@ func TestParseContentRange(t *testing.T) {
 	}
 }
 
+func TestPromoteDoesNotReplaceDifferentArchiveContent(t *testing.T) {
+	root := t.TempDir()
+	staging := filepath.Join(root, "staging")
+	if err := os.WriteFile(staging, []byte("new content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(root, "archive")
+	target := filepath.Join(archive, "AUX_JSG_1D", "20260924", "file.h5")
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("old content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: 1, TaskSpec: model.TaskSpec{Name: "file.h5", RelativeDir: "AUX_JSG_1D/20260924"}, StagingPath: staging}
+	_, err := Promote(task, archive)
+	var collision *CollisionError
+	if !errors.As(err, &collision) {
+		t.Fatalf("expected archive collision, got %v", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil || string(content) != "old content" {
+		t.Fatalf("existing archive changed: %q (%v)", content, err)
+	}
+	if _, err := os.Stat(staging); err != nil {
+		t.Fatalf("staging file lost on collision: %v", err)
+	}
+}
+
+func TestPromoteReusesMatchingArchiveContent(t *testing.T) {
+	root := t.TempDir()
+	staging := filepath.Join(root, "staging")
+	if err := os.WriteFile(staging, []byte("same content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(root, "archive")
+	target := filepath.Join(archive, "CDS", "dataset", "job-1", "file.nc")
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("same content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: 2, TaskSpec: model.TaskSpec{Name: "file.nc", RelativeDir: "CDS/dataset/job-1"}, StagingPath: staging}
+	result, err := Promote(task, archive)
+	if err != nil || result.Path != target {
+		t.Fatalf("matching archive not reused: %+v (%v)", result, err)
+	}
+	if _, err := os.Stat(staging); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging file not removed: %v", err)
+	}
+}
+
+func TestPromoteRejectsArchiveDirectorySymlink(t *testing.T) {
+	root := t.TempDir()
+	archive := filepath.Join(root, "archive")
+	outside := filepath.Join(root, "outside")
+	for _, dir := range []string{archive, outside} {
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(archive, "AUX_JSG_1D")); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(root, "staging")
+	if err := os.WriteFile(staging, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: 3, TaskSpec: model.TaskSpec{Name: "file.h5", RelativeDir: "AUX_JSG_1D/20260924"}, StagingPath: staging}
+	if _, err := Promote(task, archive); err == nil {
+		t.Fatal("archive path traversed directory symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "20260924")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("wrote outside archive root: %v", err)
+	}
+}
+
+func TestPromoteSharedArchiveCreatesGroupWritableFiles(t *testing.T) {
+	root := t.TempDir()
+	archive := filepath.Join(root, "archive")
+	if err := os.Mkdir(archive, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(root, "staging")
+	if err := os.WriteFile(staging, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: 4, TaskSpec: model.TaskSpec{Name: "file.nc", RelativeDir: "CDS/dataset/2026/09/28/job-1"}, StagingPath: staging}
+	result, err := Promote(task, archive, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{"CDS", "CDS/dataset", "CDS/dataset/2026/09/28/job-1"} {
+		info, err := os.Stat(filepath.Join(archive, part))
+		if err != nil || info.Mode().Perm() != 0o770 || info.Mode()&os.ModeSetgid == 0 {
+			t.Fatalf("shared directory %s mode: %v (%v)", part, info, err)
+		}
+	}
+	info, err := os.Stat(result.Path)
+	if err != nil || info.Mode().Perm() != 0o660 {
+		t.Fatalf("shared file mode: %v (%v)", info, err)
+	}
+}
+
 func TestDownloadResumesOnlyMatchingObject(t *testing.T) {
 	requests := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

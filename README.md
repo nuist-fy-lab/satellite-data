@@ -1,5 +1,11 @@
 # Satellite Data Downloader
 
+Shared archive roots configured per provider create group-writable setgid
+subdirectories and group-writable files. Archive promotion never replaces a
+different existing file with the same path. Completed tasks retain their
+archive notification in the SQLite outbox until the centre verifies it; a
+temporary centre failure is retried after restart.
+
 Durable, provider-isolated transfer pipeline for the `nuist-fy-lab/satellite-data`
 service.
 
