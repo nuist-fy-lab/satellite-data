@@ -96,7 +96,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	linkmon.New(store).Run(ctx)
-	archiveIndexer := indexer.New(registry, store, *archiveRoot)
+	archiveIndexer := indexer.New(registry, store, *archiveRoot,
+		os.Getenv("SATELLITED_EARTHCARE_ARCHIVE"), os.Getenv("SATELLITED_ERA5_ARCHIVE"))
 	archiveIndexer.Run(ctx)
 	downloaderClient := downloader.New(runtimeConfig.DownloaderSocket)
 	downloadmon.New(store, downloaderClient).Run(ctx)
@@ -120,7 +121,7 @@ func main() {
 	}
 	coordinator.Run(ctx)
 	go func() {
-		if err := archiveevent.Run(ctx, runtimeConfig.ArchiveEventSocket, archiveIndexer.TriggerLocalScan); err != nil && ctx.Err() == nil {
+		if err := archiveevent.Run(ctx, runtimeConfig.ArchiveEventSocket, archiveIndexer.RecordArchiveEvent); err != nil && ctx.Err() == nil {
 			slog.Error("archive event listener stopped", "error", err)
 			stop()
 		}

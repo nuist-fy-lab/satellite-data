@@ -71,6 +71,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/downloads/catalog", s.downloadCatalog)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.download)
 	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
+	mux.HandleFunc("GET /api/v1/archive/index-status", s.archiveIndexStatus)
 	mux.HandleFunc("GET /api/v1/monitor/downloads", s.downloadMonitor)
 	mux.HandleFunc("GET /api/v1/monitor/links", s.linkMonitor)
 	mux.HandleFunc("GET /api/v1/me/api-keys", s.listAPIKeys)
@@ -120,6 +121,15 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	})
 	mux.Handle("GET /", http.FileServerFS(static))
 	return withHeaders(s.withPortalAuth(mux))
+}
+
+func (s *Server) archiveIndexStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := s.store.ArchiveScanStatus(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 type monitorWindow struct {

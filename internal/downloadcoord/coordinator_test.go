@@ -29,3 +29,15 @@ func TestArchiveRelativeDir(t *testing.T) {
 		t.Fatalf("path=%q want=%q", got, want)
 	}
 }
+
+func TestSharedArchiveRelativeDirs(t *testing.T) {
+	date := time.Date(2026, 9, 24, 1, 2, 3, 0, time.UTC)
+	for _, item := range []struct{ source, dataType, want string }{
+		{"earthcare", "AUX_JSG_1D", "AUX_JSG_1D/20260924"},
+		{"era5", "reanalysis-era5-single-levels", "CDS/reanalysis-era5-single-levels/2026/09/24"},
+	} {
+		if got := archiveRelativeDir(item.source, model.Product{DataType: item.dataType}, date); got != item.want {
+			t.Errorf("%s: %q, want %q", item.source, got, item.want)
+		}
+	}
+}

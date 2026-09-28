@@ -37,6 +37,33 @@ files while stopped, rename the database and any remaining sidecars together
 to `state.sqlite3`, then update the service environment and restart. The daemon
 refuses to create a new `state.sqlite3` beside an unmigrated `state.db`.
 
+### Shared EarthCARE and ERA5 archives
+
+On c2ln1 the new EarthCARE archive root is the existing
+`/misc/nuist_data1/public_sharing/EarthCare`; files are written under
+`<product-type>/<YYYYMMDD>/<official-asset-name>`. ERA5 uses the existing
+`/misc/nuist_data1/public_sharing/ERA5` root and writes CDS results under
+`CDS/<dataset>/<YYYY>/<MM>/<DD>/<job-id>/<result-name>`. The remaining
+satellite products still use `.../public_sharing/satellite`.
+
+Configure `SATELLITED_EARTHCARE_ARCHIVE` and `SATELLITED_ERA5_ARCHIVE` on the
+centre and `SATDOWN_EARTHCARE_ARCHIVE_ROOT` and `SATDOWN_ERA5_ARCHIVE_ROOT` on
+the downloader. The centre scans all three roots without moving other users'
+historical files. `GET /api/v1/archive/index-status` reports file counts and
+unreadable directories. Shared historical files are indexed as `unverified`
+until an exact official item/asset (EarthCARE) or CDS job/result (ERA5) can be
+matched and the file is hashed. A valid HDF5/NetCDF header is only a format
+check, not proof of official identity. On this installation the separate
+EarthCARE `AC_CLP_2B` directory is owned by another account and is not readable
+by the service; its missing coverage is reported instead of hidden. Prior ERA5
+global and China files have no automatically inferred CDS job identity. New
+archives refuse to overwrite a different file with the same name.
+New shared archive subdirectories use setgid and group read/write/execute;
+new files use group read/write. Existing directories keep their own ACLs,
+including inaccessible directories. Completed downloader tasks retain a
+durable archive-verification notification until the centre acknowledges it;
+an inaccessible official catalogue leaves the file unverified for later retry.
+
 ## Current milestone
 
 The first working slice implements anonymous public-cloud discovery for:

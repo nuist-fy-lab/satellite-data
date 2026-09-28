@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -18,12 +19,57 @@ CREATE TABLE IF NOT EXISTS era5_order_parts(
  request_id INTEGER PRIMARY KEY REFERENCES download_requests(id) ON DELETE CASCADE,
  start_ts TEXT NOT NULL,end_ts TEXT NOT NULL,inputs_json TEXT NOT NULL,
  stage TEXT NOT NULL DEFAULT 'pending',job_id TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS era5_result_manifest(
+ downloader_task_id INTEGER PRIMARY KEY,
+ request_id INTEGER NOT NULL REFERENCES download_requests(id) ON DELETE CASCADE,
+ job_id TEXT NOT NULL,
+ collection_id TEXT NOT NULL,
+ asset_id TEXT NOT NULL,
+ filename TEXT NOT NULL,
+ size INTEGER NOT NULL,
+ recorded_at TEXT NOT NULL
 );`
 
 type ERA5Part struct {
 	Start, End   time.Time
 	Submission   era5.Submission
 	Stage, JobID string
+}
+
+func (s *Store) RecordERA5Result(ctx context.Context, requestID, taskID int64, jobID, collectionID, assetID, filename string, size int64) error {
+	if requestID <= 0 || taskID <= 0 || jobID == "" || collectionID == "" || assetID == "" || filename == "" || size <= 0 {
+		return errors.New("invalid ERA5 result provenance")
+	}
+	var found int64
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM download_requests WHERE id=? AND source_id='era5' AND collection_id=?`, requestID, collectionID).Scan(&found); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO era5_result_manifest(
+		downloader_task_id,request_id,job_id,collection_id,asset_id,filename,size,recorded_at)
+		VALUES(?,?,?,?,?,?,?,?)
+		ON CONFLICT(downloader_task_id) DO UPDATE SET job_id=excluded.job_id,
+		asset_id=excluded.asset_id,filename=excluded.filename,size=excluded.size,recorded_at=excluded.recorded_at
+		WHERE era5_result_manifest.request_id=excluded.request_id AND era5_result_manifest.collection_id=excluded.collection_id`,
+		taskID, requestID, jobID, collectionID, assetID, filename, size, formatTime(time.Now()))
+	return err
+}
+
+func (s *Store) ERA5ResultMatches(ctx context.Context, taskID int64, jobID, collection, filename string, size int64) (bool, error) {
+	_, matched, err := s.ERA5ResultEvidence(ctx, taskID, jobID, collection, filename, size)
+	return matched, err
+}
+
+func (s *Store) ERA5ResultEvidence(ctx context.Context, taskID int64, jobID, collection, filename string, size int64) (string, bool, error) {
+	var assetID string
+	err := s.db.QueryRowContext(ctx, `SELECT m.asset_id FROM era5_result_manifest m
+		JOIN download_requests r ON r.id=m.request_id
+		WHERE m.downloader_task_id=? AND m.job_id=? AND m.collection_id=? AND m.filename=? AND m.size=?
+		AND r.source_id='era5' AND r.collection_id=m.collection_id`, taskID, jobID, collection, filename, size).Scan(&assetID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return assetID, err == nil, err
 }
 
 func (s *Store) EnqueueERA5Order(ctx context.Context, collection string, start, end time.Time, inputs map[string]json.RawMessage) (DownloadRequest, error) {

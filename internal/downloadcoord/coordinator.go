@@ -265,6 +265,16 @@ func discoveryRetryDelay(failure int) time.Duration {
 var unsafePathChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func archiveRelativeDir(sourceID string, product model.Product, at time.Time) string {
+	productType := safeComponent(product.DataType)
+	if productType == "" {
+		productType = safeComponent(product.ProductKey)
+	}
+	if sourceID == "earthcare" {
+		return path.Join(productType, at.UTC().Format("20060102"))
+	}
+	if sourceID == "era5" {
+		return path.Join("CDS", productType, at.UTC().Format("2006/01/02"))
+	}
 	components := []string{
 		safeComponent(sourceID),
 		safeComponent(product.Satellite),

@@ -114,10 +114,15 @@ func (c *Coordinator) advanceERA5(ctx context.Context, request state.DownloadReq
 	task, _, err := c.downloader.Enqueue(ctx, downloader.TaskSpec{
 		SourceID: "era5", CollectionID: request.CollectionID, GranuleID: "era5:" + part.JobID,
 		AssetID: asset.ID, Name: asset.Name, AuthRef: "cds", URL: "https://cds.climate.copernicus.eu/api/retrieve/v1/jobs/" + part.JobID + "/download",
-		RelativeDir: path.Join(archiveRelativeDir("era5", product, part.Start), part.JobID), Size: asset.Size, ETag: asset.ETag, MediaType: asset.MediaType,
+		RelativeDir: path.Join(archiveRelativeDir("era5", product, part.Start), safeComponent(part.JobID)), Size: asset.Size, ETag: asset.ETag, MediaType: asset.MediaType,
 	})
 	if err != nil {
 		return err
+	}
+	if asset.Size > 0 {
+		if err := c.store.RecordERA5Result(ctx, request.ID, task.ID, part.JobID, request.CollectionID, asset.ID, asset.Name, asset.Size); err != nil {
+			return fmt.Errorf("persist official CDS job result: %w", err)
+		}
 	}
 	return c.store.AdvanceDownloadRequest(ctx, request.ID, part.End, 1, []state.DownloaderTaskRef{{ID: task.ID, Key: task.Key, Filename: task.Name}}, !part.End.Before(request.End))
 }

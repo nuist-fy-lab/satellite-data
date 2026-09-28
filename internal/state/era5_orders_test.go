@@ -76,3 +76,36 @@ func TestERA5OrderAndInputsCommitAtomically(t *testing.T) {
 		t.Fatal("partial order remained after failed transaction")
 	}
 }
+
+func TestERA5ResultManifestLinksOfficialJobToDownloaderTask(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	first := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	order, err := s.EnqueueERA5Order(t.Context(), "era5:reanalysis-era5-single-levels", first, first.AddDate(0, 0, 1), map[string]json.RawMessage{"variable": json.RawMessage(`["2m_temperature"]`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordERA5Result(t.Context(), order.ID, 3693, "job-1", order.CollectionID, "result-1", "file.nc", 25171); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		taskID    int64
+		job, name string
+		size      int64
+		want      bool
+	}{
+		{3693, "job-1", "file.nc", 25171, true},
+		{3694, "job-1", "file.nc", 25171, false},
+		{3693, "job-2", "file.nc", 25171, false},
+		{3693, "job-1", "other.nc", 25171, false},
+		{3693, "job-1", "file.nc", 1, false},
+	} {
+		match, err := s.ERA5ResultMatches(t.Context(), item.taskID, item.job, order.CollectionID, item.name, item.size)
+		if err != nil || match != item.want {
+			t.Errorf("task %d job %s file %s size %d => %t (%v), want %t", item.taskID, item.job, item.name, item.size, match, err, item.want)
+		}
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -153,6 +154,24 @@ CREATE TABLE IF NOT EXISTS local_scan_state (
   scanned_at TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS verified_archive_files (
+  path TEXT PRIMARY KEY,
+  size INTEGER NOT NULL,
+  mtime_ns INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  official_collection TEXT NOT NULL,
+  official_item TEXT NOT NULL,
+  official_asset TEXT NOT NULL,
+  verified_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS archive_scan_status (
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  skipped_paths_json TEXT NOT NULL DEFAULT '[]',
+  scanned_at TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS link_samples (
   source_id TEXT NOT NULL,
   sampled_at_ns INTEGER NOT NULL,
@@ -269,6 +288,53 @@ type LocalFile struct {
 	Filename string
 	Size     int64
 	MtimeNS  int64
+	State    string
+	Detail   string
+}
+
+type VerifiedArchiveFile struct {
+	Size    int64
+	MtimeNS int64
+	SHA256  string
+}
+
+type ArchiveScanStatus struct {
+	SkippedPaths []string `json:"skipped_paths"`
+	ScannedAt    string   `json:"scanned_at"`
+	Files        int      `json:"files"`
+	Verified     int      `json:"verified"`
+	Unverified   int      `json:"unverified"`
+	Errors       int      `json:"errors"`
+}
+
+type ArchiveProductDay struct {
+	ProductType string
+	Day         string
+}
+
+func (s *Store) QueueEarthCAREOfficialDays(ctx context.Context, days []ArchiveProductDay) (int, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	queued := 0
+	for _, day := range days {
+		if _, err := time.Parse(time.DateOnly, day.Day); err != nil {
+			return queued, err
+		}
+		result, err := s.db.ExecContext(ctx, `
+			INSERT OR IGNORE INTO official_work(product_key,day,state,priority,requested_at,updated_at)
+			SELECT p.product_key,?,'pending',-5,?,? FROM products p
+			WHERE p.source_id='earthcare' AND p.data_type=?
+			AND NOT EXISTS (SELECT 1 FROM official_days d WHERE d.product_key=p.product_key AND d.day=?)`,
+			day.Day, now, now, day.ProductType, day.Day)
+		if err != nil {
+			return queued, err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return queued, err
+		}
+		queued += int(n)
+	}
+	return queued, nil
 }
 
 type LinkSample struct {
@@ -944,6 +1010,10 @@ func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, erro
 }
 
 func (s *Store) ReplaceLocalFiles(ctx context.Context, files []LocalFile, fingerprint string) (bool, error) {
+	return s.ReplaceLocalFilesWithWarnings(ctx, files, fingerprint, nil)
+}
+
+func (s *Store) ReplaceLocalFilesWithWarnings(ctx context.Context, files []LocalFile, fingerprint string, skipped []string) (bool, error) {
 	var prior string
 	_ = s.db.QueryRowContext(ctx, `SELECT fingerprint FROM local_scan_state WHERE id=1`).Scan(&prior)
 	if prior == fingerprint {
@@ -955,7 +1025,8 @@ func (s *Store) ReplaceLocalFiles(ctx context.Context, files []LocalFile, finger
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS scanned_local_files (
-		path TEXT PRIMARY KEY, filename TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL
+		path TEXT PRIMARY KEY, filename TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+		state TEXT NOT NULL, detail TEXT NOT NULL
 	)`); err != nil {
 		return false, err
 	}
@@ -964,9 +1035,12 @@ func (s *Store) ReplaceLocalFiles(ctx context.Context, files []LocalFile, finger
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, file := range files {
+		if file.State == "" {
+			file.State = "ok"
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO scanned_local_files(path,filename,size,mtime_ns) VALUES(?,?,?,?)`,
-			file.Path, file.Filename, file.Size, file.MtimeNS); err != nil {
+			INSERT INTO scanned_local_files(path,filename,size,mtime_ns,state,detail) VALUES(?,?,?,?,?,?)`,
+			file.Path, file.Filename, file.Size, file.MtimeNS, file.State, file.Detail); err != nil {
 			return false, err
 		}
 	}
@@ -974,10 +1048,10 @@ func (s *Store) ReplaceLocalFiles(ctx context.Context, files []LocalFile, finger
 	rows, err := tx.QueryContext(ctx, `
 		WITH changed AS (
 			SELECT f.filename FROM local_files f LEFT JOIN scanned_local_files n ON n.path=f.path
-			WHERE n.path IS NULL OR f.filename<>n.filename OR f.size<>n.size OR f.mtime_ns<>n.mtime_ns
+			WHERE n.path IS NULL OR f.filename<>n.filename OR f.size<>n.size OR f.mtime_ns<>n.mtime_ns OR f.state<>n.state OR f.detail<>n.detail
 			UNION
 			SELECT n.filename FROM scanned_local_files n LEFT JOIN local_files f ON f.path=n.path
-			WHERE f.path IS NULL OR f.filename<>n.filename OR f.size<>n.size OR f.mtime_ns<>n.mtime_ns
+			WHERE f.path IS NULL OR f.filename<>n.filename OR f.size<>n.size OR f.mtime_ns<>n.mtime_ns OR f.state<>n.state OR f.detail<>n.detail
 		)
 		SELECT DISTINCT a.product_key,substr(a.slot_ts,1,10)
 		FROM changed JOIN official_assets a ON a.filename=changed.filename`)
@@ -1002,12 +1076,13 @@ func (s *Store) ReplaceLocalFiles(ctx context.Context, files []LocalFile, finger
 		DELETE FROM local_files WHERE NOT EXISTS (
 			SELECT 1 FROM scanned_local_files n WHERE n.path=local_files.path
 			AND n.filename=local_files.filename AND n.size=local_files.size AND n.mtime_ns=local_files.mtime_ns
+			AND n.state=local_files.state AND n.detail=local_files.detail
 		)`); err != nil {
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO local_files(path,filename,size,mtime_ns,state,detail,updated_at)
-		SELECT n.path,n.filename,n.size,n.mtime_ns,'ok','',?
+		SELECT n.path,n.filename,n.size,n.mtime_ns,n.state,n.detail,?
 		FROM scanned_local_files n WHERE NOT EXISTS (SELECT 1 FROM local_files f WHERE f.path=n.path)`, now); err != nil {
 		return false, err
 	}
@@ -1015,6 +1090,15 @@ func (s *Store) ReplaceLocalFiles(ctx context.Context, files []LocalFile, finger
 		INSERT INTO local_scan_state(id,fingerprint,scanned_at) VALUES(1,?,?)
 		ON CONFLICT(id) DO UPDATE SET fingerprint=excluded.fingerprint,scanned_at=excluded.scanned_at`,
 		fingerprint, now); err != nil {
+		return false, err
+	}
+	encodedSkipped, err := json.Marshal(skipped)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO archive_scan_status(id,skipped_paths_json,scanned_at) VALUES(1,?,?)
+		ON CONFLICT(id) DO UPDATE SET skipped_paths_json=excluded.skipped_paths_json,scanned_at=excluded.scanned_at`, string(encodedSkipped), now); err != nil {
 		return false, err
 	}
 	for _, item := range pairs {
@@ -1026,6 +1110,80 @@ func (s *Store) ReplaceLocalFiles(ctx context.Context, files []LocalFile, finger
 		}
 	}
 	return true, tx.Commit()
+}
+
+func (s *Store) VerifiedArchiveFiles(ctx context.Context) (map[string]VerifiedArchiveFile, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT path,size,mtime_ns,sha256 FROM verified_archive_files`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	files := make(map[string]VerifiedArchiveFile)
+	for rows.Next() {
+		var path string
+		var file VerifiedArchiveFile
+		if err := rows.Scan(&path, &file.Size, &file.MtimeNS, &file.SHA256); err != nil {
+			return nil, err
+		}
+		files[path] = file
+	}
+	return files, rows.Err()
+}
+
+func (s *Store) RecordVerifiedArchiveFile(ctx context.Context, path string, size, mtimeNS int64, sha256, sourceID, collection, item, asset string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO verified_archive_files(path,size,mtime_ns,sha256,source_id,official_collection,official_item,official_asset,verified_at)
+		VALUES(?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns,
+		sha256=excluded.sha256,source_id=excluded.source_id,official_collection=excluded.official_collection,
+		official_item=excluded.official_item,official_asset=excluded.official_asset,verified_at=excluded.verified_at`,
+		path, size, mtimeNS, sha256, sourceID, collection, item, asset, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) KnownLocalFilesBelow(ctx context.Context, dir string) ([]LocalFile, error) {
+	lower, upper := dir+string(filepath.Separator), dir+"0"
+	rows, err := s.db.QueryContext(ctx, `SELECT path,filename,size,mtime_ns,state,detail FROM local_files WHERE path>=? AND path<?`, lower, upper)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var files []LocalFile
+	for rows.Next() {
+		var file LocalFile
+		if err := rows.Scan(&file.Path, &file.Filename, &file.Size, &file.MtimeNS, &file.State, &file.Detail); err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+	}
+	return files, rows.Err()
+}
+
+func (s *Store) ArchiveScanStatus(ctx context.Context) (ArchiveScanStatus, error) {
+	var result ArchiveScanStatus
+	var skipped string
+	err := s.db.QueryRowContext(ctx, `SELECT skipped_paths_json,scanned_at FROM archive_scan_status WHERE id=1`).Scan(&skipped, &result.ScannedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ArchiveScanStatus{SkippedPaths: []string{}}, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal([]byte(skipped), &result.SkippedPaths); err != nil {
+		return result, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*),
+		coalesce(sum(CASE WHEN state='unverified' THEN 1 ELSE 0 END),0),
+		coalesce(sum(CASE WHEN state='error' THEN 1 ELSE 0 END),0)
+		FROM local_files`).Scan(&result.Files, &result.Unverified, &result.Errors); err != nil {
+		return result, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM local_files f
+		JOIN verified_archive_files v ON v.path=f.path AND v.size=f.size AND v.mtime_ns=f.mtime_ns
+		WHERE f.state='ok'`).Scan(&result.Verified); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func (s *Store) reconcileLocalSlotsTx(ctx context.Context, tx *sql.Tx, product, day, now string) error {
