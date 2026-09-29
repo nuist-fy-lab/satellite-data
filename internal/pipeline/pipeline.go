@@ -97,7 +97,9 @@ func (f *providerFlow) finish(success, congested bool, ceiling int) {
 		if f.errorRate >= 0.2 {
 			f.limit = max(1, f.limit/2)
 			f.gap = min(5*time.Second, max(100*time.Millisecond, f.gap*2))
-			f.nextStart = max(f.nextStart, time.Now().Add(f.gap))
+			if next := time.Now().Add(f.gap); next.After(f.nextStart) {
+				f.nextStart = next
+			}
 		}
 		f.successes = 0
 	} else if success {
