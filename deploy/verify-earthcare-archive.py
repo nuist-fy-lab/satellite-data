@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 
 ACQUISITION = re.compile(r"_(\d{8})T\d{6}Z")
 CHUNK = 128 * 1024
+MAX_OFFICIAL_SECONDS = 600
+OFFICIAL_IDLE_SECONDS = 60
 MAX_TRANSIENT_ATTEMPTS = 4
 MAX_RETRY_DELAY = 1800
 MIN_GAP_MS = 1000
@@ -69,12 +71,12 @@ def adjust_pacing(gap_ms, file_limit, error_rate, streak, success, max_files):
 
 class UnixHTTP(http.client.HTTPConnection):
     def __init__(self, socket_path):
-        super().__init__("unix", timeout=180)
+        super().__init__("unix", timeout=OFFICIAL_IDLE_SECONDS)
         self.socket_path = socket_path
 
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(180)
+        self.sock.settimeout(OFFICIAL_IDLE_SECONDS)
         self.sock.connect(self.socket_path)
 
 
@@ -137,6 +139,9 @@ def local_digest(path, root, expected_size, expected_mtime):
 
 def official_digest(socket_path, url, size):
     connection = UnixHTTP(socket_path)
+    # Allow larger assets proportionally more time, but never an unbounded slow stream.
+    budget = min(MAX_OFFICIAL_SECONDS, max(180, (size + (256 << 10) - 1) // (256 << 10)))
+    deadline = time.monotonic() + budget
     try:
         payload = json.dumps({"source_id": "earthcare", "url": url}).encode("utf-8")
         connection.request("POST", "/v1/fetch", payload, {"Content-Type": "application/json"})
@@ -151,7 +156,9 @@ def official_digest(socket_path, url, size):
         digest = hashlib.sha256()
         count = 0
         while count <= size:
-            chunk = response.read(min(CHUNK, size + 1 - count))
+            if time.monotonic() >= deadline:
+                raise RetryableOfficialError("official stream exceeded time budget")
+            chunk = response.read1(min(CHUNK, size + 1 - count))
             if not chunk:
                 break
             count += len(chunk)

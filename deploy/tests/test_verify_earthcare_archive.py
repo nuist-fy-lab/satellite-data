@@ -147,6 +147,20 @@ class HistoricalVerificationTest(unittest.TestCase):
             date = (datetime.fromtimestamp(1000, timezone.utc) + timedelta(seconds=240))
             self.assertEqual(verify.retry_after_seconds(date.strftime("%a, %d %b %Y %H:%M:%S GMT")), 240)
 
+    def test_slow_trickle_stream_is_bounded_and_retried(self):
+        response = mock.Mock(status=200)
+        response.getheader.return_value = None
+        response.read1.return_value = b"x"
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        with mock.patch.object(verify, "UnixHTTP", return_value=connection), mock.patch.object(
+            verify.time, "monotonic", side_effect=[0, 0, 200]
+        ):
+            with self.assertRaisesRegex(verify.RetryableOfficialError, "time budget"):
+                verify.official_digest("unused", self.url, 10)
+        self.assertEqual(response.read1.call_count, 1)
+        connection.close.assert_called_once()
+
     def test_permanent_official_error_never_retries(self):
         with mock.patch.object(verify, "official_digest", side_effect=ValueError("official fetch HTTP 401")) as upstream:
             self.assertEqual(verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)["retrying"], 0)

@@ -41,6 +41,9 @@ and due retries take priority even after the scan cursor has passed them. A
 fourth transient failure, permanent HTTP error, changed local file or hash
 mismatch stays `pending_review` without automatic retry. The existing 502
 failure is migrated into the retry queue when the progress DB is upgraded.
+Official reads also have a 60-second idle timeout and a per-file total time
+budget of 3-10 minutes scaled by file size; a slow trickle stream cannot block
+a batch indefinitely and uses the same bounded retry queue.
 This is not a deployment or a source-data mutation job.
 If a complete sweep reaches the end without any new official content to
 fetch, the job pauses requests for an hour before rechecking the catalogue.
