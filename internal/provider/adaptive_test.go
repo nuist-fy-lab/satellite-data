@@ -5,7 +5,27 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/nuist-fy-lab/satellite-data/internal/model"
 )
+
+func TestRegistryRetainsConcreteProviderForSpecializedAPIs(t *testing.T) {
+	// Generic discovery is paced while specialized provider methods keep their concrete type.
+	r := NewRegistry(&stubProvider{})
+	p, err := r.Provider("stub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := Underlying(p).(*stubProvider); !ok {
+		t.Fatalf("unexpected underlying provider: %T", Underlying(p))
+	}
+}
+
+type stubProvider struct{}
+
+func (*stubProvider) Source() model.Source                                         { return model.Source{ID: "stub"} }
+func (*stubProvider) Collections(context.Context) ([]model.Collection, error)      { return nil, nil }
+func (*stubProvider) Search(context.Context, model.Query) ([]model.Granule, error) { return nil, nil }
 
 func TestQueryFlowBacksOffAndRecoversWithinBounds(t *testing.T) {
 	f := newQueryFlow()

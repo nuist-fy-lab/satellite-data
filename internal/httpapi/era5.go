@@ -17,7 +17,7 @@ func (s *Server) era5Provider(w http.ResponseWriter) *era5.Provider {
 	}
 	p, err := s.registry.Provider("era5")
 	if err == nil {
-		if cds, ok := p.(*era5.Provider); ok {
+		if cds, ok := provider.Underlying(p).(*era5.Provider); ok {
 			return cds
 		}
 	}

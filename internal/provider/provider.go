@@ -71,6 +71,14 @@ func (r *Registry) Provider(id string) (Provider, error) {
 	return p, nil
 }
 
+// Underlying returns the concrete provider for APIs outside the common catalog/search interface.
+func Underlying(p Provider) Provider {
+	if limited, ok := p.(*adaptiveProvider); ok {
+		return limited.Provider
+	}
+	return p
+}
+
 func ProductFromCollection(source model.Source, collection model.Collection) model.Product {
 	metadata := collection.Metadata
 	officialID := firstMetadata(metadata, "official_id", "collection_ref", "concept_id", "stac_collection", "thredds_product_version")
