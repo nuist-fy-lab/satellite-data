@@ -2,6 +2,7 @@ import hashlib
 import http.server
 import importlib.util
 import os
+import signal
 import sqlite3
 import socketserver
 import tempfile
@@ -159,6 +160,19 @@ class HistoricalVerificationTest(unittest.TestCase):
             with self.assertRaisesRegex(verify.RetryableOfficialError, "time budget"):
                 verify.official_digest("unused", self.url, 10)
         self.assertEqual(response.read1.call_count, 1)
+        connection.close.assert_called_once()
+
+    def test_hard_deadline_interrupts_blocking_official_read(self):
+        response = mock.Mock(status=200)
+        response.getheader.return_value = None
+        response.read1.side_effect = lambda _: signal.pause()
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        with mock.patch.object(verify, "UnixHTTP", return_value=connection), mock.patch.object(
+            verify, "MAX_OFFICIAL_SECONDS", 0.02
+        ):
+            with self.assertRaisesRegex(verify.RetryableOfficialError, "time budget"):
+                verify.official_digest("unused", self.url, 10)
         connection.close.assert_called_once()
 
     def test_permanent_official_error_never_retries(self):

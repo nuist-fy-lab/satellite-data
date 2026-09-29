@@ -11,6 +11,7 @@ import math
 import os
 import random
 import re
+import signal
 import socket
 import sqlite3
 import stat
@@ -51,6 +52,10 @@ def retry_after_seconds(value):
 def retry_delay(attempt, retry_after=0):
     ceiling = min(MAX_RETRY_DELAY, 60 * (2 ** (attempt - 1)))
     return max(int(random.uniform(ceiling / 2, ceiling)), retry_after, 1)
+
+
+def official_time_expired(_signum, _frame):
+    raise RetryableOfficialError("official stream exceeded time budget")
 
 
 def adjust_pacing(gap_ms, file_limit, error_rate, streak, success, max_files):
@@ -142,7 +147,9 @@ def official_digest(socket_path, url, size):
     # Allow larger assets proportionally more time, but never an unbounded slow stream.
     budget = min(MAX_OFFICIAL_SECONDS, max(180, (size + (256 << 10) - 1) // (256 << 10)))
     deadline = time.monotonic() + budget
+    previous_alarm = signal.signal(signal.SIGALRM, official_time_expired)
     try:
+        signal.setitimer(signal.ITIMER_REAL, budget)
         payload = json.dumps({"source_id": "earthcare", "url": url}).encode("utf-8")
         connection.request("POST", "/v1/fetch", payload, {"Content-Type": "application/json"})
         response = connection.getresponse()
@@ -167,6 +174,8 @@ def official_digest(socket_path, url, size):
             raise RetryableOfficialError("official stream size differs from catalog")
         return digest.hexdigest()
     finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_alarm)
         connection.close()
 
 
