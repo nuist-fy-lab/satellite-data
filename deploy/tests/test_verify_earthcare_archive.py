@@ -71,6 +71,10 @@ class HistoricalVerificationTest(unittest.TestCase):
         self.assertEqual(result["failed"], 1)
         self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 0)
         self.assertEqual(self.progress.execute("SELECT state FROM attempts").fetchone()[0], "pending_review")
+        with mock.patch.object(verify, "official_digest") as upstream:
+            paused = verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+        self.assertGreater(paused["paused_until"], 0)
+        upstream.assert_not_called()
 
     def test_ambiguous_url_never_fetches_or_records(self):
         self.index.execute("INSERT INTO official_assets VALUES(?,?,?,?,?,?)", (

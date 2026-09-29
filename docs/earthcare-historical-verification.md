@@ -24,6 +24,12 @@ evidence in the calendar; the source file is never changed.
 Each invocation is serial and defaults to at most 20 official requests,
 512 MiB of expected assets and 15 minutes, with a two-second pause between
 requests. A cursor and per-file results allow subsequent runs to resume.
+On the user-level systemd timer, the batch runs every 30 minutes, with a
+three-second pause between requests; the service is configured in
+`deploy/systemd/earthcare-verification.{service,timer}`. A verification
+error stops that batch and pauses new requests for 15 minutes, while the
+progress database records the failure for review. This is not a deployment
+or a source-data mutation job.
 Failures and absent/ambiguous matches remain unverified; review the progress
 database instead of treating a filename/size match as a success. A failed
 official comparison exits nonzero. `--max-file-bytes` can bound each asset;

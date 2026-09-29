@@ -148,6 +148,8 @@ def progress_db(path):
                "official_collection TEXT NOT NULL DEFAULT '', official_item TEXT NOT NULL DEFAULT '', "
                "official_url TEXT NOT NULL DEFAULT '', sha256 TEXT NOT NULL DEFAULT '')")
     db.execute("CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), path TEXT NOT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS control (id INTEGER PRIMARY KEY CHECK(id=1), "
+               "paused_until INTEGER NOT NULL DEFAULT 0)")
     db.commit()
     os.chmod(path, 0o600)
     return db
@@ -155,6 +157,10 @@ def progress_db(path):
 
 def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
         max_file_bytes=None, start_after="", pause_seconds=0):
+    paused = progress.execute("SELECT paused_until FROM control WHERE id=1").fetchone()
+    if paused and paused[0] > time.time():
+        return {"inspected": 0, "fetched": 0, "verified": 0, "skipped": 0,
+                "unmatched": 0, "failed": 0, "bytes_requested": 0, "paused_until": paused[0]}
     cursor_row = progress.execute("SELECT path FROM cursor WHERE id=1").fetchone()
     cursor = cursor_row[0] if cursor_row else start_after
     max_file_bytes = max_file_bytes or max_bytes
@@ -167,6 +173,7 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
             progress.commit()
             break
         exhausted = False
+        stop_after_failure = False
         for path, name, size, mtime in rows:
             if inspected >= 1000 or fetched >= max_files or time.monotonic() - started >= max_seconds:
                 exhausted = True
@@ -201,12 +208,19 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
                     except (OSError, ValueError, http.client.HTTPException, sqlite3.Error) as exc:
                         state, detail = "pending_review", str(exc)[:160]
                         failed += 1
+                        stop_after_failure = True
+                        progress.execute("INSERT OR REPLACE INTO control(id,paused_until) VALUES(1,?)",
+                                         (int(time.time()) + 900,))
                     if pause_seconds:
                         time.sleep(pause_seconds)
                 progress.execute("INSERT OR REPLACE INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
                                  (path, size, mtime, state, detail, int(time.time())) + proof)
             progress.execute("INSERT OR REPLACE INTO cursor(id,path) VALUES(1,?)", (cursor,))
             progress.commit()
+            if stop_after_failure:
+                break
+        if stop_after_failure:
+            break
         if len(rows) < 32 and not exhausted:
             progress.execute("INSERT OR REPLACE INTO cursor(id,path) VALUES(1,'')")
             progress.commit()

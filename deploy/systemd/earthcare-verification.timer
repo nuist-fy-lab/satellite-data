@@ -1,0 +1,11 @@
+[Unit]
+Description=Continue bounded EarthCARE official-content verification
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+AccuracySec=1min
+Unit=earthcare-verification.service
+
+[Install]
+WantedBy=timers.target
