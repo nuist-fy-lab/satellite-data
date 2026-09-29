@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"path"
 	"regexp"
 	"strings"
@@ -256,10 +257,7 @@ func discoveryRetryDelay(failure int) time.Duration {
 	for i := 1; i < failure && delay < 5*time.Minute; i++ {
 		delay *= 2
 	}
-	if delay > 5*time.Minute {
-		return 5 * time.Minute
-	}
-	return delay
+	return min(5*time.Minute, delay+time.Duration(rand.Int64N(int64(delay/2)+1)))
 }
 
 var unsafePathChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)

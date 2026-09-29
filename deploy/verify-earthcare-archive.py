@@ -2,11 +2,13 @@
 """Bounded, resumable verification of historical EarthCARE files against ESA assets."""
 
 import argparse
+import email.utils
 import fcntl
 import hashlib
 import http.client
 import json
 import os
+import random
 import re
 import socket
 import sqlite3
@@ -17,6 +19,51 @@ from datetime import datetime, timezone
 
 ACQUISITION = re.compile(r"_(\d{8})T\d{6}Z")
 CHUNK = 128 * 1024
+MAX_TRANSIENT_ATTEMPTS = 4
+MAX_RETRY_DELAY = 1800
+MIN_GAP_MS = 1000
+MAX_GAP_MS = 12000
+MIN_BATCH_FILES = 5
+
+
+class RetryableOfficialError(ValueError):
+    def __init__(self, message, retry_after=0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def retry_after_seconds(value):
+    if not value:
+        return 0
+    value = value.strip()
+    if value.isascii() and value.isdigit():
+        return 86400 if len(value) > 5 else min(int(value), 86400)
+    try:
+        date = email.utils.parsedate_to_datetime(value)
+        return min(86400, max(0, int(date.timestamp() - time.time()) + 1))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def retry_delay(attempt, retry_after=0):
+    ceiling = min(MAX_RETRY_DELAY, 60 * (2 ** (attempt - 1)))
+    return max(int(random.uniform(ceiling / 2, ceiling)), retry_after, 1)
+
+
+def adjust_pacing(gap_ms, file_limit, error_rate, streak, success, max_files):
+    error_rate = error_rate * 0.8 + (0 if success else 0.2)
+    if not success:
+        streak = 0
+        if error_rate >= 0.2:
+            gap_ms = min(MAX_GAP_MS, max(MIN_GAP_MS, int(gap_ms * 1.5)))
+            file_limit = max(min(MIN_BATCH_FILES, max_files), file_limit // 2)
+    else:
+        streak += 1
+        if streak >= 8 and error_rate < 0.1:
+            gap_ms = max(MIN_GAP_MS, int(gap_ms * 0.8))
+            file_limit = min(max_files, file_limit + 2)
+            streak = 0
+    return gap_ms, file_limit, error_rate, streak
 
 
 class UnixHTTP(http.client.HTTPConnection):
@@ -93,6 +140,9 @@ def official_digest(socket_path, url, size):
         payload = json.dumps({"source_id": "earthcare", "url": url}).encode("utf-8")
         connection.request("POST", "/v1/fetch", payload, {"Content-Type": "application/json"})
         response = connection.getresponse()
+        if response.status in (408, 429) or 500 <= response.status < 600:
+            raise RetryableOfficialError("official fetch HTTP %d" % response.status,
+                                         retry_after_seconds(response.getheader("Retry-After")))
         if response.status != 200:
             raise ValueError("official fetch HTTP %d" % response.status)
         if response.getheader("Content-Length") and int(response.getheader("Content-Length")) != size:
@@ -106,7 +156,7 @@ def official_digest(socket_path, url, size):
             count += len(chunk)
             digest.update(chunk)
         if count != size:
-            raise ValueError("official stream size differs from catalog")
+            raise RetryableOfficialError("official stream size differs from catalog")
         return digest.hexdigest()
     finally:
         connection.close()
@@ -150,6 +200,20 @@ def progress_db(path):
     db.execute("CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), path TEXT NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS control (id INTEGER PRIMARY KEY CHECK(id=1), "
                "paused_until INTEGER NOT NULL DEFAULT 0)")
+    db.execute("CREATE TABLE IF NOT EXISTS pacing (id INTEGER PRIMARY KEY CHECK(id=1), "
+               "gap_ms INTEGER NOT NULL,file_limit INTEGER NOT NULL,error_rate REAL NOT NULL,"
+               "success_streak INTEGER NOT NULL)")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(attempts)")}
+    if "retry_count" not in columns:
+        db.execute("ALTER TABLE attempts ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+    if "next_retry_at" not in columns:
+        db.execute("ALTER TABLE attempts ADD COLUMN next_retry_at INTEGER NOT NULL DEFAULT 0")
+    if "retry_count" not in columns:
+        # Upgrade historical transient HTTP failures without reclassifying terminal ones on later runs.
+        db.execute("UPDATE attempts SET state='retry_scheduled',retry_count=1,next_retry_at=checked_at+60 "
+                   "WHERE state='pending_review' AND (detail GLOB 'official fetch HTTP 5[0-9][0-9]' "
+                   "OR detail IN ('official fetch HTTP 408','official fetch HTTP 429'))")
+    db.execute("CREATE INDEX IF NOT EXISTS attempts_retry_due ON attempts(state,next_retry_at)")
     db.commit()
     os.chmod(path, 0o600)
     return db
@@ -160,31 +224,66 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
     paused = progress.execute("SELECT paused_until FROM control WHERE id=1").fetchone()
     if paused and paused[0] > time.time():
         return {"inspected": 0, "fetched": 0, "verified": 0, "skipped": 0,
-                "unmatched": 0, "failed": 0, "bytes_requested": 0, "paused_until": paused[0]}
+                "unmatched": 0, "failed": 0, "retrying": 0, "bytes_requested": 0,
+                "paused_until": paused[0]}
     cursor_row = progress.execute("SELECT path FROM cursor WHERE id=1").fetchone()
     cursor = cursor_row[0] if cursor_row else start_after
     max_file_bytes = max_file_bytes or max_bytes
+    adaptive = pause_seconds > 0
+    pacing = progress.execute("SELECT gap_ms,file_limit,error_rate,success_streak FROM pacing WHERE id=1").fetchone()
+    if adaptive:
+        if pacing is None:
+            pacing = (max(MIN_GAP_MS, min(MAX_GAP_MS, int(pause_seconds * 1000))),
+                      min(20, max_files), 0.0, 0)
+            progress.execute("INSERT INTO pacing VALUES(1,?,?,?,?)", pacing)
+            progress.commit()
+        gap_ms, file_limit, error_rate, streak = pacing
+        gap_ms = max(MIN_GAP_MS, min(MAX_GAP_MS, gap_ms))
+        file_limit = max(1, min(max_files, file_limit))
+    else:
+        gap_ms, file_limit, error_rate, streak = 0, max_files, 0.0, 0
     started = time.monotonic()
-    matched = fetched = skipped = inspected = used = failed = unmatched = 0
-    while inspected < 1000 and fetched < max_files and time.monotonic() - started < max_seconds:
-        rows = candidates(index, root, cursor, max_file_bytes, 32)
+    matched = fetched = skipped = inspected = used = failed = unmatched = retrying = 0
+    while inspected < 1000 and fetched < file_limit and time.monotonic() - started < max_seconds:
+        due = progress.execute("SELECT path,size,mtime_ns FROM attempts "
+                               "WHERE state='retry_scheduled' AND next_retry_at<=? "
+                               "AND path LIKE ? AND size<=? ORDER BY next_retry_at LIMIT 1",
+                               (int(time.time()), root + '/%', min(max_file_bytes, max_bytes - used))).fetchone()
+        retry_row = None
+        if due:
+            retry_row = index.execute("SELECT path,filename,size,mtime_ns FROM local_files "
+                                      "WHERE path=? AND size=? AND mtime_ns=? AND state='unverified'", due).fetchone()
+            if retry_row is None:
+                progress.execute("UPDATE attempts SET state='stale',next_retry_at=0 WHERE path=?", (due[0],))
+                progress.commit()
+                continue
+        rows = [retry_row] if retry_row else candidates(index, root, cursor, max_file_bytes, 32)
         if not rows:
             if matched == 0 and fetched == 0:
+                next_retry = progress.execute("SELECT min(next_retry_at) FROM attempts "
+                                              "WHERE state='retry_scheduled'").fetchone()[0]
+                pause_until = min(int(time.time()) + 3600, next_retry) if next_retry else int(time.time()) + 3600
                 progress.execute("INSERT OR REPLACE INTO control(id,paused_until) VALUES(1,?)",
-                                 (int(time.time()) + 3600,))
+                                 (pause_until,))
             progress.execute("INSERT OR REPLACE INTO cursor(id,path) VALUES(1,'')")
             progress.commit()
             break
         exhausted = False
         stop_after_failure = False
         for path, name, size, mtime in rows:
-            if inspected >= 1000 or fetched >= max_files or time.monotonic() - started >= max_seconds:
+            if inspected >= 1000 or fetched >= file_limit or time.monotonic() - started >= max_seconds:
                 exhausted = True
                 break
-            cursor = path
+            if not retry_row:
+                cursor = path
             inspected += 1
-            prior = progress.execute("SELECT size,mtime_ns,state,checked_at FROM attempts WHERE path=?", (path,)).fetchone()
-            if prior and prior[:2] == (size, mtime) and (prior[2] == "matched" or time.time() - prior[3] < 86400):
+            prior = progress.execute("SELECT size,mtime_ns,state,checked_at,retry_count,next_retry_at "
+                                     "FROM attempts WHERE path=?", (path,)).fetchone()
+            if prior and prior[:2] == (size, mtime) and (
+                prior[2] in ("matched", "pending_review") or
+                prior[2] == "retry_scheduled" and prior[5] > time.time() or
+                prior[2] == "no_unique_official_asset" and time.time() - prior[3] < 86400
+            ):
                 skipped += 1
             elif size > max_bytes - used:
                 # Leave the oversized file for a later run with a larger byte limit.
@@ -199,8 +298,11 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
                     collection, item, url = asset
                     fetched += 1
                     used += size
+                    retry_count = next_retry_at = 0
+                    phase = "official"
                     try:
                         remote = official_digest(socket_path, url, size)
+                        phase = "local"
                         local = local_digest(path, root, size, mtime)
                         if local != remote:
                             raise ValueError("official content SHA-256 mismatch")
@@ -212,19 +314,35 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
                         state, detail = "pending_review", str(exc)[:160]
                         failed += 1
                         stop_after_failure = True
+                        if phase == "official" and isinstance(exc, (RetryableOfficialError, OSError,
+                                                                     http.client.HTTPException)):
+                            retry_count = (prior[4] if prior and prior[:2] == (size, mtime) else 0) + 1
+                            if retry_count < MAX_TRANSIENT_ATTEMPTS:
+                                state = "retry_scheduled"
+                                next_retry_at = int(time.time()) + retry_delay(
+                                    retry_count, getattr(exc, "retry_after", 0))
+                                retrying += 1
                         progress.execute("INSERT OR REPLACE INTO control(id,paused_until) VALUES(1,?)",
-                                         (int(time.time()) + 900,))
-                    if pause_seconds:
-                        time.sleep(pause_seconds)
-                progress.execute("INSERT OR REPLACE INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
-                                 (path, size, mtime, state, detail, int(time.time())) + proof)
+                                         (next_retry_at or int(time.time()) + 900,))
+                    if adaptive:
+                        gap_ms, file_limit, error_rate, streak = adjust_pacing(
+                            gap_ms, file_limit, error_rate, streak, state == "matched", max_files)
+                        progress.execute("INSERT OR REPLACE INTO pacing VALUES(1,?,?,?,?)",
+                                         (gap_ms, file_limit, error_rate, streak))
+                    if gap_ms:
+                        time.sleep(gap_ms / 1000)
+                progress.execute("INSERT OR REPLACE INTO attempts "
+                                 "(path,size,mtime_ns,state,detail,checked_at,official_collection,official_item,"
+                                 "official_url,sha256,retry_count,next_retry_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                 (path, size, mtime, state, detail, int(time.time())) + proof +
+                                 (retry_count if asset else 0, next_retry_at if asset else 0))
             progress.execute("INSERT OR REPLACE INTO cursor(id,path) VALUES(1,?)", (cursor,))
             progress.commit()
             if stop_after_failure:
                 break
         if stop_after_failure:
             break
-        if len(rows) < 32 and not exhausted:
+        if len(rows) < 32 and not exhausted and not retry_row:
             if matched == 0 and fetched == 0:
                 progress.execute("INSERT OR REPLACE INTO control(id,paused_until) VALUES(1,?)",
                                  (int(time.time()) + 3600,))
@@ -232,7 +350,8 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
             progress.commit()
             break
     return {"inspected": inspected, "fetched": fetched, "verified": matched, "skipped": skipped,
-            "unmatched": unmatched, "failed": failed, "bytes_requested": used}
+            "unmatched": unmatched, "failed": failed, "retrying": retrying, "bytes_requested": used,
+            "gap_ms": gap_ms, "file_limit": file_limit}
 
 
 def main():
@@ -266,7 +385,7 @@ def main():
                          args.max_file_bytes, args.start_after, args.pause_seconds)
             if "paused_until" not in result:
                 print(json.dumps(result, sort_keys=True))
-            if result["failed"]:
+            if result["failed"] > result["retrying"]:
                 raise SystemExit(1)
         finally:
             progress.close()

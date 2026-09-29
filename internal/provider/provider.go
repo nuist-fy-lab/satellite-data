@@ -36,7 +36,7 @@ func NewRegistry(providers ...Provider) *Registry {
 func (r *Registry) Register(p Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.providers[p.Source().ID] = p
+	r.providers[p.Source().ID] = &adaptiveProvider{Provider: p, flow: newQueryFlow()}
 }
 
 func (r *Registry) Sources() []model.Source {

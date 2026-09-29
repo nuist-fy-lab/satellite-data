@@ -41,3 +41,18 @@ func TestSharedArchiveRelativeDirs(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoveryRetryDelayHasJitterAndCap(t *testing.T) {
+	for _, tc := range []struct {
+		failure  int
+		min, max time.Duration
+	}{{1, 5 * time.Second, 7500 * time.Millisecond}, {2, 10 * time.Second, 15 * time.Second},
+		{20, 5 * time.Minute, 5 * time.Minute}} {
+		for range 16 {
+			got := discoveryRetryDelay(tc.failure)
+			if got < tc.min || got > tc.max {
+				t.Fatalf("failure %d: delay %s outside [%s,%s]", tc.failure, got, tc.min, tc.max)
+			}
+		}
+	}
+}

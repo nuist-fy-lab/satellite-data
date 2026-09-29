@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -734,10 +735,7 @@ func (s *Store) MarkBatchError(ctx context.Context, batch WorkBatch, cause error
 		var failures int
 		_ = s.db.QueryRowContext(ctx, `SELECT failure_count FROM official_work WHERE product_key=? AND day=?`, batch.Product, day).Scan(&failures)
 		failures++
-		delay := time.Minute << min(failures-1, 6)
-		if delay > time.Hour {
-			delay = time.Hour
-		}
+		delay := officialRetryDelay(failures)
 		_, err := s.db.ExecContext(ctx, `
 			UPDATE official_work SET state='pending',failure_count=?,next_attempt_ns=?,last_error=?,updated_at=?
 			WHERE product_key=? AND day=?`,
@@ -747,6 +745,12 @@ func (s *Store) MarkBatchError(ctx context.Context, batch WorkBatch, cause error
 		}
 	}
 	return nil
+}
+
+func officialRetryDelay(failures int) time.Duration {
+	base := time.Minute << min(max(failures-1, 0), 6)
+	base = min(base, time.Hour)
+	return min(time.Hour, base+time.Duration(rand.Int64N(int64(base/2)+1)))
 }
 
 func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules []model.Granule) error {

@@ -7,6 +7,7 @@ import socketserver
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 
@@ -76,6 +77,99 @@ class HistoricalVerificationTest(unittest.TestCase):
         self.assertGreater(paused["paused_until"], 0)
         upstream.assert_not_called()
 
+    def test_transient_failure_retries_with_jitter_and_respects_retry_after(self):
+        expected = hashlib.sha256(self.content).hexdigest()
+        with mock.patch.object(verify.time, "time", return_value=1000), mock.patch.object(
+            verify.random, "uniform", return_value=45
+        ), mock.patch.object(verify, "official_digest", side_effect=[
+            verify.RetryableOfficialError("official fetch HTTP 502", 90), expected
+        ]) as upstream:
+            first = verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+            self.assertEqual((first["verified"], first["retrying"]), (0, 1))
+            self.assertEqual(self.progress.execute(
+                "SELECT state,retry_count,next_retry_at FROM attempts").fetchone(),
+                ("retry_scheduled", 1, 1090))
+            self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 0)
+        with mock.patch.object(verify.time, "time", return_value=1089), mock.patch.object(
+            verify, "official_digest"
+        ) as upstream:
+            self.assertIn("paused_until", verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60))
+            upstream.assert_not_called()
+        with mock.patch.object(verify.time, "time", return_value=1090), mock.patch.object(
+            verify, "official_digest", return_value=expected
+        ) as upstream:
+            retried = verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+            self.assertEqual(retried["verified"], 1)
+            upstream.assert_called_once()
+        self.assertEqual(self.progress.execute("SELECT state,retry_count FROM attempts").fetchone(), ("matched", 0))
+        self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 1)
+
+    def test_transient_failure_stops_after_four_attempts(self):
+        with mock.patch.object(verify, "retry_delay", return_value=60), mock.patch.object(
+            verify, "official_digest", side_effect=verify.RetryableOfficialError("official fetch HTTP 502")
+        ) as upstream:
+            for number in range(4):
+                with mock.patch.object(verify.time, "time", return_value=1000 + number * 60):
+                    result = verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+                    self.assertEqual(result["retrying"], 1 if number < 3 else 0)
+            with mock.patch.object(verify.time, "time", return_value=100000):
+                verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+        self.assertEqual(upstream.call_count, 4)
+        self.assertEqual(self.progress.execute(
+            "SELECT state,retry_count,next_retry_at FROM attempts").fetchone(),
+            ("pending_review", 4, 0))
+        self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 0)
+
+    def test_existing_502_record_is_migrated_once(self):
+        path = os.path.join(self.temp.name, "legacy.sqlite3")
+        legacy = sqlite3.connect(path)
+        legacy.execute("CREATE TABLE attempts(path TEXT PRIMARY KEY,size INTEGER,mtime_ns INTEGER,"
+                       "state TEXT,detail TEXT,checked_at INTEGER,official_collection TEXT,"
+                       "official_item TEXT,official_url TEXT,sha256 TEXT)")
+        legacy.execute("INSERT INTO attempts VALUES(?,?,?,'pending_review','official fetch HTTP 502',"
+                       "1000,'','','','')", (self.path, self.size, self.mtime))
+        legacy.commit()
+        legacy.close()
+        upgraded = verify.progress_db(path)
+        self.assertEqual(upgraded.execute("SELECT state,retry_count,next_retry_at FROM attempts").fetchone(),
+                         ("retry_scheduled", 1, 1060))
+        upgraded.close()
+        upgraded = verify.progress_db(path)
+        self.assertEqual(upgraded.execute("SELECT state,retry_count,next_retry_at FROM attempts").fetchone(),
+                         ("retry_scheduled", 1, 1060))
+        upgraded.close()
+
+    def test_retry_after_supports_delta_and_date(self):
+        self.assertEqual(verify.retry_after_seconds("120"), 120)
+        self.assertEqual(verify.retry_after_seconds("9" * 300), 86400)
+        self.assertEqual(verify.retry_after_seconds("invalid"), 0)
+        with mock.patch.object(verify.time, "time", return_value=1000):
+            date = (datetime.fromtimestamp(1000, timezone.utc) + timedelta(seconds=240))
+            self.assertEqual(verify.retry_after_seconds(date.strftime("%a, %d %b %Y %H:%M:%S GMT")), 240)
+
+    def test_permanent_official_error_never_retries(self):
+        with mock.patch.object(verify, "official_digest", side_effect=ValueError("official fetch HTTP 401")) as upstream:
+            self.assertEqual(verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)["retrying"], 0)
+            with mock.patch.object(verify.time, "time", return_value=9999999999):
+                verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+        self.assertEqual(upstream.call_count, 1)
+
+    def test_adaptive_pacing_has_limits_and_recovers(self):
+        pace = (3000, 20, 0.0, 0)
+        pace = verify.adjust_pacing(*pace, False, 40)
+        self.assertEqual(pace[:2], (4500, 10))
+        for _ in range(12):
+            pace = verify.adjust_pacing(*pace, False, 40)
+        self.assertEqual(pace[:2], (12000, 5))
+        for _ in range(128):
+            pace = verify.adjust_pacing(*pace, True, 40)
+        self.assertEqual(pace[0], 1000)
+        self.assertGreater(pace[1], 20)
+        self.assertLessEqual(pace[1], 40)
+        for _ in range(64):
+            pace = verify.adjust_pacing(*pace, True, 40)
+        self.assertEqual(pace[:2], (1000, 40))
+
     def test_ambiguous_url_never_fetches_or_records(self):
         self.index.execute("INSERT INTO official_assets VALUES(?,?,?,?,?,?)", (
             "earthcare:EarthCAREL2Validated_MAAP:ATL_CTH_2A", self.item, self.name,
@@ -128,6 +222,9 @@ class HistoricalVerificationTest(unittest.TestCase):
                          hashlib.sha256(payload).hexdigest())
         Handler.code = 401
         with self.assertRaises(ValueError):
+            verify.official_digest(socket_path, self.url, self.size)
+        Handler.code = 429
+        with self.assertRaises(verify.RetryableOfficialError):
             verify.official_digest(socket_path, self.url, self.size)
         Handler.code = 200
         Handler.body = payload[:-1]

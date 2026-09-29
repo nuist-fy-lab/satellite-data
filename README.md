@@ -15,6 +15,12 @@ chunked and pipelined: each provider has its own discovery loop, assets are
 submitted to the downloader as soon as each chunk is discovered, and every
 downloader provider has independent transfer and verification worker pools.
 A slow provider therefore cannot consume another provider's slots.
+The centre also paces official catalog/search calls per provider: each source
+starts at a 500 ms interval and at most two concurrent calls. Repeated errors
+lengthen that interval up to 5 seconds and reduce concurrency to one; sustained
+success recovers the interval to no less than 200 ms and concurrency to two.
+Persistent official-index and download-discovery failures use bounded jittered
+backoff in addition to this request pacing.
 The main service samples downloader-reported throughput, active transfers,
 adaptive limits and queue depth every 15 seconds for the download-page charts.
 Samples are kept for eight days; missing samples remain gaps, not zero-speed
