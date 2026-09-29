@@ -30,6 +30,8 @@ jobs:
           node --check web/static/login.js
       - name: Test ERA5 request controls without a browser
         run: node --test web/era5.test.mjs
+      - name: Test historical EarthCARE verification controls
+        run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
       - name: Validate portal styles and HTML without a browser
         run: |
           npm install --prefix "$RUNNER_TEMP/satellite-web" --no-save --ignore-scripts css-tree@3.1.0 parse5@7.2.1
