@@ -206,7 +206,10 @@ class HistoricalVerificationTest(unittest.TestCase):
                 self.send_response(self.code)
                 self.send_header("Content-Length", str(len(self.body)))
                 self.end_headers()
-                self.wfile.write(self.body)
+                try:
+                    self.wfile.write(self.body)
+                except BrokenPipeError:
+                    pass
 
             def log_message(self, *_):
                 pass

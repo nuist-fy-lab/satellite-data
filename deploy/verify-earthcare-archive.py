@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import http.client
 import json
+import math
 import os
 import random
 import re
@@ -40,7 +41,7 @@ def retry_after_seconds(value):
         return 86400 if len(value) > 5 else min(int(value), 86400)
     try:
         date = email.utils.parsedate_to_datetime(value)
-        return min(86400, max(0, int(date.timestamp() - time.time()) + 1))
+        return min(86400, max(0, math.ceil(date.timestamp() - time.time())))
     except (TypeError, ValueError, OverflowError):
         return 0
 
