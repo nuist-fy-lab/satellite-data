@@ -90,6 +90,16 @@ class HistoricalVerificationTest(unittest.TestCase):
         wrong = os.path.join(self.root, "ATL_CTH_2A", "20260708", self.name)
         self.assertIsNone(verify.official_asset(self.index, wrong, self.name, self.size, self.root))
 
+    def test_empty_sweep_pauses_official_requests(self):
+        self.index.execute("UPDATE local_files SET state='ok'")
+        self.index.commit()
+        with mock.patch.object(verify, "official_digest") as upstream:
+            result = verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+            self.assertEqual(result["fetched"], 0)
+            paused = verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+        self.assertGreater(paused["paused_until"], 0)
+        upstream.assert_not_called()
+
     def test_unix_centre_stream_requires_full_200_response(self):
         payload = self.content
 

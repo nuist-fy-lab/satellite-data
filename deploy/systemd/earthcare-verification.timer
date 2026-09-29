@@ -2,9 +2,9 @@
 Description=Continue bounded EarthCARE official-content verification
 
 [Timer]
-OnCalendar=*:0/30
-Persistent=true
-AccuracySec=1min
+OnStartupSec=1min
+OnUnitInactiveSec=15s
+AccuracySec=1s
 Unit=earthcare-verification.service
 
 [Install]

@@ -169,6 +169,9 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
     while inspected < 1000 and fetched < max_files and time.monotonic() - started < max_seconds:
         rows = candidates(index, root, cursor, max_file_bytes, 32)
         if not rows:
+            if matched == 0 and fetched == 0:
+                progress.execute("INSERT OR REPLACE INTO control(id,paused_until) VALUES(1,?)",
+                                 (int(time.time()) + 3600,))
             progress.execute("INSERT OR REPLACE INTO cursor(id,path) VALUES(1,'')")
             progress.commit()
             break
@@ -222,6 +225,9 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
         if stop_after_failure:
             break
         if len(rows) < 32 and not exhausted:
+            if matched == 0 and fetched == 0:
+                progress.execute("INSERT OR REPLACE INTO control(id,paused_until) VALUES(1,?)",
+                                 (int(time.time()) + 3600,))
             progress.execute("INSERT OR REPLACE INTO cursor(id,path) VALUES(1,'')")
             progress.commit()
             break
@@ -258,7 +264,8 @@ def main():
         try:
             result = run(index, progress, root, args.socket, args.max_files, args.max_bytes, args.max_seconds,
                          args.max_file_bytes, args.start_after, args.pause_seconds)
-            print(json.dumps(result, sort_keys=True))
+            if "paused_until" not in result:
+                print(json.dumps(result, sort_keys=True))
             if result["failed"]:
                 raise SystemExit(1)
         finally:
