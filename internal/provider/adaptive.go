@@ -77,7 +77,9 @@ func (f *queryFlow) finish(success, count bool) {
 			if f.rate >= 0.2 {
 				f.limit = max(1, f.limit-1)
 				f.gap = min(maxQueryGap, f.gap*2)
-				f.next = max(f.next, time.Now().Add(f.gap))
+				if next := time.Now().Add(f.gap); next.After(f.next) {
+					f.next = next
+				}
 			}
 		} else {
 			f.streak++
