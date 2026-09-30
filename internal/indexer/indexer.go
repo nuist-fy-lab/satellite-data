@@ -28,7 +28,7 @@ type Indexer struct {
 	registry     *provider.Registry
 	store        *state.Store
 	archiveRoot  string
-	sharedRoots  [2]string
+	sharedRoots  [3]string
 	catalogWrite sync.Mutex
 	localWake    chan struct{}
 }
@@ -485,7 +485,8 @@ func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool,
 		}
 		if entry.IsDir() {
 			name := entry.Name()
-			if shared && path != root && (name == "transfer_logs" || strings.HasPrefix(name, "_partial_quarantine")) {
+			if shared && path != root && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_partial_quarantine") ||
+				name == "transfer_logs" || name == "support" || name == "manifests" || name == "quarantine" || name == "_reorg_audit") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -494,7 +495,11 @@ func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool,
 			return nil
 		}
 		name := entry.Name()
-		if strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".lock") || strings.HasPrefix(name, ".") {
+		if strings.HasSuffix(name, ".part") || strings.Contains(name, ".part.") || strings.HasSuffix(name, ".lock") ||
+			strings.HasSuffix(name, ".tmp") || strings.HasPrefix(name, ".") || (shared && strings.EqualFold(filepath.Ext(name), ".zip")) {
+			return nil
+		}
+		if root == i.sharedRoots[2] && !strings.EqualFold(filepath.Ext(name), ".bz2") {
 			return nil
 		}
 		info, err := entry.Info()
@@ -522,6 +527,20 @@ func checkSharedFile(path string, size int64) (string, string) {
 	}
 	var expected []byte
 	switch strings.ToLower(filepath.Ext(path)) {
+	case ".bz2":
+		handle, err := os.Open(path)
+		if err != nil {
+			return "error", "cannot read file header"
+		}
+		defer handle.Close()
+		var header [4]byte
+		if _, err := io.ReadFull(handle, header[:]); err != nil {
+			return "error", "file header is incomplete"
+		}
+		if string(header[:3]) != "BZh" || header[3] < '1' || header[3] > '9' {
+			return "error", "invalid bzip2 header"
+		}
+		return "unverified", "format header checked; no authoritative checksum"
 	case ".h5":
 		expected = []byte{0x89, 'H', 'D', 'F', 0x0d, 0x0a, 0x1a, 0x0a}
 	case ".nc":

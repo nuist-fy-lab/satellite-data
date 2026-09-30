@@ -15,6 +15,73 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
 
+func TestHimawariHistoricalRootExcludesAuxiliaryFiles(t *testing.T) {
+	base := t.TempDir()
+	local, hima := filepath.Join(base, "satellite"), filepath.Join(base, "Himawari")
+	if err := os.MkdirAll(local, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"AHI_H09_CERES_V02_2km/202502/B13/202502010000.tir.01.fld.geoss.bz2",
+		"AHI_H09_HSD_NOAA_S3/202502/01/0000/B13/HS_H09_20250201_0000_B13_FLDK_R20_S0110.DAT.bz2",
+		"support/not-data.bz2", "manifests/not-data.bz2", "quarantine/not-data.bz2",
+		"transfer_logs/not-data.bz2", "_partial_quarantine-old/not-data.bz2", ".rollback/not-data.bz2",
+		"broken.bz2.part", "broken.bz2.part.corrupt.123", "old.tmp", "old.zip", "notes.txt",
+	} {
+		path := filepath.Join(hima, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("BZh9payload"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := state.Open(filepath.Join(base, "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	idx := New(nil, store, local, "", "", hima)
+	idx.scanLocal(t.Context())
+	status, err := store.ArchiveScanStatus(t.Context())
+	if err != nil || status.Files != 2 || status.Unverified != 2 || status.Verified != 0 || status.Errors != 0 {
+		t.Fatalf("historical Himawari payloads: %+v (%v)", status, err)
+	}
+	files, err := store.KnownLocalFilesBelow(t.Context(), hima)
+	if err != nil || len(files) != 2 {
+		t.Fatalf("payload inventory: %+v (%v)", files, err)
+	}
+	for _, file := range files {
+		if file.Detail != "format header checked; no authoritative checksum" {
+			t.Fatalf("historical payload was incorrectly verified: %+v", file)
+		}
+	}
+	New(nil, store, local, "", "", filepath.Join(base, "missing")).scanLocal(t.Context())
+	status, err = store.ArchiveScanStatus(t.Context())
+	if err != nil || status.Files != 2 {
+		t.Fatalf("missing Himawari root dropped inventory: %+v (%v)", status, err)
+	}
+}
+
+func TestSharedBzip2HeaderDoesNotProveCompletion(t *testing.T) {
+	for _, content := range []string{"BZh1", "BZh9", "BZh0", "BZh:", "BZh", "xxxx", ""} {
+		t.Run(content, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "payload.bz2")
+			if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			status, _ := checkSharedFile(path, int64(len(content)))
+			want := "error"
+			if content == "BZh1" || content == "BZh9" {
+				want = "unverified"
+			}
+			if status != want {
+				t.Fatalf("state=%s want=%s", status, want)
+			}
+		})
+	}
+}
+
 type officialEarthCARE struct{ assets []model.Asset }
 
 func (p officialEarthCARE) Source() model.Source                                    { return model.Source{ID: "earthcare"} }

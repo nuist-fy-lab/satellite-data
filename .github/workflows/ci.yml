@@ -72,10 +72,11 @@ jobs:
           go build -trimpath -ldflags='-s -w' -o dist/satellited ./cmd/satellited
           go build -trimpath -ldflags='-s -w' -o dist/satellite ./cmd/satellite
           cp deploy/verify-earthcare-archive.py dist/verify-earthcare-archive.py
+          cp deploy/normalize-earthcare-packages.py dist/normalize-earthcare-packages.py
       - name: Record cloud build digests
         run: |
           cd dist
-          sha256sum satellite satellited verify-earthcare-archive.py > SHA256SUMS
+          sha256sum satellite satellited verify-earthcare-archive.py normalize-earthcare-packages.py > SHA256SUMS
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -101,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="ci-pr-${PR_NUMBER}-${SOURCE_SHA:0:12}"
-          gh release create "$tag" dist/satellite dist/satellited dist/verify-earthcare-archive.py --repo "$GITHUB_REPOSITORY" \
+          gh release create "$tag" dist/satellite dist/satellited dist/verify-earthcare-archive.py dist/normalize-earthcare-packages.py --repo "$GITHUB_REPOSITORY" \
             --target "$SOURCE_SHA" --title "CI PR ${PR_NUMBER} ${SOURCE_SHA:0:12}" \
             --notes "Cloud-verified PR binaries for $SOURCE_SHA" --prerelease
           gh release upload "$tag" dist/visual/*.png --repo "$GITHUB_REPOSITORY"
@@ -109,7 +110,7 @@ jobs:
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir verify
           target="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .target_commitish)"
           [[ "$target" == "$SOURCE_SHA" ]]
-          for name in satellite satellited verify-earthcare-archive.py; do
+          for name in satellite satellited verify-earthcare-archive.py normalize-earthcare-packages.py; do
             cmp "dist/$name" "verify/$name"
             expected="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq ".assets[] | select(.name==\"$name\") | .digest")"
             [[ "$expected" == "sha256:$(sha256sum "verify/$name" | cut -d' ' -f1)" ]]

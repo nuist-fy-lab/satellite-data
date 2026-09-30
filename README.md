@@ -43,7 +43,7 @@ files while stopped, rename the database and any remaining sidecars together
 to `state.sqlite3`, then update the service environment and restart. The daemon
 refuses to create a new `state.sqlite3` beside an unmigrated `state.db`.
 
-### Shared EarthCARE and ERA5 archives
+### Shared EarthCARE, ERA5 and Himawari archives
 
 On c2ln1 the new EarthCARE archive root is the existing
 `/misc/nuist_data1/public_sharing/EarthCare`; files are written under
@@ -54,7 +54,9 @@ satellite products still use `.../public_sharing/satellite`.
 
 Configure `SATELLITED_EARTHCARE_ARCHIVE` and `SATELLITED_ERA5_ARCHIVE` on the
 centre and `SATDOWN_EARTHCARE_ARCHIVE_ROOT` and `SATDOWN_ERA5_ARCHIVE_ROOT` on
-the downloader. The centre scans all three roots without moving other users'
+the downloader. `SATELLITED_HIMAWARI_ARCHIVE` additionally enables the existing
+`/misc/nuist_data1/public_sharing/Himawari` historical archive. The centre scans
+all configured roots without moving other users'
 historical files. `GET /api/v1/archive/index-status` reports file counts and
 unreadable directories. Shared historical files are indexed as `unverified`
 until an exact official item/asset (EarthCARE) or CDS job/result (ERA5) can be
@@ -64,6 +66,13 @@ EarthCARE `AC_CLP_2B` directory is owned by another account and is not readable
 by the service; its missing coverage is reported instead of hidden. Prior ERA5
 global and China files have no automatically inferred CDS job identity. New
 archives refuse to overwrite a different file with the same name.
+The Himawari historical root inventories `.bz2` payloads, with a header check
+only; CERES files are not inferred to be NOAA HSD assets. Shared scans exclude
+hidden rollback directories, auxiliary directories, ZIP packages, temporary
+files and corrupt partials. `deploy/normalize-earthcare-packages.py` extracts
+extensionless EarthCARE ZIP packages after CRC/header checks and exact SHA-256
+comparison with any existing payload. It preserves the original ZIP under a
+hidden rollback directory and records each operation in a private journal.
 New shared archive subdirectories use setgid and group read/write/execute;
 new files use group read/write. Existing directories keep their own ACLs,
 including inaccessible directories. Completed downloader tasks retain a

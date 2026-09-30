@@ -97,7 +97,7 @@ func main() {
 	defer stop()
 	linkmon.New(store).Run(ctx)
 	archiveIndexer := indexer.New(registry, store, *archiveRoot,
-		os.Getenv("SATELLITED_EARTHCARE_ARCHIVE"), os.Getenv("SATELLITED_ERA5_ARCHIVE"))
+		os.Getenv("SATELLITED_EARTHCARE_ARCHIVE"), os.Getenv("SATELLITED_ERA5_ARCHIVE"), os.Getenv("SATELLITED_HIMAWARI_ARCHIVE"))
 	archiveIndexer.Run(ctx)
 	downloaderClient := downloader.New(runtimeConfig.DownloaderSocket)
 	downloadmon.New(store, downloaderClient).Run(ctx)
