@@ -364,7 +364,7 @@ func (r *Runtime) verifyLoop(ctx context.Context, provider config.Provider, work
 		if archiveRoot == "" {
 			archiveRoot = r.cfg.ArchiveRoot
 		}
-		result, err := transfer.Promote(task, archiveRoot, provider.ArchiveRoot != "")
+		result, err := transfer.Promote(task, archiveRoot, provider.ArchiveRoot != "" || r.cfg.ArchiveGroupWritable)
 		if err != nil {
 			var collision *transfer.CollisionError
 			if errors.As(err, &collision) {
