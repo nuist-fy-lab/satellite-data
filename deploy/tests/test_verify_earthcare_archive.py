@@ -105,21 +105,92 @@ class HistoricalVerificationTest(unittest.TestCase):
         self.assertEqual(self.progress.execute("SELECT state,retry_count FROM attempts").fetchone(), ("matched", 0))
         self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 1)
 
-    def test_transient_failure_stops_after_four_attempts(self):
+    def test_transient_failure_defers_after_four_attempts_then_recovers(self):
         with mock.patch.object(verify, "retry_delay", return_value=60), mock.patch.object(
             verify, "official_digest", side_effect=verify.RetryableOfficialError("official fetch HTTP 502")
         ) as upstream:
             for number in range(4):
                 with mock.patch.object(verify.time, "time", return_value=1000 + number * 60):
                     result = verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
-                    self.assertEqual(result["retrying"], 1 if number < 3 else 0)
-            with mock.patch.object(verify.time, "time", return_value=100000):
+                    self.assertEqual(result["retrying"], 1)
+            with mock.patch.object(verify.time, "time", return_value=1300):
                 verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
         self.assertEqual(upstream.call_count, 4)
-        self.assertEqual(self.progress.execute(
-            "SELECT state,retry_count,next_retry_at FROM attempts").fetchone(),
-            ("pending_review", 4, 0))
+        row = self.progress.execute("SELECT state,retry_count,next_retry_at FROM attempts").fetchone()
+        self.assertEqual(row[:2], ("retry_deferred", 4))
+        self.assertGreaterEqual(row[2], 1180 + int(verify.DEFERRED_RETRY_SECONDS * 0.8))
         self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 0)
+        with mock.patch.object(verify.time, "time", return_value=row[2]), mock.patch.object(
+            verify, "official_digest", return_value=hashlib.sha256(self.content).hexdigest()
+        ):
+            self.assertEqual(verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)["verified"], 1)
+
+    def test_deferred_retry_is_bounded_and_honors_retry_after(self):
+        for attempt in range(4, 32):
+            state, delay = verify.transient_retry(attempt)
+            self.assertEqual(state, "retry_deferred")
+            self.assertGreaterEqual(delay, int(verify.DEFERRED_RETRY_SECONDS * 0.8))
+            self.assertLessEqual(delay, 86400)
+        self.assertEqual(verify.transient_retry(4, 86400), ("retry_deferred", 86400))
+
+    def test_real_writer_collision_retains_proof_and_does_not_refetch(self):
+        holder = sqlite3.connect(os.path.join(self.temp.name, "index.sqlite3"))
+        self.addCleanup(holder.close)
+        holder.execute("BEGIN IMMEDIATE")
+        self.index.execute("PRAGMA busy_timeout=1")
+        expected = hashlib.sha256(self.content).hexdigest()
+        with mock.patch.object(verify.time, "sleep"), mock.patch.object(verify, "retry_delay", return_value=60), mock.patch.object(
+            verify, "official_digest", return_value=expected
+        ) as upstream:
+            with mock.patch.object(verify.time, "time", return_value=1000):
+                first = verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60, pause_seconds=3)
+            self.assertEqual((first["failed"], first["retrying"]), (1, 1))
+            self.assertEqual((first["gap_ms"], first["file_limit"]), (3000, 1))
+            self.assertEqual(self.progress.execute("SELECT state,sha256 FROM attempts").fetchone(),
+                             ("record_pending", expected))
+            self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 0)
+            holder.rollback()
+            with mock.patch.object(verify.time, "time", return_value=1060):
+                second = verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60, pause_seconds=3)
+            self.assertEqual((second["verified"], second["fetched"], second["bytes_requested"]), (1, 0, 0))
+            self.assertEqual(upstream.call_count, 1)
+            self.assertEqual(self.progress.execute("SELECT state FROM attempts").fetchone()[0], "matched")
+
+    def test_retained_proof_rechecks_local_content_and_catalogue(self):
+        proof = verify.official_asset(self.index, self.path, self.name, self.size, self.root)
+        self.progress.execute("INSERT INTO attempts(path,size,mtime_ns,state,detail,checked_at,"
+                              "official_collection,official_item,official_url,sha256) "
+                              "VALUES(?,?,?,'record_pending','database is locked',0,?,?,?,?)",
+                              (self.path, self.size, self.mtime) + proof + ("0" * 64,))
+        self.progress.commit()
+        with mock.patch.object(verify, "official_digest") as upstream:
+            self.assertEqual(verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)["retrying"], 0)
+        upstream.assert_not_called()
+        self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 0)
+        self.assertEqual(self.progress.execute("SELECT state,detail FROM attempts").fetchone(),
+                         ("pending_review", "official content SHA-256 mismatch"))
+
+    def test_transient_review_migration_is_once_and_preserves_terminal_failures(self):
+        self.progress.execute("DELETE FROM migrations")
+        details = ['database is locked', 'official stream exceeded time budget',
+                   'official content SHA-256 mismatch', 'official fetch HTTP 403']
+        for detail in details:
+            self.progress.execute("INSERT INTO attempts(path,size,mtime_ns,state,detail,checked_at) "
+                                  "VALUES(?,?,?,'pending_review',?,0)", (detail, 1, 1, detail))
+        self.progress.commit()
+        upgraded = verify.progress_db(os.path.join(self.temp.name, "progress.sqlite3"))
+        states = dict(upgraded.execute("SELECT detail,state FROM attempts"))
+        self.assertEqual(states[details[0]], "retry_scheduled")
+        self.assertEqual(states[details[1]], "retry_deferred")
+        self.assertEqual(states[details[2]], "pending_review")
+        self.assertEqual(states[details[3]], "pending_review")
+        upgraded.execute("UPDATE attempts SET state='pending_review' WHERE detail=?", (details[0],))
+        upgraded.commit()
+        upgraded.close()
+        reopened = verify.progress_db(os.path.join(self.temp.name, "progress.sqlite3"))
+        self.assertEqual(reopened.execute("SELECT state FROM attempts WHERE detail=?", (details[0],)).fetchone()[0],
+                         "pending_review")
+        reopened.close()
 
     def test_existing_502_record_is_migrated_once(self):
         path = os.path.join(self.temp.name, "legacy.sqlite3")

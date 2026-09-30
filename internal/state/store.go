@@ -204,6 +204,7 @@ CREATE INDEX IF NOT EXISTS download_monitor_samples_time_idx ON download_monitor
 
 type Store struct {
 	db            *sql.DB
+	writer        *sql.DB
 	coverageMu    sync.Mutex
 	coverageCache map[coverageKey]*list.Element
 	coverageLRU   list.List
@@ -320,7 +321,7 @@ func (s *Store) QueueEarthCAREOfficialDays(ctx context.Context, days []ArchivePr
 		if _, err := time.Parse(time.DateOnly, day.Day); err != nil {
 			return queued, err
 		}
-		result, err := s.db.ExecContext(ctx, `
+		result, err := s.writer.ExecContext(ctx, `
 			INSERT OR IGNORE INTO official_work(product_key,day,state,priority,requested_at,updated_at)
 			SELECT p.product_key,?,'pending',-5,?,? FROM products p
 			WHERE p.source_id='earthcare' AND p.data_type=?
@@ -368,23 +369,32 @@ func Open(path string) (*Store, error) {
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
-	db, err := sql.Open("sqlite", path+separator+"_busy_timeout=30000&_txlock=immediate")
+	dsn := path + separator + "_busy_timeout=30000&_txlock=immediate&_foreign_keys=on"
+	writer, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(8)
-	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
+	// Queue centre writes instead of making workers compete for SQLite's single
+	// writer lock. Readers retain their own pool and can run during WAL writes.
+	writer.SetMaxOpenConns(1)
+	if _, err := writer.Exec(schema); err != nil {
+		_ = writer.Close()
 		return nil, fmt.Errorf("initialize state schema: %w", err)
 	}
-	if err := initDownloadSchema(db); err != nil {
-		_ = db.Close()
+	if err := initDownloadSchema(writer); err != nil {
+		_ = writer.Close()
 		return nil, fmt.Errorf("initialize download schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	db.SetMaxOpenConns(8)
+	return &Store{db: db, writer: writer}, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error { return errors.Join(s.db.Close(), s.writer.Close()) }
 
 func (s *Store) RecordLinkSample(ctx context.Context, sample LinkSample) error {
 	var latency any
@@ -395,7 +405,7 @@ func (s *Store) RecordLinkSample(ctx context.Context, sample LinkSample) error {
 	if sample.JitterMS != nil {
 		jitter = *sample.JitterMS
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.writer.ExecContext(ctx, `
 		INSERT INTO link_samples(
 			source_id,sampled_at_ns,target_host,resolved_ip,latency_ms,jitter_ms,loss_pct,
 			success_count,attempt_count,last_error)
@@ -485,13 +495,13 @@ func (s *Store) LinkSeries(ctx context.Context, since time.Time, bucket time.Dur
 }
 
 func (s *Store) DeleteLinkSamplesBefore(ctx context.Context, before time.Time) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM link_samples WHERE sampled_at_ns<?`, before.UTC().UnixNano())
+	_, err := s.writer.ExecContext(ctx, `DELETE FROM link_samples WHERE sampled_at_ns<?`, before.UTC().UnixNano())
 	return err
 }
 
 func (s *Store) RecoverOfficialWork(ctx context.Context) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.writer.ExecContext(ctx, `
 		UPDATE official_work
 		SET state='pending',started_at='',next_attempt_ns=0,updated_at=?
 		WHERE state='running'`, now)
@@ -505,7 +515,7 @@ func (s *Store) ProductCount(ctx context.Context) (int, error) {
 }
 
 func (s *Store) UpsertProducts(ctx context.Context, sourceID string, products []model.Product) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -565,7 +575,7 @@ func (s *Store) UpsertProducts(ctx context.Context, sourceID string, products []
 
 func (s *Store) CatalogError(ctx context.Context, sourceID string, cause error) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.writer.ExecContext(ctx, `
 		INSERT INTO catalog_sources(source_id,state,last_error,updated_at) VALUES(?,'error',?,?)
 		ON CONFLICT(source_id) DO UPDATE SET state='error',last_error=excluded.last_error,updated_at=excluded.updated_at`,
 		sourceID, cause.Error(), now)
@@ -644,7 +654,7 @@ func (s *Store) EnqueueRange(ctx context.Context, product string, start, end tim
 		return errors.New("end must be after start")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -680,7 +690,14 @@ func (s *Store) ClaimBatch(ctx context.Context, maxDays int) (WorkBatch, error) 
 		maxDays = 1
 	}
 	nowNS := time.Now().UnixNano()
-	tx, err := s.db.BeginTx(ctx, nil)
+	var pending bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM official_work WHERE state='pending' AND next_attempt_ns<=?)`, nowNS).Scan(&pending); err != nil {
+		return WorkBatch{}, err
+	}
+	if !pending {
+		return WorkBatch{}, nil
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return WorkBatch{}, err
 	}
@@ -736,7 +753,7 @@ func (s *Store) MarkBatchError(ctx context.Context, batch WorkBatch, cause error
 		_ = s.db.QueryRowContext(ctx, `SELECT failure_count FROM official_work WHERE product_key=? AND day=?`, batch.Product, day).Scan(&failures)
 		failures++
 		delay := officialRetryDelay(failures)
-		_, err := s.db.ExecContext(ctx, `
+		_, err := s.writer.ExecContext(ctx, `
 			UPDATE official_work SET state='pending',failure_count=?,next_attempt_ns=?,last_error=?,updated_at=?
 			WHERE product_key=? AND day=?`,
 			failures, now.Add(delay).UnixNano(), cause.Error(), now.UTC().Format(time.RFC3339Nano), batch.Product, day)
@@ -762,7 +779,7 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 		day := granule.Start.UTC().Format(time.DateOnly)
 		byDay[day] = append(byDay[day], granule)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -1023,31 +1040,20 @@ func (s *Store) ReplaceLocalFilesWithWarnings(ctx context.Context, files []Local
 	if prior == fingerprint {
 		return false, nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	conn, err := s.writer.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	if err := stageLocalFiles(ctx, conn, files); err != nil {
+		return false, err
+	}
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS scanned_local_files (
-		path TEXT PRIMARY KEY, filename TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
-		state TEXT NOT NULL, detail TEXT NOT NULL
-	)`); err != nil {
-		return false, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM scanned_local_files`); err != nil {
-		return false, err
-	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for _, file := range files {
-		if file.State == "" {
-			file.State = "ok"
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO scanned_local_files(path,filename,size,mtime_ns,state,detail) VALUES(?,?,?,?,?,?)`,
-			file.Path, file.Filename, file.Size, file.MtimeNS, file.State, file.Detail); err != nil {
-			return false, err
-		}
-	}
 	type pair struct{ product, day string }
 	rows, err := tx.QueryContext(ctx, `
 		WITH changed AS (
@@ -1116,6 +1122,39 @@ func (s *Store) ReplaceLocalFilesWithWarnings(ctx context.Context, files []Local
 	return true, tx.Commit()
 }
 
+func stageLocalFiles(ctx context.Context, conn *sql.Conn, files []LocalFile) error {
+	// Only the connection-local TEMP database is written here. Do not reserve
+	// the main writer lock while inserting tens of thousands of scan results.
+	if _, err := conn.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS scanned_local_files (
+		path TEXT PRIMARY KEY, filename TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+		state TEXT NOT NULL, detail TEXT NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN DEFERRED"); err != nil {
+		return err
+	}
+	defer conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+	if _, err := conn.ExecContext(ctx, "DELETE FROM scanned_local_files"); err != nil {
+		return err
+	}
+	stmt, err := conn.PrepareContext(ctx, `INSERT INTO scanned_local_files(path,filename,size,mtime_ns,state,detail) VALUES(?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, file := range files {
+		if file.State == "" {
+			file.State = "ok"
+		}
+		if _, err := stmt.ExecContext(ctx, file.Path, file.Filename, file.Size, file.MtimeNS, file.State, file.Detail); err != nil {
+			return err
+		}
+	}
+	_, err = conn.ExecContext(ctx, "COMMIT")
+	return err
+}
+
 func (s *Store) VerifiedArchiveFiles(ctx context.Context) (map[string]VerifiedArchiveFile, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT path,size,mtime_ns,sha256 FROM verified_archive_files`)
 	if err != nil {
@@ -1135,7 +1174,7 @@ func (s *Store) VerifiedArchiveFiles(ctx context.Context) (map[string]VerifiedAr
 }
 
 func (s *Store) RecordVerifiedArchiveFile(ctx context.Context, path string, size, mtimeNS int64, sha256, sourceID, collection, item, asset string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.writer.ExecContext(ctx, `
 		INSERT INTO verified_archive_files(path,size,mtime_ns,sha256,source_id,official_collection,official_item,official_asset,verified_at)
 		VALUES(?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns,

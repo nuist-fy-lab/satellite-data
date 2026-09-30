@@ -122,7 +122,7 @@ func initDownloadSchema(db *sql.DB) error {
 
 func (s *Store) RecoverDownloadRequests(ctx context.Context) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.writer.ExecContext(ctx, `
 		UPDATE download_requests
 		SET state='pending',last_error='recovered after satellite-data restart',updated_at=?
 		WHERE state='discovering'`, now)
@@ -156,7 +156,7 @@ func (s *Store) EnqueueSelectedDownloadRequestOwned(ctx context.Context, ownerUs
 		return DownloadRequest{}, err
 	}
 	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `
+	result, err := s.writer.ExecContext(ctx, `
 		INSERT INTO download_requests(
 		 owner_user_id,source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,'pending',?,?)`,
@@ -173,7 +173,15 @@ func (s *Store) EnqueueSelectedDownloadRequestOwned(ctx context.Context, ownerUs
 
 func (s *Store) ClaimDownloadRequest(ctx context.Context, providerID string) (DownloadRequest, bool, error) {
 	now := time.Now().UTC()
-	tx, err := s.db.BeginTx(ctx, nil)
+	var pending bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM download_requests
+		WHERE provider_id=? AND state IN ('pending','retry_wait') AND next_attempt_ns<=?)`, providerID, now.UnixNano()).Scan(&pending); err != nil {
+		return DownloadRequest{}, false, err
+	}
+	if !pending {
+		return DownloadRequest{}, false, nil
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return DownloadRequest{}, false, err
 	}
@@ -210,7 +218,7 @@ func (s *Store) ClaimDownloadRequest(ctx context.Context, providerID string) (Do
 }
 
 func (s *Store) AdvanceDownloadRequest(ctx context.Context, id int64, nextCursor time.Time, granules int, refs []DownloaderTaskRef, discoveryDone bool) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -261,7 +269,7 @@ func (s *Store) RetryDownloadDiscovery(ctx context.Context, id int64, cause erro
 		delay = time.Second
 	}
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.writer.ExecContext(ctx, `
 		UPDATE download_requests
 		SET state='retry_wait',failure_count=failure_count+1,next_attempt_ns=?,last_error=?,updated_at=?
 		WHERE id=?`, now.Add(delay).UnixNano(), truncateError(cause), formatTime(now), id)
@@ -381,7 +389,7 @@ func (s *Store) UpdateDownloadTransferState(ctx context.Context, requestID int64
 		state = "waiting_auth"
 	}
 	now := formatTime(time.Now())
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.writer.ExecContext(ctx, `
 		UPDATE download_requests
 		SET state=CASE WHEN state IN ('pending','discovering','retry_wait') THEN state ELSE ? END,
 		    files_done=?,files_failed=?,files_waiting_auth=?,

@@ -45,7 +45,7 @@ func (s *Store) RecordERA5Result(ctx context.Context, requestID, taskID int64, j
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM download_requests WHERE id=? AND source_id='era5' AND collection_id=?`, requestID, collectionID).Scan(&found); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO era5_result_manifest(
+	_, err := s.writer.ExecContext(ctx, `INSERT INTO era5_result_manifest(
 		downloader_task_id,request_id,job_id,collection_id,asset_id,filename,size,recorded_at)
 		VALUES(?,?,?,?,?,?,?,?)
 		ON CONFLICT(downloader_task_id) DO UPDATE SET job_id=excluded.job_id,
@@ -84,7 +84,7 @@ func (s *Store) EnqueueERA5OrderOwned(ctx context.Context, ownerUserID, collecti
 	if err != nil {
 		return DownloadRequest{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return DownloadRequest{}, err
 	}
@@ -135,7 +135,7 @@ func (s *Store) PrepareERA5Part(ctx context.Context, request DownloadRequest, su
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO era5_order_parts(request_id,start_ts,end_ts,inputs_json,stage,job_id) VALUES(?,?,?,?,'pending','') ON CONFLICT(request_id) DO UPDATE SET start_ts=excluded.start_ts,end_ts=excluded.end_ts,inputs_json=excluded.inputs_json,stage='pending',job_id='' WHERE era5_order_parts.start_ts<>excluded.start_ts`, request.ID, formatTime(request.Cursor), formatTime(end), string(encoded))
+	_, err = s.writer.ExecContext(ctx, `INSERT INTO era5_order_parts(request_id,start_ts,end_ts,inputs_json,stage,job_id) VALUES(?,?,?,?,'pending','') ON CONFLICT(request_id) DO UPDATE SET start_ts=excluded.start_ts,end_ts=excluded.end_ts,inputs_json=excluded.inputs_json,stage='pending',job_id='' WHERE era5_order_parts.start_ts<>excluded.start_ts`, request.ID, formatTime(request.Cursor), formatTime(end), string(encoded))
 	return err
 }
 
@@ -143,7 +143,7 @@ func (s *Store) SetERA5PartStage(ctx context.Context, id int64, stage, jobID str
 	if stage != "pending" && stage != "submitting" && stage != "submitted" {
 		return errors.New("invalid ERA5 stage")
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE era5_order_parts SET stage=?,job_id=? WHERE request_id=?`, stage, jobID, id)
+	result, err := s.writer.ExecContext(ctx, `UPDATE era5_order_parts SET stage=?,job_id=? WHERE request_id=?`, stage, jobID, id)
 	if err != nil {
 		return err
 	}
@@ -159,13 +159,13 @@ func (s *Store) SetERA5PartStage(ctx context.Context, id int64, stage, jobID str
 
 func (s *Store) FailDownloadOrder(ctx context.Context, id int64, cause error) error {
 	now := formatTime(time.Now())
-	_, err := s.db.ExecContext(ctx, `UPDATE download_requests SET state='failed',last_error=?,completed_at=?,updated_at=? WHERE id=?`, truncateError(cause), now, now, id)
+	_, err := s.writer.ExecContext(ctx, `UPDATE download_requests SET state='failed',last_error=?,completed_at=?,updated_at=? WHERE id=?`, truncateError(cause), now, now, id)
 	return err
 }
 
 // Deferral is normal scheduler progress, not a failed attempt.
 func (s *Store) DeferDownloadOrder(ctx context.Context, id int64, delay time.Duration) error {
 	now := time.Now()
-	_, err := s.db.ExecContext(ctx, `UPDATE download_requests SET state='pending',next_attempt_ns=?,updated_at=? WHERE id=?`, now.Add(delay).UnixNano(), formatTime(now), id)
+	_, err := s.writer.ExecContext(ctx, `UPDATE download_requests SET state='pending',next_attempt_ns=?,updated_at=? WHERE id=?`, now.Add(delay).UnixNano(), formatTime(now), id)
 	return err
 }

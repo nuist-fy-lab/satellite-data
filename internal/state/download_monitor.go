@@ -27,7 +27,7 @@ func (s *Store) RecordDownloadSamples(ctx context.Context, at time.Time, provide
 	if len(providers) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -61,7 +61,7 @@ func (s *Store) RecordDownloadSamples(ctx context.Context, at time.Time, provide
 }
 
 func (s *Store) DeleteDownloadSamplesBefore(ctx context.Context, cutoff time.Time) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM download_monitor_samples WHERE sampled_at_ns<?`, cutoff.UTC().UnixNano())
+	_, err := s.writer.ExecContext(ctx, `DELETE FROM download_monitor_samples WHERE sampled_at_ns<?`, cutoff.UTC().UnixNano())
 	return err
 }
 

@@ -25,6 +25,7 @@ MAX_OFFICIAL_SECONDS = 600
 OFFICIAL_IDLE_SECONDS = 60
 MAX_TRANSIENT_ATTEMPTS = 4
 MAX_RETRY_DELAY = 1800
+DEFERRED_RETRY_SECONDS = 6 * 3600
 MIN_GAP_MS = 1000
 MAX_GAP_MS = 12000
 MIN_BATCH_FILES = 5
@@ -52,6 +53,19 @@ def retry_after_seconds(value):
 def retry_delay(attempt, retry_after=0):
     ceiling = min(MAX_RETRY_DELAY, 60 * (2 ** (attempt - 1)))
     return max(int(random.uniform(ceiling / 2, ceiling)), retry_after, 1)
+
+
+def transient_retry(attempt, retry_after=0):
+    if attempt < MAX_TRANSIENT_ATTEMPTS:
+        return "retry_scheduled", retry_delay(attempt, retry_after)
+    # Exhausted short retries become sparse probes, not permanent failures.
+    ceiling = min(86400, DEFERRED_RETRY_SECONDS * (2 ** min(attempt - MAX_TRANSIENT_ATTEMPTS, 2)))
+    return "retry_deferred", max(int(random.uniform(ceiling * 0.8, ceiling)), retry_after)
+
+
+def database_busy(exc):
+    return isinstance(exc, sqlite3.OperationalError) and str(exc) in (
+        "database is locked", "database is busy", "database table is locked")
 
 
 def official_time_expired(_signum, _frame):
@@ -231,6 +245,19 @@ def progress_db(path):
                    "WHERE state='pending_review' AND (detail GLOB 'official fetch HTTP 5[0-9][0-9]' "
                    "OR detail IN ('official fetch HTTP 408','official fetch HTTP 429'))")
     db.execute("CREATE INDEX IF NOT EXISTS attempts_retry_due ON attempts(state,next_retry_at)")
+    db.execute("CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY)")
+    migration = "recover_transient_review_v1"
+    if db.execute("SELECT 1 FROM migrations WHERE name=?", (migration,)).fetchone() is None:
+        # Old lock failures did not retain proof; they must fetch and hash again.
+        db.execute("UPDATE attempts SET state='retry_scheduled',retry_count=0,next_retry_at=? "
+                   "WHERE state='pending_review' AND detail IN "
+                   "('database is locked','database is busy','database table is locked')", (int(time.time()),))
+        db.execute("UPDATE attempts SET state='retry_deferred',next_retry_at=max(?,checked_at+?) "
+                   "WHERE state='pending_review' AND (detail GLOB 'official fetch HTTP 5[0-9][0-9]' "
+                   "OR detail IN ('official fetch HTTP 408','official fetch HTTP 429',"
+                   "'official stream exceeded time budget','official stream size differs from catalog','timed out'))",
+                   (int(time.time()), DEFERRED_RETRY_SECONDS))
+        db.execute("INSERT INTO migrations VALUES(?)", (migration,))
     db.commit()
     os.chmod(path, 0o600)
     return db
@@ -263,8 +290,8 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
     matched = fetched = skipped = inspected = used = failed = unmatched = retrying = 0
     while inspected < 1000 and fetched < file_limit and time.monotonic() - started < max_seconds:
         due = progress.execute("SELECT path,size,mtime_ns FROM attempts "
-                               "WHERE state='retry_scheduled' AND next_retry_at<=? "
-                               "AND path LIKE ? AND size<=? ORDER BY next_retry_at LIMIT 1",
+                               "WHERE state IN ('retry_scheduled','retry_deferred','record_pending') AND next_retry_at<=? "
+                               "AND path LIKE ? AND size<=? ORDER BY state='record_pending' DESC,next_retry_at LIMIT 1",
                                (int(time.time()), root + '/%', min(max_file_bytes, max_bytes - used))).fetchone()
         retry_row = None
         if due:
@@ -278,7 +305,7 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
         if not rows:
             if matched == 0 and fetched == 0:
                 next_retry = progress.execute("SELECT min(next_retry_at) FROM attempts "
-                                              "WHERE state='retry_scheduled'").fetchone()[0]
+                                              "WHERE state IN ('retry_scheduled','retry_deferred','record_pending')").fetchone()[0]
                 pause_until = min(int(time.time()) + 3600, next_retry) if next_retry else int(time.time()) + 3600
                 progress.execute("INSERT OR REPLACE INTO control(id,paused_until) VALUES(1,?)",
                                  (pause_until,))
@@ -294,11 +321,12 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
             if not retry_row:
                 cursor = path
             inspected += 1
-            prior = progress.execute("SELECT size,mtime_ns,state,checked_at,retry_count,next_retry_at "
+            prior = progress.execute("SELECT size,mtime_ns,state,checked_at,retry_count,next_retry_at,"
+                                     "official_collection,official_item,official_url,sha256 "
                                      "FROM attempts WHERE path=?", (path,)).fetchone()
             if prior and prior[:2] == (size, mtime) and (
                 prior[2] in ("matched", "pending_review") or
-                prior[2] == "retry_scheduled" and prior[5] > time.time() or
+                prior[2] in ("retry_scheduled", "retry_deferred", "record_pending") and prior[5] > time.time() or
                 prior[2] == "no_unique_official_asset" and time.time() - prior[3] < 86400
             ):
                 skipped += 1
@@ -313,19 +341,29 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
                     unmatched += 1
                 else:
                     collection, item, url = asset
-                    fetched += 1
-                    used += size
                     retry_count = next_retry_at = 0
-                    phase = "official"
+                    phase = "local"
+                    retaining_proof = prior and prior[:2] == (size, mtime) and prior[2] == "record_pending"
+                    fetched_official = not retaining_proof
                     try:
-                        remote = official_digest(socket_path, url, size)
+                        if retaining_proof:
+                            if prior[6:9] != asset or not re.fullmatch(r"[0-9a-f]{64}", prior[9]):
+                                raise ValueError("saved official proof or reference changed")
+                            remote = prior[9]
+                        else:
+                            fetched += 1
+                            used += size
+                            phase = "official"
+                            remote = official_digest(socket_path, url, size)
                         phase = "local"
                         local = local_digest(path, root, size, mtime)
                         if local != remote:
                             raise ValueError("official content SHA-256 mismatch")
+                        # Keep the compared proof even if the evidence write is busy.
+                        proof = (collection, item, url, local)
+                        phase = "record"
                         record(index, path, name, size, mtime, local, collection, item, url, root)
                         state, detail = "matched", ""
-                        proof = (collection, item, url, local)
                         matched += 1
                     except (OSError, ValueError, http.client.HTTPException, sqlite3.Error) as exc:
                         state, detail = "pending_review", str(exc)[:160]
@@ -334,14 +372,19 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
                         if phase == "official" and isinstance(exc, (RetryableOfficialError, OSError,
                                                                      http.client.HTTPException)):
                             retry_count = (prior[4] if prior and prior[:2] == (size, mtime) else 0) + 1
-                            if retry_count < MAX_TRANSIENT_ATTEMPTS:
-                                state = "retry_scheduled"
-                                next_retry_at = int(time.time()) + retry_delay(
-                                    retry_count, getattr(exc, "retry_after", 0))
-                                retrying += 1
+                            state, delay = transient_retry(retry_count, getattr(exc, "retry_after", 0))
+                            next_retry_at = int(time.time()) + delay
+                            retrying += 1
+                        elif phase == "record" and database_busy(exc):
+                            state = "record_pending"
+                            retry_count = min(16, prior[4] + 1 if retaining_proof else 1)
+                            next_retry_at = int(time.time()) + retry_delay(retry_count)
+                            retrying += 1
                         progress.execute("INSERT OR REPLACE INTO control(id,paused_until) VALUES(1,?)",
-                                         (next_retry_at or int(time.time()) + 900,))
-                    if adaptive:
+                                         (int(time.time()) + max(60, getattr(exc, "retry_after", 0)) if state == "retry_deferred" else
+                                          next_retry_at or int(time.time()) + 900,))
+                    # A local writer collision says nothing about ESA's error rate.
+                    if adaptive and fetched_official and state != "record_pending":
                         gap_ms, file_limit, error_rate, streak = adjust_pacing(
                             gap_ms, file_limit, error_rate, streak, state == "matched", max_files)
                         progress.execute("INSERT OR REPLACE INTO pacing VALUES(1,?,?,?,?)",
