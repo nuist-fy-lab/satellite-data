@@ -345,7 +345,7 @@ func (i *Indexer) localLoop(ctx context.Context) {
 }
 
 func (i *Indexer) scanLocal(ctx context.Context) {
-	if err := os.MkdirAll(i.archiveRoot, 0o750); err != nil {
+	if err := os.MkdirAll(i.archiveRoot, 0o777); err != nil {
 		slog.Warn("create local archive root", "root", i.archiveRoot, "error", err)
 		return
 	}
