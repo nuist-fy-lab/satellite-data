@@ -48,7 +48,7 @@ func TestSharedPromotionInheritsDefaultACL(t *testing.T) {
 		}
 	}
 	output, err := exec.Command("getfacl", "-cpn", result.Path).CombinedOutput()
-	if err != nil || !strings.Contains(string(output), "user:65534:r--") {
+	if err != nil || !strings.Contains(string(output), "user:65534:r-x") || !strings.Contains(string(output), "mask::rw-") {
 		t.Fatalf("named parent ACL was not inherited: %v: %s", err, output)
 	}
 }
