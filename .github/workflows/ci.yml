@@ -40,6 +40,8 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/satellite-web/node_modules" node --test web/style.test.mjs
       - name: Vet
         run: go vet ./...
+      - name: Install ACL tools for archive inheritance checks
+        run: sudo apt-get update && sudo apt-get install -y acl
       - name: Test
         run: go test ./...
       - name: Race-check persistent orders and centre dispatch
