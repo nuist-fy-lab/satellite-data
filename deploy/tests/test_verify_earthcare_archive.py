@@ -103,6 +103,15 @@ class HistoricalVerificationTest(unittest.TestCase):
         self.assertIsNone(self.index.execute("SELECT sha256 FROM verified_archive_files WHERE path=?", (self.path,)).fetchone())
         self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (self.path,)).fetchone()[0], "pending_review")
 
+    def test_downloader_stac_asset_id_can_restore_relocated_proof(self):
+        expected = hashlib.sha256(self.content).hexdigest()
+        with mock.patch.object(verify, "official_digest", return_value=expected):
+            verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+        self.index.execute("UPDATE verified_archive_files SET official_asset='enclosure_h5'")
+        self.index.commit()
+        self.relocate_monthly()
+        self.assertEqual(verify.repair_layout_evidence(self.index, self.progress, self.root)["layout_restored"], 1)
+
     def test_duplicate_relocated_candidates_are_not_promoted(self):
         expected = hashlib.sha256(self.content).hexdigest()
         with mock.patch.object(verify, "official_digest", return_value=expected):

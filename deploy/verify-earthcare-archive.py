@@ -279,11 +279,13 @@ def repair_layout_evidence(index, progress, root):
     """Reuse official proof only after hashing its unique relocated payload."""
     restored = rejected = already = 0
     evidence = index.execute(
-        "SELECT v.path,v.size,v.sha256,v.official_collection,v.official_item,v.official_asset "
+        "SELECT v.path,v.size,v.sha256,v.official_collection,v.official_item "
         "FROM verified_archive_files v LEFT JOIN local_files f ON f.path=v.path "
         "WHERE v.source_id='earthcare' AND f.path IS NULL ORDER BY v.path"
     ).fetchall()
-    for oldpath, size, digest, collection, item, name in evidence:
+    for oldpath, size, digest, collection, item in evidence:
+        # Downloader evidence stores STAC asset IDs, not necessarily filenames.
+        name = os.path.basename(oldpath)
         identity = archive_product_day(oldpath, name, root)
         if identity is None or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
             rejected += 1
