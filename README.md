@@ -73,6 +73,14 @@ files and corrupt partials. `deploy/normalize-earthcare-packages.py` extracts
 extensionless EarthCARE ZIP packages after CRC/header checks and exact SHA-256
 comparison with any existing payload. It preserves the original ZIP under a
 hidden rollback directory and records each operation in a private journal.
+Historical EarthCARE verification and official-date discovery accept both
+`<product>/<YYYYMMDD>/<filename>` and `<product>/<YYYY>/<MM>/<filename>`.
+The acquisition date in the filename must agree with its directory. After a
+layout migration, run `verify-earthcare-archive.py --repair-layout-evidence`
+with the service's normal database/root/socket options while its timer is
+stopped. This rehashes unique relocated files against existing official SHA-256
+proof, retains the old evidence for audit, and resets obsolete monthly lookup
+failures once. It never marks a file verified solely from its name or size.
 New shared archive subdirectories use setgid and group read/write/execute;
 new files use group read/write. Existing directories keep their own ACLs,
 including inaccessible directories. Completed downloader tasks retain a

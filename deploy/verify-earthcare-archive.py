@@ -41,7 +41,7 @@ def retry_after_seconds(value):
     if not value:
         return 0
     value = value.strip()
-    if value.isascii() and value.isdigit():
+    if re.fullmatch(r"[0-9]+", value):
         return 86400 if len(value) > 5 else min(int(value), 86400)
     try:
         date = email.utils.parsedate_to_datetime(value)
@@ -107,24 +107,36 @@ def candidates(db, root, cursor, max_file_bytes, limit=128):
     ).fetchall()
 
 
-def official_asset(db, path, name, size, root):
+def archive_product_day(path, name, root):
     rel = os.path.relpath(path, root).split(os.sep)
     match = ACQUISITION.search(name)
-    if len(rel) != 3 or rel[-1] != name or not match or rel[1] != match.group(1):
+    if len(rel) not in (3, 4) or rel[-1] != name or not match or rel[0].startswith((".", "_")):
         return None
     try:
-        day = datetime.strptime(rel[1], "%Y%m%d").strftime("%Y%m%d")
+        day = datetime.strptime(match.group(1), "%Y%m%d").strftime("%Y%m%d")
     except ValueError:
         return None
-    if day != rel[1]:
+    if day != match.group(1):
         return None
+    if len(rel) == 3 and rel[1] != day:
+        return None
+    if len(rel) == 4 and rel[1:3] != [day[:4], day[4:6]]:
+        return None
+    return rel[0], day
+
+
+def official_asset(db, path, name, size, root):
+    identity = archive_product_day(path, name, root)
+    if identity is None:
+        return None
+    product, day = identity
     rows = db.execute(
         "SELECT a.product_key,a.granule_id,a.url,a.slot_ts FROM official_assets a "
         "JOIN products p ON p.product_key=a.product_key "
         "WHERE a.filename=? AND a.size=? AND p.source_id='earthcare' AND p.data_type=?",
-        (name, size, rel[0]),
+        (name, size, product),
     ).fetchall()
-    refs = {(row[1], row[2]) for row in rows if row[3][:10] == rel[1][:4] + "-" + rel[1][4:6] + "-" + rel[1][6:]}
+    refs = {(row[1], row[2]) for row in rows if row[3][:10] == day[:4] + "-" + day[4:6] + "-" + day[6:]}
     if len(refs) != 1:
         return None
     item, url = refs.pop()
@@ -261,6 +273,73 @@ def progress_db(path):
     db.commit()
     os.chmod(path, 0o600)
     return db
+
+
+def repair_layout_evidence(index, progress, root):
+    """Reuse official proof only after hashing its unique relocated payload."""
+    restored = rejected = already = 0
+    evidence = index.execute(
+        "SELECT v.path,v.size,v.sha256,v.official_collection,v.official_item,v.official_asset "
+        "FROM verified_archive_files v LEFT JOIN local_files f ON f.path=v.path "
+        "WHERE v.source_id='earthcare' AND f.path IS NULL ORDER BY v.path"
+    ).fetchall()
+    for oldpath, size, digest, collection, item, name in evidence:
+        identity = archive_product_day(oldpath, name, root)
+        if identity is None or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            rejected += 1
+            continue
+        product, day = identity
+        matches = index.execute(
+            "SELECT path,mtime_ns FROM local_files WHERE filename=? AND size=? "
+            "AND path LIKE ? AND state IN ('unverified','ok')", (name, size, root + "/%")
+        ).fetchall()
+        matches = [(path, mtime) for path, mtime in matches
+                   if archive_product_day(path, name, root) == identity]
+        if len(matches) != 1:
+            rejected += 1
+            continue
+        path, mtime = matches[0]
+        previous = index.execute(
+            "SELECT sha256 FROM verified_archive_files WHERE path=? AND size=? AND mtime_ns=?",
+            (path, size, mtime)).fetchone()
+        if previous and previous[0].lower() == digest.lower():
+            already += 1
+            continue
+        reference = official_asset(index, path, name, size, root)
+        if reference is None or reference[:2] != (collection, item):
+            rejected += 1
+            continue
+        try:
+            if local_digest(path, root, size, mtime) != digest.lower():
+                raise ValueError("relocated payload SHA-256 differs from official evidence")
+            record(index, path, name, size, mtime, digest.lower(), *reference, root)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            rejected += 1
+            progress.execute("INSERT OR REPLACE INTO attempts "
+                             "(path,size,mtime_ns,state,detail,checked_at) VALUES(?,?,?,'pending_review',?,?)",
+                             (path, size, mtime, str(exc)[:160], int(time.time())))
+            progress.commit()
+            continue
+        progress.execute("UPDATE attempts SET state='relocated',detail='proof restored after local SHA-256 check' "
+                         "WHERE path=? AND state='matched'", (oldpath,))
+        progress.execute("INSERT OR REPLACE INTO attempts "
+                         "(path,size,mtime_ns,state,detail,checked_at,official_collection,official_item,official_url,sha256) "
+                         "VALUES(?,?,?,'matched','',?,?,?,?,?)",
+                         (path, size, mtime, int(time.time()), reference[0], reference[1], reference[2], digest.lower()))
+        progress.commit()
+        restored += 1
+        if restored % 100 == 0:
+            print(json.dumps({"layout_restored": restored, "layout_rejected": rejected}), flush=True)
+    migration = "earthcare_month_layout_v1"
+    if progress.execute("SELECT 1 FROM migrations WHERE name=?", (migration,)).fetchone() is None:
+        for path, in progress.execute("SELECT path FROM attempts WHERE state='no_unique_official_asset'").fetchall():
+            if len(os.path.relpath(path, root).split(os.sep)) == 4 and archive_product_day(path, os.path.basename(path), root):
+                progress.execute("DELETE FROM attempts WHERE path=? AND state='no_unique_official_asset'", (path,))
+        progress.execute("INSERT OR REPLACE INTO cursor VALUES(1,'')")
+        progress.execute("INSERT OR REPLACE INTO control VALUES(1,0)")
+        progress.execute("INSERT INTO migrations VALUES(?)", (migration,))
+        progress.commit()
+    return {"layout_restored": restored, "layout_already_restored": already, "layout_rejected": rejected}
 
 
 def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
@@ -426,6 +505,8 @@ def main():
     parser.add_argument("--max-seconds", type=int, default=900)
     parser.add_argument("--start-after", default="", help="only used before the first run of a progress database")
     parser.add_argument("--pause-seconds", type=float, default=2)
+    parser.add_argument("--repair-layout-evidence", action="store_true",
+                        help="rehash relocated official proof and invalidate obsolete monthly lookup failures")
     args = parser.parse_args()
     if min(args.max_files, args.max_bytes, args.max_file_bytes, args.max_seconds) <= 0 or args.pause_seconds < 0:
         parser.error("limits must be positive")
@@ -441,6 +522,9 @@ def main():
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         progress = progress_db(args.progress_db)
         try:
+            if args.repair_layout_evidence:
+                print(json.dumps(repair_layout_evidence(index, progress, root), sort_keys=True), flush=True)
+                return
             result = run(index, progress, root, args.socket, args.max_files, args.max_bytes, args.max_seconds,
                          args.max_file_bytes, args.start_after, args.pause_seconds)
             if "paused_until" not in result:

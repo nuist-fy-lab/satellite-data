@@ -249,6 +249,18 @@ func TestHistoricalEarthCAREQueuesOnlyMatchingOfficialProductDay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, filename := range []string{
+		"ECA_EXBC_CPR_FMR_2A_20260711T020939Z_20260712T040101Z_12014E.h5",
+		"ECA_EXBC_CPR_FMR_2A_20260611T020939Z_20260712T040101Z_12014E.h5",
+	} {
+		monthly := filepath.Join(earth, "CPR_FMR_2A", "2026", "07", filename)
+		if err := os.MkdirAll(filepath.Dir(monthly), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(monthly, []byte("\x89HDF\r\n\x1a\ncontent"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s, err := state.Open(filepath.Join(base, "state.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
@@ -261,8 +273,8 @@ func TestHistoricalEarthCAREQueuesOnlyMatchingOfficialProductDay(t *testing.T) {
 	i := New(nil, s, local, earth)
 	i.scanLocal(t.Context())
 	batch, err := s.ClaimBatch(t.Context(), 7)
-	if err != nil || batch.Product != product.ProductKey || len(batch.Days) != 1 || batch.Days[0] != "2026-07-10" {
-		t.Fatalf("expected one official EarthCARE lookup: %+v (%v)", batch, err)
+	if err != nil || batch.Product != product.ProductKey || len(batch.Days) != 2 || batch.Days[0] != "2026-07-10" || batch.Days[1] != "2026-07-11" {
+		t.Fatalf("expected daily and monthly official EarthCARE lookups: %+v (%v)", batch, err)
 	}
 }
 

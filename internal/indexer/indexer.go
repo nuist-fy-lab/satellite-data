@@ -412,15 +412,21 @@ func (i *Indexer) queueHistoricalEarthCARE(ctx context.Context, files []state.Lo
 			continue
 		}
 		parts := strings.Split(rel, string(filepath.Separator))
-		if len(parts) != 3 || len(parts[1]) != 8 {
+		if (len(parts) != 3 && len(parts) != 4) || parts[len(parts)-1] != file.Filename || strings.HasPrefix(parts[0], ".") || strings.HasPrefix(parts[0], "_") {
 			continue
 		}
 		match := earthCAREDate.FindStringSubmatch(file.Filename)
-		if match == nil || match[1] != parts[1] {
+		if match == nil {
 			continue
 		}
-		day, err := time.Parse("20060102", parts[1])
-		if err != nil || day.Format("20060102") != parts[1] {
+		day, err := time.Parse("20060102", match[1])
+		if err != nil || day.Format("20060102") != match[1] {
+			continue
+		}
+		if len(parts) == 3 && parts[1] != match[1] {
+			continue
+		}
+		if len(parts) == 4 && (parts[1] != match[1][:4] || parts[2] != match[1][4:6]) {
 			continue
 		}
 		unique[state.ArchiveProductDay{ProductType: parts[0], Day: day.Format(time.DateOnly)}] = struct{}{}
