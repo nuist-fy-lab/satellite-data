@@ -108,7 +108,7 @@ class HistoricalVerificationTest(unittest.TestCase):
         with mock.patch.object(verify, "official_digest", return_value=expected):
             verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
         self.relocate_monthly()
-        alternate = os.path.join(self.root, "ATL_CTH_2A", "20260707", self.name)
+        alternate = os.path.join(os.path.dirname(self.path), "..", "07", self.name)
         self.index.execute("INSERT INTO local_files VALUES(?,?,?,?,'unverified')", (alternate, self.name, self.size, self.mtime))
         self.index.commit()
         self.assertEqual(verify.repair_layout_evidence(self.index, self.progress, self.root)["layout_rejected"], 1)
