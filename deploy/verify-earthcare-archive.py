@@ -205,8 +205,9 @@ def official_digest(socket_path, url, size):
         connection.close()
 
 
-def record(db, path, name, size, mtime, digest, collection, item, url, root):
-    db.execute("BEGIN IMMEDIATE")
+def record(db, path, name, size, mtime, digest, collection, item, url, root, manage_transaction=True):
+    if manage_transaction:
+        db.execute("BEGIN IMMEDIATE")
     try:
         row = db.execute("SELECT filename,size,mtime_ns,state FROM local_files WHERE path=?", (path,)).fetchone()
         if row != (name, size, mtime, "unverified"):
@@ -227,9 +228,11 @@ def record(db, path, name, size, mtime, digest, collection, item, url, root):
             "official_asset=excluded.official_asset,verified_at=excluded.verified_at",
             (path, size, mtime, digest, collection, item, name, datetime.now(timezone.utc).isoformat()),
         )
-        db.commit()
+        if manage_transaction:
+            db.commit()
     except BaseException:
-        db.rollback()
+        if manage_transaction:
+            db.rollback()
         raise
 
 
@@ -275,9 +278,47 @@ def progress_db(path):
     return db
 
 
+def restore_evidence_batch(index, progress, root, entries):
+    accepted, failures = [], []
+    index.execute("BEGIN IMMEDIATE")
+    try:
+        for entry in entries:
+            oldpath, path, name, size, mtime, digest, reference, already = entry
+            index.execute("SAVEPOINT relocated_file")
+            try:
+                if not already:
+                    record(index, path, name, size, mtime, digest, *reference, root, manage_transaction=False)
+                index.execute("RELEASE relocated_file")
+                accepted.append(entry)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                index.execute("ROLLBACK TO relocated_file")
+                index.execute("RELEASE relocated_file")
+                failures.append((entry, str(exc)[:160]))
+        index.commit()
+    except BaseException:
+        index.rollback()
+        raise
+    for oldpath, path, name, size, mtime, digest, reference, already in accepted:
+        progress.execute("UPDATE attempts SET state='relocated',detail='proof restored after local SHA-256 check' "
+                         "WHERE path=? AND state='matched'", (oldpath,))
+        progress.execute("INSERT OR REPLACE INTO attempts "
+                         "(path,size,mtime_ns,state,detail,checked_at,official_collection,official_item,official_url,sha256) "
+                         "VALUES(?,?,?,'matched','',?,?,?,?,?)",
+                         (path, size, mtime, int(time.time()), reference[0], reference[1], reference[2], digest))
+    for entry, detail in failures:
+        _, path, _, size, mtime, _, _, _ = entry
+        progress.execute("INSERT OR REPLACE INTO attempts "
+                         "(path,size,mtime_ns,state,detail,checked_at) VALUES(?,?,?,'pending_review',?,?)",
+                         (path, size, mtime, detail, int(time.time())))
+    progress.commit()
+    already_count = sum(entry[-1] for entry in accepted)
+    return len(accepted) - already_count, len(failures), already_count
+
+
 def repair_layout_evidence(index, progress, root):
     """Reuse official proof only after hashing its unique relocated payload."""
     restored = rejected = already = 0
+    pending = []
     evidence = index.execute(
         "SELECT v.path,v.size,v.sha256,v.official_collection,v.official_item "
         "FROM verified_archive_files v LEFT JOIN local_files f ON f.path=v.path "
@@ -304,17 +345,14 @@ def repair_layout_evidence(index, progress, root):
         previous = index.execute(
             "SELECT sha256 FROM verified_archive_files WHERE path=? AND size=? AND mtime_ns=?",
             (path, size, mtime)).fetchone()
-        if previous and previous[0].lower() == digest.lower():
-            already += 1
-            continue
+        is_restored = bool(previous and previous[0].lower() == digest.lower())
         reference = official_asset(index, path, name, size, root)
         if reference is None or reference[:2] != (collection, item):
             rejected += 1
             continue
         try:
-            if local_digest(path, root, size, mtime) != digest.lower():
+            if not is_restored and local_digest(path, root, size, mtime) != digest.lower():
                 raise ValueError("relocated payload SHA-256 differs from official evidence")
-            record(index, path, name, size, mtime, digest.lower(), *reference, root)
         except (OSError, ValueError, sqlite3.Error) as exc:
             rejected += 1
             progress.execute("INSERT OR REPLACE INTO attempts "
@@ -322,16 +360,20 @@ def repair_layout_evidence(index, progress, root):
                              (path, size, mtime, str(exc)[:160], int(time.time())))
             progress.commit()
             continue
-        progress.execute("UPDATE attempts SET state='relocated',detail='proof restored after local SHA-256 check' "
-                         "WHERE path=? AND state='matched'", (oldpath,))
-        progress.execute("INSERT OR REPLACE INTO attempts "
-                         "(path,size,mtime_ns,state,detail,checked_at,official_collection,official_item,official_url,sha256) "
-                         "VALUES(?,?,?,'matched','',?,?,?,?,?)",
-                         (path, size, mtime, int(time.time()), reference[0], reference[1], reference[2], digest.lower()))
-        progress.commit()
-        restored += 1
-        if restored % 100 == 0:
-            print(json.dumps({"layout_restored": restored, "layout_rejected": rejected}), flush=True)
+        pending.append((oldpath, path, name, size, mtime, digest.lower(), reference, is_restored))
+        if len(pending) >= 50:
+            added, failed, existing = restore_evidence_batch(index, progress, root, pending)
+            restored += added
+            rejected += failed
+            already += existing
+            pending.clear()
+            print(json.dumps({"layout_restored": restored, "layout_rejected": rejected,
+                              "layout_already_restored": already}), flush=True)
+    if pending:
+        added, failed, existing = restore_evidence_batch(index, progress, root, pending)
+        restored += added
+        rejected += failed
+        already += existing
     migration = "earthcare_month_layout_v1"
     if progress.execute("SELECT 1 FROM migrations WHERE name=?", (migration,)).fetchone() is None:
         for path, in progress.execute("SELECT path FROM attempts WHERE state='no_unique_official_asset'").fetchall():

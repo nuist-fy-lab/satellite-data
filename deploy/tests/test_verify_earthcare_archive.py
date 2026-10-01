@@ -90,6 +90,28 @@ class HistoricalVerificationTest(unittest.TestCase):
         self.assertEqual(self.index.execute("SELECT sha256 FROM verified_archive_files WHERE path=?", (self.path,)).fetchone()[0], expected)
         self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (old,)).fetchone()[0], "relocated")
         self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (self.path,)).fetchone()[0], "matched")
+        self.progress.execute("DELETE FROM attempts WHERE path=?", (self.path,))
+        self.progress.commit()
+        self.assertEqual(verify.repair_layout_evidence(self.index, self.progress, self.root)["layout_already_restored"], 1)
+        self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (self.path,)).fetchone()[0], "matched")
+
+    def test_restore_batch_keeps_valid_proof_when_another_reference_changes(self):
+        expected = hashlib.sha256(self.content).hexdigest()
+        reference = verify.official_asset(self.index, self.path, self.name, self.size, self.root)
+        name = self.name.replace("11979C", "11979D")
+        path = os.path.join(os.path.dirname(self.path), name)
+        with open(path, "wb") as output:
+            output.write(self.content)
+        mtime = os.stat(path).st_mtime_ns
+        self.index.execute("INSERT INTO local_files VALUES(?,?,?,?,'unverified')", (path, name, self.size, mtime))
+        self.index.execute("INSERT INTO official_assets VALUES(?,?,?,?,?,?)", (reference[0], "another-item", name, self.size, self.url, "2026-07-07T19:47:39Z"))
+        self.index.commit()
+        entries = [("old-a", self.path, self.name, self.size, self.mtime, expected, reference, False),
+                   ("old-b", path, name, self.size, mtime, expected, (reference[0], "changed-item", self.url), False)]
+        self.assertEqual(verify.restore_evidence_batch(self.index, self.progress, self.root, entries), (1, 1, 0))
+        self.assertIsNotNone(self.index.execute("SELECT sha256 FROM verified_archive_files WHERE path=?", (self.path,)).fetchone())
+        self.assertIsNone(self.index.execute("SELECT sha256 FROM verified_archive_files WHERE path=?", (path,)).fetchone())
+        self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (path,)).fetchone()[0], "pending_review")
 
     def test_relocated_modified_file_is_not_promoted(self):
         expected = hashlib.sha256(self.content).hexdigest()
