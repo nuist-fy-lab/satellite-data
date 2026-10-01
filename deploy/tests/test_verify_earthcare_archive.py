@@ -542,6 +542,34 @@ class HistoricalVerificationTest(unittest.TestCase):
                 verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
         self.assertEqual(upstream.call_count, 1)
 
+    def test_worker_deadline_interrupts_real_connection_close_body(self):
+        release = threading.Event()
+        payload = self.content
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                release.wait(2)
+            def log_message(self, *_):
+                pass
+        socket_path = os.path.join(self.temp.name, "deadline.sock")
+        server = socketserver.UnixStreamServer(socket_path, Handler)
+        self.addCleanup(server.server_close)
+        worker = threading.Thread(target=server.serve_forever)
+        worker.daemon = True
+        worker.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(release.set)
+        with mock.patch.object(verify, "MAX_OFFICIAL_SECONDS", 0.05):
+            with verify.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(verify.official_digest, socket_path, self.url, self.size)
+                with self.assertRaisesRegex(verify.RetryableOfficialError, "time budget"):
+                    future.result(timeout=2)
+        release.set()
+
     def test_adaptive_pacing_has_limits_and_recovers(self):
         pace = (3000, 20, 0.0, 0)
         pace = verify.adjust_pacing(*pace, False, 40)

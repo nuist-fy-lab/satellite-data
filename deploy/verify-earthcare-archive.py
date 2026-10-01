@@ -221,12 +221,14 @@ def official_digest(socket_path, url, size, deadline=None):
     deadline = min(now + budget, deadline) if deadline is not None else now + budget
     budget = max(0.001, deadline - now)
     expired = threading.Event()
+    stream_socket = [None]
 
     def interrupt():
         expired.set()
-        if connection.sock is not None:
+        active = stream_socket[0] or connection.sock
+        if active is not None:
             try:
-                connection.sock.shutdown(socket.SHUT_RDWR)
+                active.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
 
@@ -236,6 +238,10 @@ def official_digest(socket_path, url, size, deadline=None):
         timer.start()
         payload = json.dumps({"source_id": "earthcare", "url": url}).encode("utf-8")
         connection.request("POST", "/v1/fetch", payload, {"Content-Type": "application/json"})
+        # getresponse may detach a Connection: close socket while its body is still open.
+        stream_socket[0] = connection.sock
+        if expired.is_set():
+            raise RetryableOfficialError("official stream exceeded time budget")
         response = connection.getresponse()
         if response.status in (408, 429) or 500 <= response.status < 600:
             error = RetryableOfficialError("official fetch HTTP %d" % response.status,
