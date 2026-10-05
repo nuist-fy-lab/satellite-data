@@ -3,6 +3,7 @@ package config
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestGOESAdaptiveTransferDefaults(t *testing.T) {
@@ -13,6 +14,38 @@ func TestGOESAdaptiveTransferDefaults(t *testing.T) {
 		if p.SourceID == "goes" {
 			if p.InitialTransferConcurrency != 4 || p.TransferConcurrency != 8 || p.VerifyConcurrency != 2 {
 				t.Fatalf("invalid GOES defaults: %+v", p)
+			}
+			if !p.LowThroughput.Enabled ||
+				p.LowThroughput.StartupGrace != 30*time.Second ||
+				p.LowThroughput.Window != 30*time.Second ||
+				p.LowThroughput.Sustain != 45*time.Second ||
+				p.LowThroughput.FloorBytesPerSecond != 64<<10 ||
+				p.LowThroughput.BaselineFraction != 0.15 {
+				t.Fatalf("invalid GOES low-throughput defaults: %+v", p.LowThroughput)
+			}
+			return
+		}
+	}
+	t.Fatal("GOES transfer worker missing")
+}
+
+func TestLowThroughputPolicyCanBeOverriddenPerProvider(t *testing.T) {
+	t.Setenv("SATDOWN_GOES_LOW_THROUGHPUT_ENABLED", "false")
+	t.Setenv("SATDOWN_GOES_LOW_THROUGHPUT_STARTUP_GRACE", "45s")
+	t.Setenv("SATDOWN_GOES_LOW_THROUGHPUT_WINDOW", "20s")
+	t.Setenv("SATDOWN_GOES_LOW_THROUGHPUT_SUSTAIN", "1m")
+	t.Setenv("SATDOWN_GOES_LOW_THROUGHPUT_FLOOR_BPS", "131072")
+	t.Setenv("SATDOWN_GOES_LOW_THROUGHPUT_BASELINE_FRACTION", "0.25")
+	for _, p := range Load().Providers {
+		if p.SourceID == "goes" {
+			policy := p.LowThroughput
+			if policy.Enabled ||
+				policy.StartupGrace != 45*time.Second ||
+				policy.Window != 20*time.Second ||
+				policy.Sustain != time.Minute ||
+				policy.FloorBytesPerSecond != 131072 ||
+				policy.BaselineFraction != 0.25 {
+				t.Fatalf("GOES low-throughput overrides not applied: %+v", policy)
 			}
 			return
 		}

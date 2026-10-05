@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nuist-fy-lab/satellite-data-downloader/internal/config"
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
 )
 
@@ -98,6 +99,24 @@ func TestProviderFlowCanGrowAboveInitialLimit(t *testing.T) {
 	}
 }
 
+func TestProviderLowThroughputThresholdUsesRecentMedian(t *testing.T) {
+	flow := &providerFlow{}
+	policy := config.LowThroughputPolicy{
+		FloorBytesPerSecond: 64 << 10,
+		BaselineFraction:    0.15,
+	}
+	if got := flow.lowThroughputThreshold(policy); got != 64<<10 {
+		t.Fatalf("empty baseline threshold=%d want %d", got, 64<<10)
+	}
+	for _, rate := range []int64{4 << 20, 6 << 20, 5 << 20} {
+		flow.observeTransferRate(rate*10, 10*time.Second, policy.FloorBytesPerSecond)
+	}
+	want := int64(float64(5<<20) * 0.15)
+	if got := flow.lowThroughputThreshold(policy); got != want {
+		t.Fatalf("adaptive threshold=%d want %d", got, want)
+	}
+}
+
 func TestProviderPacingAndCooldown(t *testing.T) {
 	flow := &providerFlow{limit: 2, gap: time.Hour}
 	if err := flow.pace(t.Context()); err != nil {
@@ -129,5 +148,8 @@ func TestCongestionClassification(t *testing.T) {
 	}
 	if isCongestion(&transfer.HTTPError{Status: 404}) {
 		t.Fatal("missing objects should not reduce concurrency")
+	}
+	if isCongestion(&transfer.LowThroughputError{}) {
+		t.Fatal("one recycled slow connection should not reduce provider concurrency")
 	}
 }

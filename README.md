@@ -44,6 +44,16 @@ transfer concurrency stays between 1 and the configured per-provider maximum.
 GOES defaults to an initial concurrency of 4 with a ceiling of 8; other
 providers start at their configured ceiling unless
 `SATDOWN_<PROVIDER>_INITIAL_TRANSFER_CONCURRENCY` overrides it.
+GOES also enables a low-throughput guard by default. After a 30-second startup
+grace it evaluates a 30-second moving window and recycles a connection that
+remains below its threshold for 45 seconds. The threshold is the greater of
+64 KiB/s and 15% of the median rate of the last 16 normal completed transfers
+for that provider. Recycling preserves the validated `.part` file and ETag so
+the durable retry resumes with Range/If-Range instead of restarting the object.
+One recycled slow connection does not by itself reduce provider-wide adaptive
+concurrency; the existing congestion classifier remains responsible for that.
+The policy can be tuned with
+`SATDOWN_<PROVIDER>_LOW_THROUGHPUT_{ENABLED,STARTUP_GRACE,WINDOW,SUSTAIN,FLOOR_BPS,BASELINE_FRACTION}`.
 When supplied, `Retry-After` also delays new transfers for that provider,
 up to one hour; individual task retries remain durable and jittered.
 Himawari-8/9 use independent single-transfer/single-verifier pools by default
