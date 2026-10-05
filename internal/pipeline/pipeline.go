@@ -144,7 +144,7 @@ func New(cfg config.Config, state *store.Store, accessManager *access.Manager) (
 			return nil, fmt.Errorf("duplicate provider %q", item.SourceID)
 		}
 		providers[item.SourceID] = item
-		flows[item.SourceID] = &providerFlow{limit: max(1, item.TransferConcurrency),
+		flows[item.SourceID] = &providerFlow{limit: max(1, min(item.InitialTransferConcurrency, item.TransferConcurrency)),
 			gap: 200 * time.Millisecond, lastSample: time.Now()}
 	}
 	return &Runtime{

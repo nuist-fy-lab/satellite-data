@@ -9,13 +9,14 @@ import (
 )
 
 type Provider struct {
-	SourceID            string
-	ArchiveRoot         string
-	Enabled             bool
-	TransferConcurrency int
-	VerifyConcurrency   int
-	RequestTimeout      time.Duration
-	AuthRef             string
+	SourceID                   string
+	ArchiveRoot                string
+	Enabled                    bool
+	InitialTransferConcurrency int
+	TransferConcurrency        int
+	VerifyConcurrency          int
+	RequestTimeout             time.Duration
+	AuthRef                    string
 }
 
 type Config struct {
@@ -34,16 +35,16 @@ func Load() Config {
 	state := filepath.Join(home, ".local", "state", "satellite-data-downloader")
 	runtime := runtimeRoot(home)
 	providers := []Provider{
-		provider("goes", true, 4, 2, 3*time.Minute, ""),
-		provider("himawari8", true, 1, 1, 3*time.Minute, ""),
-		provider("himawari9", true, 1, 1, 3*time.Minute, ""),
-		provider("modis", true, 4, 2, 5*time.Minute, "laads"),
-		provider("viirs", true, 4, 2, 5*time.Minute, "laads"),
-		provider("mtg", true, 2, 1, 10*time.Minute, "eumetsat"),
-		provider("earthcare", true, 2, 1, 10*time.Minute, "earthcare"),
-		provider("calipso", true, 3, 2, 10*time.Minute, "earthdata"),
-		provider("cloudsat", true, 2, 2, 10*time.Minute, "cloudsat"),
-		provider("era5", true, 2, 2, 10*time.Minute, "cds"),
+		provider("goes", true, 4, 8, 2, 3*time.Minute, ""),
+		provider("himawari8", true, 1, 1, 1, 3*time.Minute, ""),
+		provider("himawari9", true, 1, 1, 1, 3*time.Minute, ""),
+		provider("modis", true, 4, 4, 2, 5*time.Minute, "laads"),
+		provider("viirs", true, 4, 4, 2, 5*time.Minute, "laads"),
+		provider("mtg", true, 2, 2, 1, 10*time.Minute, "eumetsat"),
+		provider("earthcare", true, 2, 2, 1, 10*time.Minute, "earthcare"),
+		provider("calipso", true, 3, 3, 2, 10*time.Minute, "earthdata"),
+		provider("cloudsat", true, 2, 2, 2, 10*time.Minute, "cloudsat"),
+		provider("era5", true, 2, 2, 2, 10*time.Minute, "cds"),
 	}
 	return Config{
 		SocketPath:           env("SATDOWN_SOCKET", filepath.Join(runtime, "satellite-data-downloader", "downloader.sock")),
@@ -64,16 +65,18 @@ func runtimeRoot(home string) string {
 	return filepath.Join(home, ".local", "state")
 }
 
-func provider(source string, enabled bool, transfers, verifiers int, timeout time.Duration, authRef string) Provider {
+func provider(source string, enabled bool, initialTransfers, maxTransfers, verifiers int, timeout time.Duration, authRef string) Provider {
 	prefix := "SATDOWN_" + strings.ToUpper(strings.ReplaceAll(source, "-", "_"))
+	transferConcurrency := envInt(prefix+"_TRANSFER_CONCURRENCY", maxTransfers, 1, 32)
 	return Provider{
-		SourceID:            source,
-		ArchiveRoot:         strings.TrimSpace(os.Getenv(prefix + "_ARCHIVE_ROOT")),
-		Enabled:             envBool(prefix+"_ENABLED", enabled),
-		TransferConcurrency: envInt(prefix+"_TRANSFER_CONCURRENCY", transfers, 1, 32),
-		VerifyConcurrency:   envInt(prefix+"_VERIFY_CONCURRENCY", verifiers, 1, 32),
-		RequestTimeout:      envDuration(prefix+"_REQUEST_TIMEOUT", timeout),
-		AuthRef:             authRef,
+		SourceID:                   source,
+		ArchiveRoot:                strings.TrimSpace(os.Getenv(prefix + "_ARCHIVE_ROOT")),
+		Enabled:                    envBool(prefix+"_ENABLED", enabled),
+		InitialTransferConcurrency: envInt(prefix+"_INITIAL_TRANSFER_CONCURRENCY", min(initialTransfers, transferConcurrency), 1, transferConcurrency),
+		TransferConcurrency:        transferConcurrency,
+		VerifyConcurrency:          envInt(prefix+"_VERIFY_CONCURRENCY", verifiers, 1, 32),
+		RequestTimeout:             envDuration(prefix+"_REQUEST_TIMEOUT", timeout),
+		AuthRef:                    authRef,
 	}
 }
 

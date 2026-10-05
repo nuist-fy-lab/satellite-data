@@ -41,6 +41,9 @@ Network starts are paced separately per provider: the interval starts at
 200 ms, rises on repeated 408/429/5xx or timeouts (up to 5 seconds), and
 falls after sustained success (no less than 100 ms). The existing adaptive
 transfer concurrency stays between 1 and the configured per-provider maximum.
+GOES defaults to an initial concurrency of 4 with a ceiling of 8; other
+providers start at their configured ceiling unless
+`SATDOWN_<PROVIDER>_INITIAL_TRANSFER_CONCURRENCY` overrides it.
 When supplied, `Retry-After` also delays new transfers for that provider,
 up to one hour; individual task retries remain durable and jittered.
 Himawari-8/9 use independent single-transfer/single-verifier pools by default

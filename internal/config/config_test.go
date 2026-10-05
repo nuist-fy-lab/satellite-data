@@ -5,11 +5,40 @@ import (
 	"testing"
 )
 
+func TestGOESAdaptiveTransferDefaults(t *testing.T) {
+	t.Setenv("SATDOWN_GOES_INITIAL_TRANSFER_CONCURRENCY", "")
+	t.Setenv("SATDOWN_GOES_TRANSFER_CONCURRENCY", "")
+	cfg := Load()
+	for _, p := range cfg.Providers {
+		if p.SourceID == "goes" {
+			if p.InitialTransferConcurrency != 4 || p.TransferConcurrency != 8 || p.VerifyConcurrency != 2 {
+				t.Fatalf("invalid GOES defaults: %+v", p)
+			}
+			return
+		}
+	}
+	t.Fatal("GOES transfer worker missing")
+}
+
+func TestInitialTransferConcurrencyNeverExceedsCeiling(t *testing.T) {
+	t.Setenv("SATDOWN_GOES_TRANSFER_CONCURRENCY", "3")
+	t.Setenv("SATDOWN_GOES_INITIAL_TRANSFER_CONCURRENCY", "8")
+	for _, p := range Load().Providers {
+		if p.SourceID == "goes" {
+			if p.InitialTransferConcurrency != 3 || p.TransferConcurrency != 3 {
+				t.Fatalf("GOES concurrency was not clamped to ceiling: %+v", p)
+			}
+			return
+		}
+	}
+	t.Fatal("GOES transfer worker missing")
+}
+
 func TestERA5WorkerUsesCentreIPC(t *testing.T) {
 	cfg := Load()
 	for _, p := range cfg.Providers {
 		if p.SourceID == "era5" {
-			if !p.Enabled || p.TransferConcurrency != 2 || p.VerifyConcurrency != 2 || p.AuthRef != "cds" {
+			if !p.Enabled || p.InitialTransferConcurrency != 2 || p.TransferConcurrency != 2 || p.VerifyConcurrency != 2 || p.AuthRef != "cds" {
 				t.Fatalf("invalid ERA5 defaults: %+v", p)
 			}
 			return
