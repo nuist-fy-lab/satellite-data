@@ -49,6 +49,14 @@ type IntegrityError struct {
 
 func (e *IntegrityError) Error() string { return e.Detail }
 
+type CollisionError struct {
+	Path string
+}
+
+func (e *CollisionError) Error() string {
+	return "archive target already exists with different content: " + e.Path
+}
+
 type DownloadResult struct {
 	Path string
 	Size int64
@@ -298,7 +306,7 @@ func (h *HTTP) request(ctx context.Context, locator string, resumeFrom int64, et
 	return h.client.Do(req)
 }
 
-func Promote(task model.Task, archiveRoot string) (PromoteResult, error) {
+func Promote(task model.Task, archiveRoot string, groupWritable ...bool) (PromoteResult, error) {
 	name, err := safeName(task.Name)
 	if err != nil {
 		return PromoteResult{}, err
@@ -323,21 +331,31 @@ func Promote(task model.Task, archiveRoot string) (PromoteResult, error) {
 	}
 
 	targetDir := filepath.Join(archiveRoot, relative)
-	if err := os.MkdirAll(targetDir, 0o750); err != nil {
+	shared := len(groupWritable) > 0 && groupWritable[0]
+	if err := ensureArchiveDirectory(archiveRoot, relative, shared); err != nil {
 		return PromoteResult{}, err
 	}
 	target := filepath.Join(targetDir, name)
-	if existing, err := os.Stat(target); err == nil && existing.Size() == info.Size() {
-		existingDigest, digestErr := fileSHA256(target)
-		if digestErr == nil && existingDigest == digest {
-			_ = os.Remove(task.StagingPath)
-			return PromoteResult{Path: target, Size: existing.Size(), SHA256: digest}, nil
+	if existing, err := os.Lstat(target); err == nil {
+		if !existing.Mode().IsRegular() || existing.Size() != info.Size() {
+			return PromoteResult{}, &CollisionError{Path: target}
 		}
+		existingDigest, digestErr := fileSHA256(target)
+		if digestErr != nil {
+			return PromoteResult{}, digestErr
+		}
+		if existingDigest != digest {
+			return PromoteResult{}, &CollisionError{Path: target}
+		}
+		_ = os.Remove(task.StagingPath)
+		return PromoteResult{Path: target, Size: existing.Size(), SHA256: digest}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return PromoteResult{}, err
 	}
 
 	temp := filepath.Join(targetDir, fmt.Sprintf(".%s.task-%d.tmp", name, task.ID))
 	_ = os.Remove(temp)
-	if err := copyFile(task.StagingPath, temp); err != nil {
+	if err := copyFile(task.StagingPath, temp, shared); err != nil {
 		_ = os.Remove(temp)
 		return PromoteResult{}, err
 	}
@@ -350,8 +368,14 @@ func Promote(task model.Task, archiveRoot string) (PromoteResult, error) {
 		_ = os.Remove(temp)
 		return PromoteResult{}, &IntegrityError{Detail: "archive copy SHA-256 mismatch"}
 	}
-	if err := os.Rename(temp, target); err != nil {
+	if err := os.Link(temp, target); err != nil {
 		_ = os.Remove(temp)
+		if errors.Is(err, os.ErrExist) {
+			return PromoteResult{}, &CollisionError{Path: target}
+		}
+		return PromoteResult{}, err
+	}
+	if err := os.Remove(temp); err != nil {
 		return PromoteResult{}, err
 	}
 	if err := syncDir(targetDir); err != nil {
@@ -364,15 +388,67 @@ func Promote(task model.Task, archiveRoot string) (PromoteResult, error) {
 	return PromoteResult{Path: target, Size: info.Size(), SHA256: digest}, nil
 }
 
-func copyFile(source, destination string) error {
+func ensureArchiveDirectory(root, relative string, groupWritable bool) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("archive root must be a real directory")
+	}
+	current := root
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		mode := os.FileMode(0o750)
+		if groupWritable {
+			// Allow the parent ACL to propagate group write and public read.
+			mode = os.ModeSetgid | 0o777
+		}
+		created := false
+		if err := os.Mkdir(current, mode); err == nil {
+			created = true
+		} else if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return &CollisionError{Path: current}
+		}
+		if created && groupWritable && (info.Mode().Perm() != 0o775 || info.Mode()&os.ModeSetgid == 0) {
+			if err := os.Chmod(current, os.ModeSetgid|0o775); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func copyFile(source, destination string, shared bool) error {
 	in, err := os.Open(source)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_EXCL, 0o640)
+	mode := os.FileMode(0o640)
+	if shared {
+		mode = 0o666
+	}
+	out, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_EXCL, mode)
 	if err != nil {
 		return err
+	}
+	if shared {
+		info, err := out.Stat()
+		if err == nil && info.Mode().Perm() != 0o664 {
+			err = out.Chmod(0o664)
+		}
+		if err != nil {
+			_ = out.Close()
+			return err
+		}
 	}
 	_, copyErr := io.CopyBuffer(out, in, make([]byte, 1<<20))
 	syncErr := out.Sync()

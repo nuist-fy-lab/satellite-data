@@ -3,6 +3,7 @@ package access
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -75,6 +76,9 @@ func TestCentralIPCStreamsRangesWithoutAnyCredential(t *testing.T) {
 	if manager.Configured(context.Background(), "modis", "laads") {
 		t.Fatal("offline centre fell back to a credential")
 	}
+	if _, err := manager.Resolve(context.Background(), "modis", "laads", time.Second); !errors.Is(err, ErrCentralUnavailable) {
+		t.Fatalf("offline centre error=%v want ErrCentralUnavailable", err)
+	}
 }
 
 func TestCentralTransportRefusesMutation(t *testing.T) {
@@ -82,5 +86,13 @@ func TestCentralTransportRefusesMutation(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodPost, "https://example.test/", strings.NewReader("data"))
 	if _, err := (&centralTransport{manager: manager, source: "modis"}).RoundTrip(r); err == nil {
 		t.Fatal("mutation forwarded to centre")
+	}
+}
+
+func TestCentralTransportReportsUnavailableCentre(t *testing.T) {
+	manager, _ := NewManager(filepath.Join(t.TempDir(), "missing.sock"))
+	r, _ := http.NewRequest(http.MethodGet, "https://storage.googleapis.com/fixture", nil)
+	if _, err := (&centralTransport{manager: manager, source: "goes"}).RoundTrip(r); !errors.Is(err, ErrCentralUnavailable) {
+		t.Fatalf("transport error=%v want ErrCentralUnavailable", err)
 	}
 }

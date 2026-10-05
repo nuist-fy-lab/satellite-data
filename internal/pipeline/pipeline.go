@@ -149,7 +149,7 @@ func New(cfg config.Config, state *store.Store, accessManager *access.Manager) (
 	}
 	return &Runtime{
 		cfg: cfg, store: state, access: accessManager, provider: providers, flows: flows,
-		events: archiveevent.New(cfg.ArchiveEventSocket),
+		events: archiveevent.New(cfg.ArchiveEventSocket, state),
 	}, nil
 }
 
@@ -241,7 +241,11 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 			return
 		case <-poll.C:
 		}
-		if worker == 0 && provider.AuthRef != "" && r.access.Configured(ctx, provider.SourceID, provider.AuthRef) {
+		// A task can enter waiting_auth whenever the centre reports no usable
+		// route. Anonymous providers such as GOES have an empty AuthRef, but
+		// still depend on the centre for direct/proxy routing. Release their
+		// waiting tasks as soon as the centre reports a usable route again.
+		if worker == 0 && r.access.Configured(ctx, provider.SourceID, provider.AuthRef) {
 			if err := r.store.ReleaseWaitingAuth(ctx, provider.SourceID); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Warn("release provider auth wait", "provider", provider.SourceID, "worker", worker, "error", err)
 			}
@@ -360,8 +364,18 @@ func (r *Runtime) verifyLoop(ctx context.Context, provider config.Provider, work
 			poll.Reset(150 * time.Millisecond)
 			continue
 		}
-		result, err := transfer.Promote(task, r.cfg.ArchiveRoot)
+		archiveRoot := provider.ArchiveRoot
+		if archiveRoot == "" {
+			archiveRoot = r.cfg.ArchiveRoot
+		}
+		result, err := transfer.Promote(task, archiveRoot, provider.ArchiveRoot != "" || r.cfg.ArchiveGroupWritable)
 		if err != nil {
+			var collision *transfer.CollisionError
+			if errors.As(err, &collision) {
+				_ = r.store.RetryVerification(context.WithoutCancel(ctx), task.ID, err, time.Hour)
+				poll.Reset(25 * time.Millisecond)
+				continue
+			}
 			var integrity *transfer.IntegrityError
 			if errors.As(err, &integrity) || errors.Is(err, os.ErrNotExist) {
 				_ = os.Remove(task.StagingPath)
@@ -375,11 +389,7 @@ func (r *Runtime) verifyLoop(ctx context.Context, provider config.Provider, work
 		if err := r.store.Complete(context.WithoutCancel(ctx), task.ID, result.Path, result.SHA256, result.Size); err != nil {
 			slog.Warn("checkpoint provider promotion", "provider", provider.SourceID, "task", task.ID, "error", err)
 		} else {
-			r.events.Notify(archiveevent.Event{
-				TaskID: task.ID, SourceID: task.SourceID, CollectionID: task.CollectionID,
-				GranuleID: task.GranuleID, Filename: task.Name, ArchivePath: result.Path,
-				Size: result.Size, SHA256: result.SHA256,
-			})
+			r.events.Notify()
 		}
 		poll.Reset(10 * time.Millisecond)
 	}
@@ -427,6 +437,8 @@ func allowedHost(sourceID, host string) bool {
 		return host == "data.asdc.earthdata.nasa.gov"
 	case "cloudsat":
 		return host == "dpc-thredds.cira.colostate.edu"
+	case "era5":
+		return host == "cds.climate.copernicus.eu"
 	case "himawari8":
 		return host == "noaa-himawari8.s3.amazonaws.com"
 	case "himawari9":

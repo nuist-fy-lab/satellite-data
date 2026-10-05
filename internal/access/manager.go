@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -15,6 +16,7 @@ import (
 )
 
 var ErrNoRoute = errors.New("no usable central access route")
+var ErrCentralUnavailable = errors.New("central access service unavailable")
 
 type Route struct {
 	AccountID             int64
@@ -40,35 +42,42 @@ func NewManager(socket string) (*Manager, error) {
 	return &Manager{client: &http.Client{Transport: transport}}, nil
 }
 
-func (m *Manager) configured(ctx context.Context, source string) bool {
+func (m *Manager) status(ctx context.Context, source string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if time.Since(m.checked) < 5*time.Second {
-		return m.providers[source]
+		return m.providers[source], nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://central/v1/access/status", nil)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("%w: %v", ErrCentralUnavailable, err)
 	}
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("%w: %v", ErrCentralUnavailable, err)
 	}
 	defer resp.Body.Close()
 	var status struct {
 		Providers map[string]bool `json:"providers"`
 	}
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&status) != nil {
-		return false
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("%w: status %s", ErrCentralUnavailable, resp.Status)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return false, fmt.Errorf("%w: invalid status response: %v", ErrCentralUnavailable, err)
 	}
 	m.providers, m.checked = status.Providers, time.Now()
-	return m.providers[source]
+	return m.providers[source], nil
 }
 
 func (m *Manager) Resolve(ctx context.Context, source, _ string, timeout time.Duration) (Route, error) {
-	if !m.configured(ctx, source) {
+	configured, err := m.status(ctx, source)
+	if err != nil {
+		return Route{}, err
+	}
+	if !configured {
 		return Route{}, ErrNoRoute
 	}
 	client := &http.Client{Transport: &centralTransport{manager: m, source: source}, Timeout: timeout}
@@ -76,10 +85,12 @@ func (m *Manager) Resolve(ctx context.Context, source, _ string, timeout time.Du
 }
 
 func (m *Manager) HasUsableRoute(ctx context.Context, source, _ string, _ time.Duration) bool {
-	return m.configured(ctx, source)
+	configured, _ := m.status(ctx, source)
+	return configured
 }
 func (m *Manager) Configured(ctx context.Context, source, _ string) bool {
-	return m.configured(ctx, source)
+	configured, _ := m.status(ctx, source)
+	return configured
 }
 func (m *Manager) MarkSuccess(context.Context, Route)              {}
 func (m *Manager) MarkAuthFailure(context.Context, Route, string)  { m.invalidate() }
@@ -111,7 +122,7 @@ func (t *centralTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	forward.Header.Set("Content-Type", "application/json")
 	resp, err := t.manager.client.Do(forward)
 	if err != nil {
-		return nil, errors.New("central transfer unavailable")
+		return nil, fmt.Errorf("%w: fetch: %v", ErrCentralUnavailable, err)
 	}
 	resp.Request = req
 	return resp, nil
