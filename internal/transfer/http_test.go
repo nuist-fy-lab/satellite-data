@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
 )
@@ -169,6 +170,51 @@ func TestDownloadResumesOnlyMatchingObject(t *testing.T) {
 	data, err := os.ReadFile(result.Path)
 	if err != nil || string(data) != "1234567890" || requests != 2 {
 		t.Fatalf("resumed content=%q requests=%d err=%v", data, requests, err)
+	}
+}
+
+func TestDownloadIdleTimeoutTracksProgressNotTotalDuration(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"slow"`)
+		w.Header().Set("Content-Length", "6")
+		for _, b := range []byte("123456") {
+			_, _ = w.Write([]byte{b})
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	task := model.Task{ID: 43, TaskSpec: model.TaskSpec{SourceID: "goes", Name: "slow.nc", URL: server.URL, Size: 6}}
+	result, err := NewHTTP(server.Client(), 25*time.Millisecond).Download(context.Background(), task, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Size != 6 {
+		t.Fatalf("downloaded size=%d want 6", result.Size)
+	}
+}
+
+func TestDownloadIdleTimeoutStopsStalledBody(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"stalled"`)
+		w.Header().Set("Content-Length", "2")
+		_, _ = w.Write([]byte("1"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(80 * time.Millisecond)
+		_, _ = w.Write([]byte("2"))
+	}))
+	defer server.Close()
+
+	task := model.Task{ID: 44, TaskSpec: model.TaskSpec{SourceID: "goes", Name: "stalled.nc", URL: server.URL, Size: 2}}
+	_, err := NewHTTP(server.Client(), 25*time.Millisecond).Download(context.Background(), task, t.TempDir(), nil)
+	var idle *IdleTimeoutError
+	if !errors.As(err, &idle) {
+		t.Fatalf("error=%v want IdleTimeoutError", err)
 	}
 }
 

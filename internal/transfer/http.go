@@ -69,10 +69,11 @@ type PromoteResult struct {
 }
 
 type HTTP struct {
-	client *http.Client
+	client      *http.Client
+	idleTimeout time.Duration
 }
 
-func NewHTTP(timeoutClient *http.Client) *HTTP {
+func NewHTTP(timeoutClient *http.Client, idleTimeout ...time.Duration) *HTTP {
 	if timeoutClient == nil {
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.MaxIdleConns = 256
@@ -80,7 +81,80 @@ func NewHTTP(timeoutClient *http.Client) *HTTP {
 		transport.IdleConnTimeout = 90 * time.Second
 		timeoutClient = &http.Client{Transport: transport}
 	}
-	return &HTTP{client: timeoutClient}
+	var idle time.Duration
+	if len(idleTimeout) > 0 {
+		idle = idleTimeout[0]
+	}
+	return &HTTP{client: timeoutClient, idleTimeout: idle}
+}
+
+type IdleTimeoutError struct {
+	Duration time.Duration
+}
+
+func (e *IdleTimeoutError) Error() string {
+	return fmt.Sprintf("download made no progress for %s", e.Duration)
+}
+
+func (e *IdleTimeoutError) Timeout() bool   { return true }
+func (e *IdleTimeoutError) Temporary() bool { return true }
+
+type idleWatchdog struct {
+	pulse chan struct{}
+	stop  chan struct{}
+	done  chan struct{}
+}
+
+func newIdleWatchdog(timeout time.Duration, cancel context.CancelCauseFunc) *idleWatchdog {
+	if timeout <= 0 {
+		return nil
+	}
+	w := &idleWatchdog{
+		pulse: make(chan struct{}, 1),
+		stop:  make(chan struct{}),
+		done:  make(chan struct{}),
+	}
+	go func() {
+		defer close(w.done)
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		for {
+			select {
+			case <-w.pulse:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(timeout)
+			case <-timer.C:
+				cancel(&IdleTimeoutError{Duration: timeout})
+				return
+			case <-w.stop:
+				return
+			}
+		}
+	}()
+	return w
+}
+
+func (w *idleWatchdog) Pulse() {
+	if w == nil {
+		return
+	}
+	select {
+	case w.pulse <- struct{}{}:
+	default:
+	}
+}
+
+func (w *idleWatchdog) Stop() {
+	if w == nil {
+		return
+	}
+	close(w.stop)
+	<-w.done
 }
 
 type partIdentity struct {
@@ -99,6 +173,17 @@ func urlHash(value string) string {
 }
 
 func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot string, authorizer auth.Authorizer, onProgress ...func(int64)) (DownloadResult, error) {
+	requestCtx := ctx
+	var cancel context.CancelCauseFunc
+	var watchdog *idleWatchdog
+	if h.idleTimeout > 0 {
+		requestCtx, cancel = context.WithCancelCause(ctx)
+		watchdog = newIdleWatchdog(h.idleTimeout, cancel)
+		defer func() {
+			watchdog.Stop()
+			cancel(nil)
+		}()
+	}
 	name, err := safeName(task.Name)
 	if err != nil {
 		return DownloadResult{}, err
@@ -150,20 +235,28 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 		}
 	}
 
-	resp, err := h.request(ctx, task.URL, resumeFrom, identity.ETag, authorizer)
+	resp, err := h.request(requestCtx, task.URL, resumeFrom, identity.ETag, authorizer)
 	if err != nil {
+		if cause := context.Cause(requestCtx); cause != nil && cause != context.Canceled && cause != context.DeadlineExceeded {
+			return DownloadResult{}, cause
+		}
 		return DownloadResult{}, err
 	}
+	watchdog.Pulse()
 	if resumeFrom > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		_ = resp.Body.Close()
 		if err := discardPart(partPath, metaPath); err != nil {
 			return DownloadResult{}, err
 		}
 		resumeFrom = 0
-		resp, err = h.request(ctx, task.URL, 0, "", authorizer)
+		resp, err = h.request(requestCtx, task.URL, 0, "", authorizer)
 		if err != nil {
+			if cause := context.Cause(requestCtx); cause != nil && cause != context.Canceled && cause != context.DeadlineExceeded {
+				return DownloadResult{}, cause
+			}
 			return DownloadResult{}, err
 		}
+		watchdog.Pulse()
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
@@ -234,13 +327,21 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 		return DownloadResult{}, err
 	}
 	var destination io.Writer = handle
-	if len(onProgress) > 0 && onProgress[0] != nil {
-		destination = progressWriter{Writer: handle, report: onProgress[0]}
+	if watchdog != nil || len(onProgress) > 0 && onProgress[0] != nil {
+		destination = progressWriter{Writer: handle, report: func(n int64) {
+			watchdog.Pulse()
+			if len(onProgress) > 0 && onProgress[0] != nil {
+				onProgress[0](n)
+			}
+		}}
 	}
 	_, copyErr := io.CopyBuffer(destination, resp.Body, make([]byte, 1<<20))
 	syncErr := handle.Sync()
 	closeErr := handle.Close()
 	if copyErr != nil {
+		if cause := context.Cause(requestCtx); cause != nil && cause != context.Canceled && cause != context.DeadlineExceeded {
+			return DownloadResult{}, fmt.Errorf("download body: %w", cause)
+		}
 		return DownloadResult{}, fmt.Errorf("download body: %w", copyErr)
 	}
 	if syncErr != nil {

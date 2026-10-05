@@ -80,8 +80,8 @@ func (m *Manager) Resolve(ctx context.Context, source, _ string, timeout time.Du
 	if !configured {
 		return Route{}, ErrNoRoute
 	}
-	client := &http.Client{Transport: &centralTransport{manager: m, source: source}, Timeout: timeout}
-	return Route{Transfer: transfer.NewHTTP(client)}, nil
+	client := &http.Client{Transport: &centralTransport{manager: m, source: source}}
+	return Route{Transfer: transfer.NewHTTP(client, timeout)}, nil
 }
 
 func (m *Manager) HasUsableRoute(ctx context.Context, source, _ string, _ time.Duration) bool {

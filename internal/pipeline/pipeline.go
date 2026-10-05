@@ -282,9 +282,7 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 			_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, err, time.Second)
 			return
 		}
-		requestCtx, cancel := context.WithTimeout(ctx, provider.RequestTimeout)
-		result, err := route.Transfer.Download(requestCtx, task, r.cfg.DownloadRoot, route.Authorizer, flow.addBytes)
-		cancel()
+		result, err := route.Transfer.Download(ctx, task, r.cfg.DownloadRoot, route.Authorizer, flow.addBytes)
 		if err != nil {
 			flow.finish(false, isCongestion(err), provider.TransferConcurrency)
 			var httpErr *transfer.HTTPError
