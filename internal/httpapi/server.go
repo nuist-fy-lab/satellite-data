@@ -122,6 +122,18 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(data)
 	})
+	servePortal := func(w http.ResponseWriter, _ *http.Request) {
+		data, err := fs.ReadFile(static, "index.html")
+		if err != nil {
+			http.Error(w, "portal unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(data)
+	}
+	for _, path := range []string{"/calendar", "/sources", "/downloads", "/sync", "/monitor", "/cli", "/access"} {
+		mux.HandleFunc("GET "+path, servePortal)
+	}
 	mux.Handle("GET /", http.FileServerFS(static))
 	return withCompression(withHeaders(s.withPortalAuth(mux)))
 }

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=14">
+  <link rel="stylesheet" href="/styles.css?v=15">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -17,13 +17,13 @@
       <div class="sidebar-title">Satellite Data</div>
     </div>
     <nav class="sidebar-nav">
-      <button class="nav-item active" type="button" data-view="calendar-view"><span class="nav-icon">▦</span><span class="nav-label">数据日历</span></button>
-      <button class="nav-item" type="button" data-view="sources-view"><span class="nav-icon">◎</span><span class="nav-label">数据源</span></button>
-      <button class="nav-item" type="button" data-view="downloads-view"><span class="nav-icon">⇩</span><span class="nav-label">下载任务</span></button>
-      <button class="nav-item" type="button" data-view="sync-view"><span class="nav-icon">↻</span><span class="nav-label">同步订阅</span></button>
-      <button class="nav-item" type="button" data-view="monitor-view"><span class="nav-icon">∿</span><span class="nav-label">运行监控</span></button>
-      <button class="nav-item" type="button" data-view="cli-view"><span class="nav-icon">⌨</span><span class="nav-label">CLI</span></button>
-      <button class="nav-item" type="button" data-view="access-view" data-admin-only><span class="nav-icon">⌘</span><span class="nav-label">访问凭据</span></button>
+      <a class="nav-item active" href="/calendar" data-view="calendar-view"><span class="nav-icon">▦</span><span class="nav-label">数据日历</span></a>
+      <a class="nav-item" href="/sources" data-view="sources-view"><span class="nav-icon">◎</span><span class="nav-label">数据源</span></a>
+      <a class="nav-item" href="/downloads" data-view="downloads-view"><span class="nav-icon">⇩</span><span class="nav-label">下载任务</span></a>
+      <a class="nav-item" href="/sync" data-view="sync-view"><span class="nav-icon">↻</span><span class="nav-label">同步订阅</span></a>
+      <a class="nav-item" href="/monitor" data-view="monitor-view"><span class="nav-icon">∿</span><span class="nav-label">运行监控</span></a>
+      <a class="nav-item" href="/cli" data-view="cli-view"><span class="nav-icon">⌨</span><span class="nav-label">CLI</span></a>
+      <a class="nav-item" href="/access" data-view="access-view" data-admin-only><span class="nav-icon">⌘</span><span class="nav-label">访问凭据</span></a>
     </nav>
     <div class="sidebar-status" title="Satellite Data 服务状态">
       <i id="service-dot"></i><span class="nav-label" id="service-label">连接中</span>
@@ -342,6 +342,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=21"></script>
+  <script type="module" src="/app.js?v=22"></script>
 </body>
 </html>

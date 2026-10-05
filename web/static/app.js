@@ -107,6 +107,44 @@ function setView(id) {
   document.querySelectorAll('.nav-item').forEach(node => node.classList.toggle('active', node.dataset.view === id));
 }
 
+const viewPaths = Object.freeze({
+  'calendar-view': '/calendar',
+  'sources-view': '/sources',
+  'downloads-view': '/downloads',
+  'sync-view': '/sync',
+  'monitor-view': '/monitor',
+  'cli-view': '/cli',
+  'access-view': '/access',
+});
+const pathViews = new Map(Object.entries(viewPaths).map(([view, path]) => [path, view]));
+
+function viewFromPath(pathname = location.pathname) {
+  const normalized = pathname !== '/' ? pathname.replace(//+$/, '') : pathname;
+  if (normalized === '/' || normalized === '/index.html') return 'calendar-view';
+  return pathViews.get(normalized) || 'calendar-view';
+}
+
+function loadViewContent(id) {
+  if (id === 'sources-view') renderSources();
+  if (id === 'access-view') loadAccess();
+  if (id === 'cli-view') loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; });
+  if (id === 'monitor-view') loadMonitor(true);
+  if (id === 'downloads-view') { initializeDownloadSubmit(); loadDownloads(true); }
+}
+
+function navigateView(id, historyMode = 'none') {
+  if (!viewPaths[id]) id = 'calendar-view';
+  if (id === 'access-view' && state.access.user?.role !== 'admin') {
+    id = 'calendar-view';
+    historyMode = historyMode === 'none' ? 'replace' : historyMode;
+  }
+  setView(id);
+  const path = viewPaths[id];
+  if (historyMode === 'push' && location.pathname !== path) history.pushState({view: id}, '', path);
+  else if (historyMode === 'replace' && location.pathname !== path) history.replaceState({view: id}, '', path);
+  loadViewContent(id);
+}
+
 function selectedSource() {
   return state.sources.find(item => item.id === sourceEl.value);
 }
@@ -2303,14 +2341,12 @@ async function health() {
 
 function bind() {
   $('.sidebar-toggle').addEventListener('click', () => setSidebar(document.body.classList.contains('sidebar-collapsed'), true));
-  document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', () => {
-    setView(node.dataset.view);
-    if (node.dataset.view === 'sources-view') renderSources();
-    if (node.dataset.view === 'access-view') loadAccess();
-    if (node.dataset.view === 'cli-view') loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; });
-    if (node.dataset.view === 'monitor-view') loadMonitor(true);
-    if (node.dataset.view === 'downloads-view') { initializeDownloadSubmit(); loadDownloads(true); }
+  document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', event => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    navigateView(node.dataset.view, 'push');
   }));
+  window.addEventListener('popstate', () => navigateView(viewFromPath(), 'none'));
   sourceEl.addEventListener('change', () => { persistFilters(); loadCatalog(); });
   satelliteEl.addEventListener('change', () => { rebuildFilters('satellite'); persistFilters(); });
   instrumentEl.addEventListener('change', () => { rebuildFilters('instrument'); persistFilters(); });
@@ -2509,6 +2545,7 @@ async function boot() {
   $('#portal-user').textContent = session.user.username;
   document.querySelectorAll('[data-admin-only]').forEach(node => node.classList.toggle('hidden', session.user.role !== 'admin'));
   await Promise.allSettled([healthPromise, sourcesPromise]);
+  navigateView(viewFromPath(), 'none');
 }
 
 boot();
