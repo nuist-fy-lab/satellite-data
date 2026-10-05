@@ -11,11 +11,13 @@ import math
 import os
 import random
 import re
-import signal
 import socket
 import sqlite3
 import stat
+import threading
 import time
+from collections import OrderedDict
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 
@@ -68,11 +70,7 @@ def database_busy(exc):
         "database is locked", "database is busy", "database table is locked")
 
 
-def official_time_expired(_signum, _frame):
-    raise RetryableOfficialError("official stream exceeded time budget")
-
-
-def adjust_pacing(gap_ms, file_limit, error_rate, streak, success, max_files):
+def adjust_pacing(gap_ms, file_limit, error_rate, streak, success, max_files, recovery_streak=8):
     error_rate = error_rate * 0.8 + (0 if success else 0.2)
     if not success:
         streak = 0
@@ -81,7 +79,7 @@ def adjust_pacing(gap_ms, file_limit, error_rate, streak, success, max_files):
             file_limit = max(min(MIN_BATCH_FILES, max_files), file_limit // 2)
     else:
         streak += 1
-        if streak >= 8 and error_rate < 0.1:
+        if streak >= recovery_streak and error_rate < 0.1:
             gap_ms = max(MIN_GAP_MS, int(gap_ms * 0.8))
             file_limit = min(max_files, file_limit + 2)
             streak = 0
@@ -125,6 +123,19 @@ def archive_product_day(path, name, root):
     return rel[0], day
 
 
+def asset_reference(rows, day):
+    refs = {(row[1], row[2]) for row in rows if row[3][:10] == day[:4] + "-" + day[4:6] + "-" + day[6:]}
+    if len(refs) != 1:
+        return None
+    item, url = refs.pop()
+    if not url.startswith("https://catalog.maap.eo.esa.int/data/"):
+        return None
+    # Several access-class collections can expose the same physical asset.
+    matching = sorted(row[0] for row in rows if row[1] == item and row[2] == url)
+    preferred = next((key for key in matching if "Validated_MAAP:" in key), matching[0])
+    return preferred, item, url
+
+
 def official_asset(db, path, name, size, root):
     identity = archive_product_day(path, name, root)
     if identity is None:
@@ -136,16 +147,50 @@ def official_asset(db, path, name, size, root):
         "WHERE a.filename=? AND a.size=? AND p.source_id='earthcare' AND p.data_type=?",
         (name, size, product),
     ).fetchall()
-    refs = {(row[1], row[2]) for row in rows if row[3][:10] == day[:4] + "-" + day[4:6] + "-" + day[6:]}
-    if len(refs) != 1:
-        return None
-    item, url = refs.pop()
-    if not url.startswith("https://catalog.maap.eo.esa.int/data/"):
-        return None
-    # Several access-class collections can expose the same physical asset.
-    matching = sorted(row[0] for row in rows if row[1] == item and row[2] == url)
-    preferred = next((key for key in matching if "Validated_MAAP:" in key), matching[0])
-    return preferred, item, url
+    return asset_reference(rows, day)
+
+
+class OfficialAssetLRU:
+    """Cache bounded daily catalogues; evidence writes always query live references."""
+
+    def __init__(self, db, root, capacity=16, max_group_rows=4096):
+        self.db, self.root = db, root
+        self.capacity, self.max_group_rows = capacity, max_group_rows
+        self.entries = OrderedDict()
+        self.version = None
+        self.hits = self.misses = self.evictions = 0
+
+    def lookup(self, path, name, size):
+        identity = archive_product_day(path, name, self.root)
+        if identity is None:
+            return None
+        version = self.db.execute("PRAGMA data_version").fetchone()[0]
+        if version != self.version:
+            self.entries.clear()
+            self.version = version
+        if identity in self.entries:
+            self.hits += 1
+            self.entries.move_to_end(identity)
+            group = self.entries[identity]
+        else:
+            self.misses += 1
+            product, day = identity
+            stamp = day[:4] + "-" + day[4:6] + "-" + day[6:]
+            rows = self.db.execute(
+                "SELECT a.filename,a.size,a.product_key,a.granule_id,a.url,a.slot_ts "
+                "FROM official_assets a JOIN products p ON p.product_key=a.product_key "
+                "WHERE p.source_id='earthcare' AND p.data_type=? AND a.slot_ts LIKE ? LIMIT ?",
+                (product, stamp + "%", self.max_group_rows + 1)).fetchall()
+            if len(rows) > self.max_group_rows:
+                return official_asset(self.db, path, name, size, self.root)
+            group = {}
+            for filename, length, *reference in rows:
+                group.setdefault((filename, length), []).append(reference)
+            self.entries[identity] = group
+            if len(self.entries) > self.capacity:
+                self.entries.popitem(last=False)
+                self.evictions += 1
+        return asset_reference(group.get((name, size), []), identity[1])
 
 
 def local_digest(path, root, expected_size, expected_mtime):
@@ -168,20 +213,41 @@ def local_digest(path, root, expected_size, expected_mtime):
         os.close(fd)
 
 
-def official_digest(socket_path, url, size):
+def official_digest(socket_path, url, size, deadline=None):
     connection = UnixHTTP(socket_path)
     # Allow larger assets proportionally more time, but never an unbounded slow stream.
     budget = min(MAX_OFFICIAL_SECONDS, max(180, (size + (256 << 10) - 1) // (256 << 10)))
-    deadline = time.monotonic() + budget
-    previous_alarm = signal.signal(signal.SIGALRM, official_time_expired)
+    now = time.monotonic()
+    deadline = min(now + budget, deadline) if deadline is not None else now + budget
+    budget = max(0.001, deadline - now)
+    expired = threading.Event()
+    stream_socket = [None]
+
+    def interrupt():
+        expired.set()
+        active = stream_socket[0] or connection.sock
+        if active is not None:
+            try:
+                active.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    timer = threading.Timer(budget, interrupt)
+    timer.daemon = True
     try:
-        signal.setitimer(signal.ITIMER_REAL, budget)
+        timer.start()
         payload = json.dumps({"source_id": "earthcare", "url": url}).encode("utf-8")
         connection.request("POST", "/v1/fetch", payload, {"Content-Type": "application/json"})
+        # getresponse may detach a Connection: close socket while its body is still open.
+        stream_socket[0] = connection.sock
+        if expired.is_set():
+            raise RetryableOfficialError("official stream exceeded time budget")
         response = connection.getresponse()
         if response.status in (408, 429) or 500 <= response.status < 600:
-            raise RetryableOfficialError("official fetch HTTP %d" % response.status,
-                                         retry_after_seconds(response.getheader("Retry-After")))
+            error = RetryableOfficialError("official fetch HTTP %d" % response.status,
+                                          retry_after_seconds(response.getheader("Retry-After")))
+            error.source_pause = response.status == 429 or error.retry_after > 0
+            raise error
         if response.status != 200:
             raise ValueError("official fetch HTTP %d" % response.status)
         if response.getheader("Content-Length") and int(response.getheader("Content-Length")) != size:
@@ -197,11 +263,17 @@ def official_digest(socket_path, url, size):
             count += len(chunk)
             digest.update(chunk)
         if count != size:
+            if expired.is_set():
+                raise RetryableOfficialError("official stream exceeded time budget")
             raise RetryableOfficialError("official stream size differs from catalog")
         return digest.hexdigest()
+    except (OSError, http.client.HTTPException):
+        if expired.is_set():
+            raise RetryableOfficialError("official stream exceeded time budget")
+        raise
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_alarm)
+        timer.cancel()
+        timer.join()
         connection.close()
 
 
@@ -246,6 +318,8 @@ def progress_db(path):
     db.execute("CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), path TEXT NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS control (id INTEGER PRIMARY KEY CHECK(id=1), "
                "paused_until INTEGER NOT NULL DEFAULT 0)")
+    db.execute("CREATE TABLE IF NOT EXISTS inflight (path TEXT PRIMARY KEY,size INTEGER NOT NULL, "
+               "mtime_ns INTEGER NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS pacing (id INTEGER PRIMARY KEY CHECK(id=1), "
                "gap_ms INTEGER NOT NULL,file_limit INTEGER NOT NULL,error_rate REAL NOT NULL,"
                "success_streak INTEGER NOT NULL)")
@@ -537,6 +611,229 @@ def run(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
             "gap_ms": gap_ms, "file_limit": file_limit}
 
 
+def pipeline_content(row, asset, prior, root, socket_path, deadline):
+    path, name, size, mtime = row
+    retained = prior and prior[:2] == (size, mtime) and prior[2] == "record_pending"
+    result = {"phase": "local", "proof": ("", "", "", ""), "error": None,
+              "official_seconds": 0.0, "local_seconds": 0.0, "retained": bool(retained)}
+    try:
+        if retained:
+            if prior[6:9] != asset or not re.fullmatch(r"[0-9a-f]{64}", prior[9]):
+                raise ValueError("saved official proof or reference changed")
+            remote = prior[9]
+        else:
+            result["phase"] = "official"
+            started = time.monotonic()
+            try:
+                remote = official_digest(socket_path, asset[2], size, deadline)
+            finally:
+                result["official_seconds"] = time.monotonic() - started
+        result["phase"] = "local"
+        started = time.monotonic()
+        try:
+            local = local_digest(path, root, size, mtime)
+        finally:
+            result["local_seconds"] = time.monotonic() - started
+        if local != remote:
+            raise ValueError("official content SHA-256 mismatch")
+        result["proof"] = asset + (local,)
+        result["phase"] = "record"
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        result["error"] = exc
+    return result
+
+
+def run_pipeline(index, progress, root, socket_path, max_files, max_bytes, max_seconds,
+                 max_file_bytes=None, start_after="", pause_seconds=2, waiting_slots=4, cache_size=16):
+    if not 1 <= waiting_slots <= 8 or not 1 <= cache_size <= 128:
+        raise ValueError("waiting slots must be 1-8 and LRU capacity must be 1-128")
+    paused = progress.execute("SELECT paused_until FROM control WHERE id=1").fetchone()
+    if paused and paused[0] > time.time():
+        return {"failed": 0, "retrying": 0, "paused_until": paused[0]}
+    max_file_bytes = min(max_file_bytes or max_bytes, max_bytes)
+    saved = progress.execute("SELECT path FROM cursor WHERE id=1").fetchone()
+    cursor = saved[0] if saved else start_after
+    pacing = progress.execute("SELECT gap_ms,file_limit,error_rate,success_streak FROM pacing WHERE id=1").fetchone()
+    gap_ms, file_limit, error_rate, streak = pacing or (int(pause_seconds * 1000), min(20, max_files), 0.0, 0)
+    gap_ms = max(MIN_GAP_MS, min(MAX_GAP_MS, gap_ms)) if pause_seconds else 0
+    batch_limit = min(max_files, max(file_limit, waiting_slots * 2))
+    cache = OfficialAssetLRU(index, root, cache_size)
+    deadline = time.monotonic() + max_seconds
+    next_launch = time.monotonic()
+    pending, seen = {}, set()
+    inspected = submitted = fetched = used = verified = unmatched = skipped = failed = retrying = peak = 0
+    official_seconds = local_seconds = record_seconds = 0.0
+    admission_stopped = sweep_finished = False
+    retry_turn = True
+
+    def choose_row():
+        nonlocal cursor, retry_turn, sweep_finished
+        # Durable claims recover submissions after interruption, before advancing the scan.
+        for path, size, mtime in progress.execute("SELECT path,size,mtime_ns FROM inflight ORDER BY path").fetchall():
+            if path in seen:
+                continue
+            row = index.execute("SELECT path,filename,size,mtime_ns FROM local_files "
+                                "WHERE path=? AND size=? AND mtime_ns=? AND state='unverified'",
+                                (path, size, mtime)).fetchone()
+            if row and row[2] <= max_file_bytes and path.startswith(root + os.sep):
+                return row
+            progress.execute("DELETE FROM inflight WHERE path=?", (path,))
+            progress.commit()
+        due = None
+        for path, size, mtime in progress.execute(
+                "SELECT path,size,mtime_ns FROM attempts WHERE state IN "
+                "('retry_scheduled','retry_deferred','record_pending') AND next_retry_at<=? "
+                "AND path LIKE ? AND size<=? ORDER BY state='record_pending' DESC,next_retry_at LIMIT 1000",
+                (int(time.time()), root + '/%', max_file_bytes)).fetchall():
+            if path in seen:
+                continue
+            due = index.execute("SELECT path,filename,size,mtime_ns FROM local_files "
+                                "WHERE path=? AND size=? AND mtime_ns=? AND state='unverified'",
+                                (path, size, mtime)).fetchone()
+            if due:
+                break
+            progress.execute("UPDATE attempts SET state='stale',next_retry_at=0 WHERE path=?", (path,))
+            progress.commit()
+        if due and retry_turn:
+            retry_turn = False
+            return due
+        rows = candidates(index, root, cursor, max_file_bytes, 1)
+        if rows:
+            retry_turn = True
+            cursor = rows[0][0]
+            return rows[0]
+        sweep_finished = True
+        return due
+
+    def audit(row, state, detail="", proof=("", "", "", ""), count=0, due=0):
+        path, name, size, mtime = row
+        progress.execute("INSERT OR REPLACE INTO attempts "
+                         "(path,size,mtime_ns,state,detail,checked_at,official_collection,official_item,"
+                         "official_url,sha256,retry_count,next_retry_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (path, size, mtime, state, detail, int(time.time())) + proof + (count, due))
+        progress.execute("DELETE FROM inflight WHERE path=?", (path,))
+        progress.commit()
+
+    with ThreadPoolExecutor(max_workers=waiting_slots) as pool:
+        while True:
+            # Finalize whichever slot completes first; a slow first slot cannot block later proofs.
+            for future in [f for f in pending if f.done()]:
+                row, asset, prior = pending.pop(future)
+                result = future.result()
+                official_seconds += result["official_seconds"]
+                local_seconds += result["local_seconds"]
+                error = result["error"]
+                if error is None:
+                    started = time.monotonic()
+                    try:
+                        record(index, *row, result["proof"][3], *asset, root)
+                    except (OSError, ValueError, sqlite3.Error) as exc:
+                        error = exc
+                    finally:
+                        record_seconds += time.monotonic() - started
+                state, count, due = "matched", 0, 0
+                if error is None:
+                    verified += 1
+                else:
+                    failed += 1
+                    state = "pending_review"
+                    if result["phase"] == "official" and isinstance(
+                            error, (RetryableOfficialError, OSError, http.client.HTTPException)):
+                        count = (prior[4] if prior and prior[:2] == (row[2], row[3]) else 0) + 1
+                        state, delay = transient_retry(count, getattr(error, "retry_after", 0))
+                        due = int(time.time()) + delay
+                        retrying += 1
+                    elif result["phase"] == "record" and database_busy(error):
+                        state = "record_pending"
+                        count = min(16, prior[4] + 1 if result["retained"] else 1)
+                        due = int(time.time()) + retry_delay(count)
+                        retrying += 1
+                    if getattr(error, "source_pause", False) or getattr(error, "retry_after", 0) or str(error) in (
+                            "official fetch HTTP 401", "official fetch HTTP 403"):
+                        admission_stopped = True
+                        pause = max(60, getattr(error, "retry_after", 0))
+                        if state == "pending_review":
+                            pause = max(pause, 900)
+                        previous_pause = progress.execute("SELECT paused_until FROM control WHERE id=1").fetchone()
+                        until = max(int(time.time()) + pause, previous_pause[0] if previous_pause else 0)
+                        progress.execute("INSERT OR REPLACE INTO control VALUES(1,?)", (until,))
+                if pause_seconds and not result["retained"] and (error is None or result["phase"] == "official"):
+                    gap_ms, file_limit, error_rate, streak = adjust_pacing(
+                        gap_ms, file_limit, error_rate, streak, error is None, max_files, recovery_streak=4)
+                    progress.execute("INSERT OR REPLACE INTO pacing VALUES(1,?,?,?,?)",
+                                     (gap_ms, file_limit, error_rate, streak))
+                audit(row, state, str(error)[:160] if error else "", result["proof"], count, due)
+            if (not admission_stopped and len(pending) < waiting_slots and submitted < batch_limit
+                    and inspected < 1000 and time.monotonic() < deadline
+                    and time.monotonic() >= next_launch):
+                row = choose_row()
+                if row is None:
+                    admission_stopped = True
+                    continue
+                inspected += 1
+                path, name, size, mtime = row
+                if path in seen:
+                    progress.execute("INSERT OR REPLACE INTO cursor VALUES(1,?)", (cursor,))
+                    progress.commit()
+                    continue
+                seen.add(path)
+                prior = progress.execute("SELECT size,mtime_ns,state,checked_at,retry_count,next_retry_at,"
+                                         "official_collection,official_item,official_url,sha256 "
+                                         "FROM attempts WHERE path=?", (path,)).fetchone()
+                if prior and prior[:2] == (size, mtime) and (
+                        prior[2] in ("matched", "pending_review") or
+                        prior[2] in ("retry_scheduled", "retry_deferred", "record_pending") and prior[5] > time.time() or
+                        prior[2] == "no_unique_official_asset" and time.time() - prior[3] < 86400):
+                    skipped += 1
+                    progress.execute("INSERT OR REPLACE INTO cursor VALUES(1,?)", (cursor,))
+                    progress.commit()
+                    continue
+                asset = cache.lookup(path, name, size)
+                if asset is None:
+                    unmatched += 1
+                    progress.execute("INSERT OR REPLACE INTO cursor VALUES(1,?)", (cursor,))
+                    audit(row, "no_unique_official_asset")
+                    continue
+                retained = prior and prior[:2] == (size, mtime) and prior[2] == "record_pending"
+                progress.execute("INSERT OR REPLACE INTO inflight VALUES(?,?,?)", (path, size, mtime))
+                progress.execute("INSERT OR REPLACE INTO cursor VALUES(1,?)", (cursor,))
+                progress.commit()
+                if not retained and size > max_bytes - used:
+                    admission_stopped = True
+                    continue
+                if not retained:
+                    fetched += 1
+                    used += size
+                future = pool.submit(pipeline_content, row, asset, prior, root, socket_path, deadline)
+                pending[future] = (row, asset, prior)
+                submitted += 1
+                peak = max(peak, len(pending))
+                next_launch = time.monotonic() + (gap_ms / 1000 if not retained else 0)
+                continue
+            done_admitting = admission_stopped or submitted >= batch_limit or inspected >= 1000 or time.monotonic() >= deadline
+            if not pending and done_admitting:
+                break
+            delay = 0.25 if done_admitting else max(0.001, min(0.25, next_launch - time.monotonic()))
+            if pending:
+                wait(tuple(pending), timeout=delay, return_when=FIRST_COMPLETED)
+            else:
+                time.sleep(delay)
+    if sweep_finished:
+        progress.execute("INSERT OR REPLACE INTO cursor VALUES(1,'')")
+        if submitted == 0:
+            due = progress.execute("SELECT min(next_retry_at) FROM attempts WHERE state IN "
+                                   "('retry_scheduled','retry_deferred','record_pending')").fetchone()[0]
+            progress.execute("INSERT OR REPLACE INTO control VALUES(1,?)",
+                             (min(int(time.time()) + 3600, due) if due else int(time.time()) + 3600,))
+        progress.commit()
+    return {"inspected": inspected, "fetched": fetched, "verified": verified, "skipped": skipped,
+            "unmatched": unmatched, "failed": failed, "retrying": retrying, "bytes_requested": used,
+            "waiting_slots": waiting_slots, "peak_slots": peak, "gap_ms": gap_ms, "file_limit": batch_limit,
+            "official_seconds": round(official_seconds, 3), "local_seconds": round(local_seconds, 3),
+            "record_seconds": round(record_seconds, 3), "lru_hits": cache.hits,
+            "lru_misses": cache.misses, "lru_evictions": cache.evictions}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-db", required=True)
@@ -549,11 +846,15 @@ def main():
     parser.add_argument("--max-seconds", type=int, default=900)
     parser.add_argument("--start-after", default="", help="only used before the first run of a progress database")
     parser.add_argument("--pause-seconds", type=float, default=2)
+    parser.add_argument("--waiting-slots", type=int, default=4, help="bounded concurrent content checks (1-8)")
+    parser.add_argument("--match-cache-size", type=int, default=16, help="LRU daily catalogue groups (1-128)")
     parser.add_argument("--repair-layout-evidence", action="store_true",
                         help="rehash relocated official proof and invalidate obsolete monthly lookup failures")
     args = parser.parse_args()
     if min(args.max_files, args.max_bytes, args.max_file_bytes, args.max_seconds) <= 0 or args.pause_seconds < 0:
         parser.error("limits must be positive")
+    if not 1 <= args.waiting_slots <= 8 or not 1 <= args.match_cache_size <= 128:
+        parser.error("waiting slots must be 1-8 and LRU capacity must be 1-128")
     root = os.path.realpath(args.root)
     if args.start_after and not args.start_after.startswith(root + os.sep):
         parser.error("start-after must be inside shared root")
@@ -569,8 +870,9 @@ def main():
             if args.repair_layout_evidence:
                 print(json.dumps(repair_layout_evidence(index, progress, root), sort_keys=True), flush=True)
                 return
-            result = run(index, progress, root, args.socket, args.max_files, args.max_bytes, args.max_seconds,
-                         args.max_file_bytes, args.start_after, args.pause_seconds)
+            result = run_pipeline(index, progress, root, args.socket, args.max_files, args.max_bytes, args.max_seconds,
+                                  args.max_file_bytes, args.start_after, args.pause_seconds,
+                                  args.waiting_slots, args.match_cache_size)
             if "paused_until" not in result:
                 print(json.dumps(result, sort_keys=True))
             if result["failed"] > result["retrying"]:

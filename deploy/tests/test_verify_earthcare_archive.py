@@ -2,7 +2,6 @@ import hashlib
 import http.server
 import importlib.util
 import os
-import signal
 import sqlite3
 import socketserver
 import tempfile
@@ -337,11 +336,17 @@ class HistoricalVerificationTest(unittest.TestCase):
         connection.close.assert_called_once()
 
     def test_hard_deadline_interrupts_blocking_official_read(self):
+        interrupted = threading.Event()
         response = mock.Mock(status=200)
         response.getheader.return_value = None
-        response.read1.side_effect = lambda _: signal.pause()
+        def blocked_read(_):
+            if not interrupted.wait(2):
+                raise AssertionError("deadline did not interrupt the read")
+            return b""
+        response.read1.side_effect = blocked_read
         connection = mock.Mock()
         connection.getresponse.return_value = response
+        connection.sock.shutdown.side_effect = lambda _: interrupted.set()
         with mock.patch.object(verify, "UnixHTTP", return_value=connection), mock.patch.object(
             verify, "MAX_OFFICIAL_SECONDS", 0.02
         ):
@@ -349,12 +354,221 @@ class HistoricalVerificationTest(unittest.TestCase):
                 verify.official_digest("unused", self.url, 10)
         connection.close.assert_called_once()
 
+    def add_pipeline_file(self, suffix):
+        name = self.name.replace("11979C", "11979" + suffix)
+        path = os.path.join(os.path.dirname(self.path), name)
+        with open(path, "wb") as output:
+            output.write(self.content)
+        mtime = os.stat(path).st_mtime_ns
+        self.index.execute("INSERT INTO local_files VALUES(?,?,?,?,'unverified')", (path, name, self.size, mtime))
+        url = self.url.replace("example.h5", suffix + ".h5")
+        self.index.execute("INSERT INTO official_assets VALUES(?,?,?,?,?,?)", (
+            "earthcare:EarthCAREL2Validated_MAAP:ATL_CTH_2A", "earthcare:" + name[:-3], name,
+            self.size, url, "2026-07-07T19:47:39Z"))
+        self.index.commit()
+        return path, url
+
+    def pipeline(self, **kwargs):
+        limits = dict(max_files=20, max_bytes=1024, max_seconds=5, pause_seconds=0, waiting_slots=2)
+        limits.update(kwargs)
+        return verify.run_pipeline(self.index, self.progress, self.root, "unused", **limits)
+
+    def test_pipeline_slow_slot_does_not_block_fast_evidence(self):
+        fast_path, fast_url = self.add_pipeline_file("D")
+        fast_recorded = threading.Event()
+        started = threading.Event()
+        expected = hashlib.sha256(self.content).hexdigest()
+        original_record = verify.record
+
+        def fetch(_socket, url, _size, _deadline):
+            if url == self.url:
+                started.set()
+                if not fast_recorded.wait(2):
+                    raise AssertionError("slow slot blocked fast evidence")
+            else:
+                self.assertTrue(started.wait(2))
+                self.assertEqual(url, fast_url)
+            return expected
+
+        def record(*args, **kwargs):
+            self.assertIs(threading.current_thread(), threading.main_thread())
+            result = original_record(*args, **kwargs)
+            if args[1] == fast_path:
+                fast_recorded.set()
+            return result
+
+        with mock.patch.object(verify, "official_digest", side_effect=fetch), mock.patch.object(
+                verify, "record", side_effect=record):
+            result = self.pipeline()
+        self.assertEqual((result["verified"], result["peak_slots"]), (2, 2))
+        self.assertEqual((result["lru_hits"], result["lru_misses"]), (1, 1))
+        self.assertEqual(self.progress.execute("SELECT count(*) FROM inflight").fetchone()[0], 0)
+
+    def test_pipeline_failure_does_not_pause_other_files(self):
+        self.add_pipeline_file("D")
+        expected = hashlib.sha256(self.content).hexdigest()
+        def fetch(_socket, url, _size, _deadline):
+            if url == self.url:
+                raise verify.RetryableOfficialError("official stream exceeded time budget")
+            return expected
+        with mock.patch.object(verify, "official_digest", side_effect=fetch):
+            result = self.pipeline()
+        self.assertEqual((result["verified"], result["retrying"]), (1, 1))
+        self.assertIsNone(self.progress.execute("SELECT paused_until FROM control").fetchone())
+        row = self.progress.execute("SELECT state,retry_count,next_retry_at FROM attempts WHERE path=?",
+                                    (self.path,)).fetchone()
+        self.assertEqual(row[:2], ("retry_scheduled", 1))
+        self.assertGreater(row[2], 0)
+
+    def test_pipeline_claim_recovers_after_cursor_advanced(self):
+        self.progress.execute("INSERT INTO cursor VALUES(1,?)", (self.path,))
+        self.progress.execute("INSERT INTO inflight VALUES(?,?,?)", (self.path, self.size, self.mtime))
+        self.progress.commit()
+        with mock.patch.object(verify, "official_digest", return_value=hashlib.sha256(self.content).hexdigest()):
+            result = self.pipeline(max_files=1)
+        self.assertEqual(result["verified"], 1)
+        self.assertEqual(self.progress.execute("SELECT count(*) FROM inflight").fetchone()[0], 0)
+
+    def test_pipeline_request_and_byte_budgets_include_inflight(self):
+        self.add_pipeline_file("D")
+        with mock.patch.object(verify, "official_digest", return_value=hashlib.sha256(self.content).hexdigest()) as fetch:
+            first = self.pipeline(max_bytes=self.size)
+            second = self.pipeline(max_bytes=self.size)
+        self.assertEqual((first["fetched"], first["bytes_requested"]), (1, self.size))
+        self.assertEqual(second["verified"], 1)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(self.progress.execute("SELECT count(*) FROM inflight").fetchone()[0], 0)
+
+    def test_pipeline_does_not_submit_due_file_twice(self):
+        self.progress.execute("INSERT INTO attempts(path,size,mtime_ns,state,detail,checked_at,next_retry_at) "
+                              "VALUES(?,?,?,'retry_scheduled','old timeout',0,0)",
+                              (self.path, self.size, self.mtime))
+        self.progress.commit()
+        with mock.patch.object(verify, "official_digest", return_value=hashlib.sha256(self.content).hexdigest()) as fetch:
+            result = self.pipeline()
+        self.assertEqual(result["verified"], 1)
+        fetch.assert_called_once()
+
+    def test_pipeline_retry_after_stops_admission_and_drains(self):
+        self.add_pipeline_file("D")
+        with mock.patch.object(verify, "official_digest", side_effect=verify.RetryableOfficialError(
+                "official fetch HTTP 429", 120)):
+            result = self.pipeline(waiting_slots=1)
+        self.assertEqual(result["fetched"], 1)
+        paused = self.progress.execute("SELECT paused_until FROM control").fetchone()[0]
+        self.assertGreaterEqual(paused, int(verify.time.time()) + 119)
+        self.assertEqual(self.progress.execute("SELECT count(*) FROM inflight").fetchone()[0], 0)
+
+    def test_pipeline_mismatch_is_not_evidence_or_source_cooldown(self):
+        with mock.patch.object(verify, "official_digest", return_value="0" * 64):
+            result = self.pipeline()
+        self.assertEqual((result["failed"], result["retrying"]), (1, 0))
+        self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 0)
+        self.assertEqual(self.progress.execute("SELECT state FROM attempts").fetchone()[0], "pending_review")
+        self.assertIsNone(self.progress.execute("SELECT paused_until FROM control").fetchone())
+
+    def test_pipeline_writer_collision_keeps_proof_without_network_retry(self):
+        holder = sqlite3.connect(os.path.join(self.temp.name, "index.sqlite3"))
+        self.addCleanup(holder.close)
+        holder.execute("BEGIN IMMEDIATE")
+        self.index.execute("PRAGMA busy_timeout=1")
+        expected = hashlib.sha256(self.content).hexdigest()
+        with mock.patch.object(verify, "official_digest", return_value=expected) as fetch:
+            first = self.pipeline(pause_seconds=0.001)
+            self.assertEqual((first["failed"], first["retrying"]), (1, 1))
+            self.assertEqual(self.progress.execute("SELECT state,sha256 FROM attempts").fetchone(),
+                             ("record_pending", expected))
+            self.assertIsNone(self.progress.execute("SELECT * FROM pacing").fetchone())
+            holder.rollback()
+            self.progress.execute("UPDATE attempts SET next_retry_at=0")
+            self.progress.commit()
+            second = self.pipeline()
+            self.assertEqual((second["verified"], second["fetched"]), (1, 0))
+            fetch.assert_called_once()
+
+    def test_pipeline_invalid_limits_are_rejected(self):
+        for kwargs in [{"waiting_slots": 0}, {"waiting_slots": 9}, {"cache_size": 0}, {"cache_size": 129}]:
+            with self.assertRaises(ValueError):
+                self.pipeline(**kwargs)
+
+    def test_lru_recent_group_is_reused_and_capacity_is_bounded(self):
+        cache = verify.OfficialAssetLRU(self.index, self.root, capacity=2)
+        self.assertIsNotNone(cache.lookup(self.path, self.name, self.size))
+        other_name = self.name.replace("ATL_CTH_2A", "ATL_AER_2A")
+        other_path = os.path.join(self.root, "ATL_AER_2A", "20260707", other_name)
+        cache.lookup(other_path, other_name, self.size)
+        cache.lookup(self.path, self.name, self.size)
+        third_name = self.name.replace("ATL_CTH_2A", "ATL_FM__2A")
+        cache.lookup(os.path.join(self.root, "ATL_FM__2A", "20260707", third_name), third_name, self.size)
+        self.assertEqual((len(cache.entries), cache.hits, cache.evictions), (2, 1, 1))
+        self.assertIn(("ATL_CTH_2A", "20260707"), cache.entries)
+        self.assertNotIn(("ATL_AER_2A", "20260707"), cache.entries)
+
+    def test_lru_external_catalogue_change_invalidates_cached_reference(self):
+        cache = verify.OfficialAssetLRU(self.index, self.root)
+        self.assertIsNotNone(cache.lookup(self.path, self.name, self.size))
+        writer = sqlite3.connect(os.path.join(self.temp.name, "index.sqlite3"))
+        self.addCleanup(writer.close)
+        writer.execute("DELETE FROM official_assets")
+        writer.commit()
+        self.assertIsNone(cache.lookup(self.path, self.name, self.size))
+        self.assertEqual(cache.misses, 2)
+
+    def test_lru_oversized_group_falls_back_without_caching(self):
+        cache = verify.OfficialAssetLRU(self.index, self.root, max_group_rows=1)
+        self.assertEqual(cache.lookup(self.path, self.name, self.size),
+                         verify.official_asset(self.index, self.path, self.name, self.size, self.root))
+        self.assertEqual(len(cache.entries), 0)
+
+    def test_cached_selection_cannot_bypass_changed_reference_before_write(self):
+        expected = hashlib.sha256(self.content).hexdigest()
+        original_record = verify.record
+        def changed_record(*args, **kwargs):
+            self.index.execute("DELETE FROM official_assets")
+            self.index.commit()
+            return original_record(*args, **kwargs)
+        with mock.patch.object(verify, "official_digest", return_value=expected), mock.patch.object(
+                verify, "record", side_effect=changed_record):
+            result = self.pipeline()
+        self.assertEqual(result["verified"], 0)
+        self.assertEqual(self.index.execute("SELECT count(*) FROM verified_archive_files").fetchone()[0], 0)
+        self.assertEqual(self.progress.execute("SELECT detail FROM attempts").fetchone()[0],
+                         "official reference changed before recording")
+
     def test_permanent_official_error_never_retries(self):
         with mock.patch.object(verify, "official_digest", side_effect=ValueError("official fetch HTTP 401")) as upstream:
             self.assertEqual(verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)["retrying"], 0)
             with mock.patch.object(verify.time, "time", return_value=9999999999):
                 verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
         self.assertEqual(upstream.call_count, 1)
+
+    def test_worker_deadline_interrupts_real_connection_close_body(self):
+        release = threading.Event()
+        payload = self.content
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                release.wait(2)
+            def log_message(self, *_):
+                pass
+        socket_path = os.path.join(self.temp.name, "deadline.sock")
+        server = socketserver.UnixStreamServer(socket_path, Handler)
+        self.addCleanup(server.server_close)
+        worker = threading.Thread(target=server.serve_forever)
+        worker.daemon = True
+        worker.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(release.set)
+        with mock.patch.object(verify, "MAX_OFFICIAL_SECONDS", 0.05):
+            with verify.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(verify.official_digest, socket_path, self.url, self.size)
+                with self.assertRaisesRegex(verify.RetryableOfficialError, "time budget"):
+                    future.result(timeout=2)
+        release.set()
 
     def test_adaptive_pacing_has_limits_and_recovers(self):
         pace = (3000, 20, 0.0, 0)

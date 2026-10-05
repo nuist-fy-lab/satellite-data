@@ -21,33 +21,48 @@ and record evidence only if the indexed file is unchanged. The audit database
 retains the official URL and digest. The centre's normal scan reflects new
 evidence in the calendar; the source file is never changed.
 
-Each invocation is serial and defaults to at most 20 official requests,
-512 MiB of expected assets and 15 minutes. A cursor and per-file results allow
-subsequent runs to resume.
+Each invocation uses four bounded waiting slots by default (`--waiting-slots`,
+1-8). Content workers stream official SHA-256 and then hash the local file;
+the coordinator alone accesses SQLite and records evidence as each slot
+finishes. One slow slot does not block completed proofs or admission into
+other slots. At most 20 official requests, 512 MiB of expected assets and
+15 minutes are admitted by default. Every admitted stream shares the batch
+deadline and retains its per-file deadline. Inflight claims are committed
+before the cursor advances; after interruption they are recovered before
+new work. No source files or partial downloads are written by this job.
 On the user-level systemd timer, a new batch starts about 15 seconds after
-the previous one finishes, with a three-second pause between requests; the
+the previous one finishes, with an initial two-second gap between admissions; the
 service is configured in `deploy/systemd/earthcare-verification.{service,timer}`.
-The pacing database starts at a 3-second gap and a 20-file batch. After eight
+The pacing database starts at a 2-second gap and a 20-file batch. After four
 low-error official fetches it reduces the gap and increases the batch limit;
 on high error rate it halves the batch limit and lengthens the gap. Bounds are
-1-12 seconds and 5-40 files per batch. Each batch also remains capped at
-512 MiB and 15 minutes; it never makes concurrent official fetches.
+1-12 seconds and 5-40 files per batch. A pipeline batch admits at least twice
+the slot count, unless its explicit request or byte limit is smaller. Each
+batch remains capped at 512 MiB and 15 minutes. A bounded LRU caches up to
+16 product/date catalogue groups (`--match-cache-size`, 1-128), with a maximum
+of 4,096 asset rows per group. Larger groups fall back to exact lookups.
+External index commits invalidate the cache via SQLite `data_version`.
+Evidence writes always check the live catalogue and file metadata again;
+the cache contains no credentials, payload hashes or failed verification proofs.
 Temporary official HTTP errors (408, 429, 5xx), interrupted streams and
-connection failures stop that batch and schedule the same file for automatic
-retry. Up to four total attempts use exponential backoff with jitter (initially
+connection failures schedule that file for automatic retry without stopping
+other slots or pausing the whole archive. Up to four total attempts use exponential backoff with jitter (initially
 30-60 seconds, then 60-120 and 120-240 seconds); a valid `Retry-After` takes
 precedence, capped at one day. The timer keeps checking the persisted due time,
 and due retries take priority even after the scan cursor has passed them. A
 fourth transient failure enters `retry_deferred`: probes are spaced by
 approximately 5-6 hours, then 10-12 hours, and finally 19-24 hours, with jitter.
 This file's long cooldown does not stop the whole archive; source-level
-`Retry-After` is still respected. Success resets its retry count. Permanent
+HTTP 429 and `Retry-After` stop new admissions while existing slots finish.
+Authentication rejection also stops admission and pauses the source rather
+than repeatedly launching rejected requests. Success resets its retry count. Permanent
 HTTP errors, changed local files and hash mismatches stay `pending_review`
 without automatic retry. A one-time progress migration restores only known
 historical transient failures to a due queue, without upgrading their status.
 Official reads also have a 60-second idle timeout and a per-file hard deadline
 of 3-10 minutes scaled by file size; a slow trickle stream cannot block
-a batch indefinitely and uses the same bounded retry queue.
+a batch indefinitely and uses the same bounded retry queue. Thread-safe
+deadline timers interrupt blocked sockets; process-wide signals are not used.
 If the centre database is busy after both hashes agree, the audit retains
 the official reference and digest as `record_pending`. Its due retry rechecks
 the reference, local file metadata and full local hash, and retries only the
@@ -66,7 +81,10 @@ This is not a deployment or a source-data mutation job.
 If a complete sweep reaches the end without any new official content to
 fetch, the job pauses requests for an hour before rechecking the catalogue.
 Failures and absent/ambiguous matches remain unverified; review the progress
-database instead of treating a filename/size match as a success. Terminal
+database instead of treating a filename/size match as a success. Aggregate
+logs include waiting-slot occupancy, LRU hits/misses/evictions and time spent
+on official streams, local hashing and evidence writes. Worker times can
+overlap and are not wall-clock throughput measurements. Terminal
 failures exit nonzero, whereas scheduled transient retries retain their due
 time across restarts. `--max-file-bytes` can bound each asset;
 `--start-after` applies only when the progress database has no saved cursor.
