@@ -31,12 +31,12 @@ type tcpInfoSnapshot struct {
 }
 
 type transferDiagnostics struct {
-	source string
-	host   string
-	asset  string
-	range_ string
-	start  time.Time
-	bytes  atomic.Int64
+	source    string
+	host      string
+	asset     string
+	byteRange string
+	startedAt time.Time
+	bytes     atomic.Int64
 
 	mu     sync.RWMutex
 	conn   net.Conn
@@ -45,11 +45,11 @@ type transferDiagnostics struct {
 
 func newTransferDiagnostics(source, host, asset, byteRange string) *transferDiagnostics {
 	return &transferDiagnostics{
-		source: source,
-		host:   host,
-		asset:  asset,
-		range_: byteRange,
-		start:  time.Now(),
+		source:    source,
+		host:      host,
+		asset:     asset,
+		byteRange: byteRange,
+		startedAt: time.Now(),
 	}
 }
 
@@ -71,7 +71,7 @@ func (d *transferDiagnostics) start(ctx context.Context) func() {
 	go func() {
 		ticker := time.NewTicker(transferDiagnosticsInterval)
 		defer ticker.Stop()
-		lastAt, lastBytes := d.start, int64(0)
+		lastAt, lastBytes := d.startedAt, int64(0)
 		for {
 			select {
 			case now := <-ticker.C:
@@ -112,10 +112,10 @@ func (d *transferDiagnostics) sample(now time.Time, intervalBytes int64, interva
 		"source", d.source,
 		"host", d.host,
 		"asset", d.asset,
-		"range", d.range_,
+		"range", d.byteRange,
 		"remote", remote,
 		"reused", reused,
-		"elapsed", now.Sub(d.start).Round(time.Second),
+		"elapsed", now.Sub(d.startedAt).Round(time.Second),
 		"bytes", d.bytes.Load(),
 		"interval_bps", float64(intervalBytes)/interval.Seconds(),
 		"rtt", info.RTT,
