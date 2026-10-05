@@ -191,6 +191,12 @@ func TestPortalLoginCoversEntireWebsiteAndCredentialsNeedNoSecondLogin(t *testin
 	if index.Code != http.StatusOK || strings.Contains(index.Body.String(), "access-login-form") || !strings.Contains(index.Body.String(), "portal-logout") {
 		t.Fatal("portal HTML missing or credentials still request a second password")
 	}
+	for _, path := range []string{"/calendar", "/sources", "/downloads", "/sync", "/monitor", "/cli", "/access"} {
+		page := request(http.MethodGet, path, "", cookie)
+		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "id=\"calendar-view\"") {
+			t.Fatalf("portal module path %s status=%d", path, page.Code)
+		}
+	}
 	// The same portal cookie reaches the credential handler, not a second login.
 	if w := request(http.MethodGet, "/api/v1/access/pools", "", cookie); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("portal admin denied credential manager status=%d", w.Code)
