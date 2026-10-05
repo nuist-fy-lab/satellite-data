@@ -264,7 +264,7 @@ main{width:min(1180px,100%);min-width:0;margin:0 auto;padding:28px 24px 60px}
 .download-list{border-top:1px solid var(--line)}
 .download-provider{display:flex;align-items:center;gap:14px;padding:10px 2px;border-bottom:1px solid var(--line);font-size:11px;min-width:0}
 .download-provider-name{flex:0 0 120px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.download-provider-chips{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0;flex:1}
+.download-provider-chips{display:grid;grid-template-columns:minmax(102px,1.25fr) minmax(74px,.9fr) minmax(74px,.9fr) minmax(82px,1fr) minmax(78px,.9fr) minmax(68px,.8fr) minmax(66px,.78fr) minmax(76px,.9fr);align-items:center;gap:6px;min-width:0;flex:1}
 .download-provider-chip{display:inline-flex;align-items:center;gap:4px;min-width:0;border-radius:999px;padding:4px 8px;background:#f6f8fa;color:var(--muted);font-size:10px;line-height:1.2;white-space:nowrap}
 .download-provider-chip b{font-weight:600;color:inherit}
 .download-provider-chip.info{background:#ddf4ff;color:#0969da}
@@ -275,7 +275,8 @@ main{width:min(1180px,100%);min-width:0;margin:0 auto;padding:28px 24px 60px}
 .download-request strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .download-request span{color:var(--muted);min-width:0;overflow-wrap:anywhere}
 .download-request small{grid-column:1/-1;color:var(--red);overflow-wrap:anywhere}
-@media(max-width:820px){.download-provider{align-items:flex-start;flex-direction:column;gap:7px}.download-provider-name{flex-basis:auto}.download-provider-chips{width:100%}.download-request{grid-template-columns:repeat(2,minmax(0,1fr))}.download-request strong{grid-column:1/-1}}
+@media(max-width:1100px){.download-provider-chips{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:820px){.download-provider{align-items:flex-start;flex-direction:column;gap:7px}.download-provider-name{flex-basis:auto}.download-provider-chips{width:100%;grid-template-columns:repeat(2,minmax(0,1fr))}.download-request{grid-template-columns:repeat(2,minmax(0,1fr))}.download-request strong{grid-column:1/-1}}
 .hidden{display:none!important}
 .era5-panel{padding:16px 0;border-top:1px solid var(--line)}
 .era5-form{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(220px,1fr);gap:16px;align-items:start}
