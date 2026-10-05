@@ -22,6 +22,7 @@ const state = {
   },
   yearPoll: 0,
   dayPoll: 0,
+  era5: {schema: null, seq: 0, submitting: false, checking: false},
   monitor: {
     window: localStorage.getItem('satellite-data-monitor-window') || '1h',
     selected: localStorage.getItem('satellite-data-monitor-source') || 'earthcare',
@@ -64,6 +65,10 @@ async function json(url, options = {}) {
   let payload = {};
   try { payload = await response.json(); } catch {}
   if (!response.ok) {
+    if (response.status === 401 && typeof window !== 'undefined') {
+      clearCLIKey();
+      window.location.replace('/login');
+    }
     const error = new Error(payload.error || `HTTP ${response.status}`);
     error.status = response.status;
     throw error;
@@ -88,6 +93,7 @@ function setSidebar(expanded, persist = false) {
 }
 
 function setView(id) {
+  if (id !== 'cli-view') clearCLIKey();
   if (id !== 'monitor-view') clearTimeout(state.monitor.poll);
   if (id !== 'downloads-view') clearTimeout(state.downloads.poll);
   document.querySelectorAll('.view').forEach(node => node.classList.toggle('active', node.id === id));
@@ -104,6 +110,64 @@ function selectedCollection() {
 
 function uniqueSorted(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), undefined, {numeric: true}));
+}
+
+// Mission periods are not file-coverage intervals. An end is shown only for
+// missions with a confirmed end of science observations.
+const missionPeriods = {
+  'CloudSat': {start: 2006, end: '2023-12-20'},
+  'CALIPSO': {start: 2006, end: '2023-08-01'},
+  'Terra': {start: 2000}, 'Aqua': {start: 2002},
+  'Suomi-NPP': {start: 2011}, 'NOAA-20': {start: 2017}, 'NOAA-21': {start: 2022},
+  'GOES-16': {start: 2017}, 'GOES-17': {start: 2018, status: '在轨存储'},
+  'GOES-18': {start: 2022}, 'GOES-19': {start: 2024},
+  'Himawari-8': {start: 2015, status: '备用'}, 'Himawari-9': {start: 2022},
+  'EarthCARE': {start: 2024}, 'MTG': {start: 2022},
+};
+
+function satelliteTimelineData(collections) {
+  const bySatellite = new Map();
+  for (const product of collections) {
+    if (!product.satellite || product.satellite === 'ECMWF') continue;
+    for (const name of product.satellite.split(' / ')) {
+      const year = Number(String(product.metadata?.time_start || '').slice(0, 4));
+      const found = bySatellite.get(name) || {name, filter: product.satellite, dataStart: null};
+      if (year >= 1990 && year <= new Date().getUTCFullYear() && (!found.dataStart || year < found.dataStart)) found.dataStart = year;
+      bySatellite.set(name, found);
+    }
+  }
+  return [...bySatellite.values()].map(row => ({
+    ...row, start: missionPeriods[row.name]?.start || row.dataStart,
+    end: missionPeriods[row.name]?.end || null,
+    status: missionPeriods[row.name]?.status || '',
+  })).sort((a, b) => (a.start || 9999) - (b.start || 9999) || a.name.localeCompare(b.name));
+}
+
+function renderSatelliteTimelines() {
+  const node = $('#satellite-timeline-rows');
+  const rows = satelliteTimelineData(state.collections);
+  $('#satellite-timelines').classList.toggle('hidden', rows.length === 0);
+  node.replaceChildren();
+  const origin = Date.UTC(1999, 0, 1);
+  const now = Date.now();
+  const horizon = Date.UTC(new Date().getUTCFullYear() + 1, 0, 1);
+  const percent = timestamp => Math.max(0, Math.min(100, (timestamp - origin) / (horizon - origin) * 100));
+  for (const row of rows) {
+    const start = row.start ? Date.UTC(row.start, 0, 1) : null;
+    const end = row.end ? Date.parse(row.end + 'T23:59:59Z') : now;
+    const from = start === null ? 0 : percent(start);
+    const to = percent(end);
+    const status = row.end ? '历史归档 · END' : (row.status || '终点未确认');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `satellite-timeline${row.end ? ' ended' : ''}${row.filter === satelliteEl.value ? ' selected' : ''}`;
+    button.dataset.satellite = row.filter;
+    button.setAttribute('aria-label', `${row.name}，${row.start || '起点待核实'} 至 ${row.end || status}，${status}`);
+    button.innerHTML = `<span class="timeline-name">${esc(row.name)}</span><span class="timeline-dates"><span>${esc(row.start || '起点待核实')}</span><span>${esc(row.end || '至今')}</span></span>
+      <span class="timeline-track"><i class="timeline-fill" style="--timeline-start:${from}%;--timeline-end:${to}%"></i>${row.end ? `<i class="timeline-end" style="left:${to}%"></i>` : ''}</span>
+      <span class="timeline-status">${esc(status)}</span>`;
+    node.append(button);
+  }
 }
 
 function fillSelect(node, values, allLabel = '') {
@@ -174,6 +238,7 @@ function fillMonths() {
 
 function updateSelectedProduct() {
   state.selected = selectedCollection();
+  renderSatelliteTimelines();
   state.dayState.clear();
   state.coverage.requestSeq++;
   state.coverage.fileSeq++;
@@ -188,6 +253,16 @@ function updateSelectedProduct() {
   renderCoverageShell();
   renderCalendar();
   const product = state.selected;
+  const onDemand = product?.metadata?.availability_mode === 'on-demand';
+  state.era5.seq++;
+  state.era5.schema = null;
+  $('#era5-panel').classList.toggle('hidden', !onDemand);
+  $('#era5-submit').disabled = true;
+  $('#query-month').disabled = onDemand;
+  $('#clear-calendar').disabled = onDemand;
+  for (const node of [yearEl, monthEl, timezoneEl]) node.disabled = onDemand;
+  $('#calendar-help').classList.toggle('hidden', onDemand);
+  $('#year-layout').classList.toggle('hidden', onDemand);
   if (!product) {
     $('#product-title').textContent = state.collections.length ? '当前筛选无产品' : '读取产品目录…';
     $('#product-meta').textContent = '';
@@ -203,7 +278,120 @@ function updateSelectedProduct() {
   metadata.push(product.metadata?.local_covered ? '本地已覆盖' : '本地未覆盖');
   $('#product-meta').textContent = metadata.join(' · ');
   persistFilters();
+  if (onDemand) {
+    clearTimeout(state.yearPoll);
+    clearTimeout(state.dayPoll);
+    $('#product-title').textContent = product.metadata.title || product.product;
+    $('#product-meta').textContent = [product.metadata.temporal_start?.slice(0, 10), product.metadata.temporal_end?.slice(0, 10)].filter(Boolean).join(' 至 ') + ' · CDS 按需生成 · 本地未归档';
+    prepareERA5(product, state.era5.seq);
+    return;
+  }
   loadYear();
+}
+
+async function prepareERA5(product, seq) {
+  $('#era5-status').textContent = '读取 CDS 参数…';
+  try {
+    const schema = await json('/api/v1/era5/schema?collection=' + encodeURIComponent(product.id));
+    if (seq !== state.era5.seq) return;
+    state.era5.schema = schema;
+    for (const [id, key] of [['variables', 'variable'], ['pressure', 'pressure_level'], ['type', 'product_type'], ['format', 'data_format'], ['time', 'time']]) {
+      const node = $('#era5-' + id);
+      const definition = schema.inputs[key]?.schema || {};
+      const values = definition.enum || definition.items?.enum || [];
+      node.replaceChildren();
+      for (const value of values) node.add(new Option(String(value).replaceAll('_', ' '), value));
+      node.disabled = !values.length;
+      if (definition.default && !node.multiple) node.value = definition.default;
+      if (key === 'time') for (const option of node.options) option.selected = product.cadence !== 'monthly' || option.value === '00:00';
+    }
+    const monthly = product.cadence === 'monthly';
+    const date = $('#era5-date');
+    date.type = monthly ? 'month' : 'date';
+    date.min = (product.metadata.temporal_start || '').slice(0, monthly ? 7 : 10);
+    date.max = (product.metadata.temporal_end || '').slice(0, monthly ? 7 : 10);
+    date.value = date.max;
+    $('#era5-pressure-field').classList.toggle('hidden', !schema.inputs.pressure_level);
+    $('#era5-pressure').required = Boolean(schema.inputs.pressure_level);
+    $('#era5-type-field').classList.toggle('hidden', !schema.inputs.product_type);
+    $('#era5-time-field').classList.toggle('hidden', !schema.inputs.time);
+    $('#era5-time').required = Boolean(schema.inputs.time);
+    $('#era5-area').disabled = !schema.inputs.area;
+    $('#era5-status').textContent = '';
+    $('#era5-submit').disabled = state.era5.submitting;
+    $('#era5-job-id').value ||= localStorage.getItem('satellite-data-era5-job') || '';
+  } catch (error) {
+    if (seq === state.era5.seq) $('#era5-status').textContent = error.message;
+  }
+}
+
+function selectedValues(node) { return [...node.selectedOptions].map(option => option.value); }
+
+async function submitERA5(event) {
+  event.preventDefault();
+  if (!state.era5.schema || state.era5.submitting) return;
+  const schema = state.era5.schema;
+  const collection = state.selected.id;
+  const seq = state.era5.seq;
+  const date = $('#era5-date').value.split('-');
+  const inputs = {variable: selectedValues($('#era5-variables')), year: [date[0]], month: [date[1]]};
+  if (schema.inputs.day) inputs.day = [date[2]];
+  if (schema.inputs.time) inputs.time = selectedValues($('#era5-time'));
+  if (schema.inputs.pressure_level) inputs.pressure_level = selectedValues($('#era5-pressure'));
+  if (schema.inputs.product_type) inputs.product_type = [$('#era5-type').value];
+  if (schema.inputs.data_format) inputs.data_format = $('#era5-format').value;
+  if (schema.inputs.download_format) inputs.download_format = 'unarchived';
+  if (schema.inputs.area) {
+    inputs.area = ['north', 'west', 'south', 'east'].map(key => Number($('#era5-' + key).value));
+    if (inputs.area[0] < inputs.area[2] || inputs.area[1] > inputs.area[3]) {
+      $('#era5-status').textContent = '区域边界无效';
+      return;
+    }
+  }
+  state.era5.submitting = true;
+  $('#era5-submit').disabled = true;
+  $('#era5-status').textContent = '提交中…';
+  $('#era5-result').classList.add('hidden');
+  try {
+    const job = await json('/api/v1/era5/requests', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({collection, inputs})});
+    localStorage.setItem('satellite-data-era5-job', job.jobID);
+    if (seq !== state.era5.seq) return;
+    $('#era5-job-id').value = job.jobID;
+    $('#era5-status').textContent = `CDS ${job.status} · ${job.jobID}`;
+  } catch (error) {
+    if (seq === state.era5.seq) $('#era5-status').textContent = error.status === 401 ? '需要管理员登录' : `${error.message} · 提交状态未确认，请在 CDS 请求记录中核对后再重试`;
+  } finally {
+    state.era5.submitting = false;
+    $('#era5-submit').disabled = !state.era5.schema;
+  }
+}
+
+async function refreshERA5() {
+  const id = $('#era5-job-id').value.trim();
+  if (!id || state.era5.checking) return;
+  const seq = state.era5.seq;
+  state.era5.checking = true;
+  $('#era5-refresh').disabled = true;
+  $('#era5-result').classList.add('hidden');
+  try {
+    const job = await json('/api/v1/era5/requests/' + encodeURIComponent(id));
+    if (seq !== state.era5.seq) return;
+    $('#era5-status').textContent = `CDS ${job.status} · ${job.jobID}`;
+    localStorage.setItem('satellite-data-era5-job', job.jobID);
+    if (job.status === 'successful') {
+      const asset = await json('/api/v1/era5/requests/' + encodeURIComponent(id) + '/result');
+      if (seq !== state.era5.seq) return;
+      const node = $('#era5-result');
+      node.href = asset.url;
+      node.textContent = `下载结果 · ${(asset.size / 1048576).toFixed(1)} MiB`;
+      node.classList.remove('hidden');
+    }
+  } catch (error) {
+    if (seq === state.era5.seq) $('#era5-status').textContent = error.status === 401 ? '需要管理员登录' : error.message;
+  } finally {
+    state.era5.checking = false;
+    $('#era5-refresh').disabled = false;
+  }
 }
 
 function renderCalendar() {
@@ -273,15 +461,16 @@ function coverageStatus(row, officialState, cadence, hourly = false, mode = 'gri
 function renderCoverageShell() {
   const coverage = state.coverage;
   const visible = coverage.supported;
+  const onDemand = state.selected?.metadata?.availability_mode === 'on-demand';
   $('#coverage-tools').classList.toggle('hidden', !visible);
-  $('.legend').classList.toggle('hidden', visible);
-  $('#year-layout').classList.toggle('hidden', visible && coverage.view !== 'year');
+  $('.legend').classList.toggle('hidden', visible || onDemand);
+  $('#year-layout').classList.toggle('hidden', onDemand || (visible && coverage.view !== 'year'));
   $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');
   $('#day-coverage').classList.toggle('hidden', !visible || coverage.view !== 'day');
   $('#calendar-help').textContent = visible
     ? '绿色 完整 · 浅绿 部分 · 橙色 未下载 · 蓝色 处理中 · 红色 错误 · 斜纹 官方缺时次 · 灰色 待索引'
     : '年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。';
-  $('#calendar-help').classList.remove('hidden');
+  $('#calendar-help').classList.toggle('hidden', onDemand);
   document.querySelectorAll('[data-coverage-view]').forEach(button => {
     const active = button.dataset.coverageView === coverage.view;
     button.classList.toggle('active', active);
@@ -411,7 +600,7 @@ function dayTip(day) {
 
 async function loadYear(schedulePoll = true) {
   clearTimeout(state.yearPoll);
-  if (!state.selected) return;
+  if (!state.selected || state.selected.metadata?.availability_mode === 'on-demand') return;
   if (bandCoverageSupported(state.selected)) {
     await loadCoverageYear(schedulePoll);
     return;
@@ -435,6 +624,7 @@ async function loadYear(schedulePoll = true) {
 }
 
 async function queryDay(day) {
+  if (state.selected?.metadata?.availability_mode === 'on-demand') return;
   if (state.coverage.supported) {
     await openCoverageDay(day);
     return;
@@ -443,7 +633,7 @@ async function queryDay(day) {
 }
 
 async function queryMonth() {
-  if (!state.selected) return;
+  if (!state.selected || state.selected.metadata?.availability_mode === 'on-demand') return;
   const year = Number(yearEl.value);
   const month = Number(monthEl.value || 0);
   const start = new Date(Date.UTC(year, month, 1));
@@ -520,20 +710,13 @@ function renderCoverageMonth() {
       const row = byBand.get(band);
       const status = coverageStatus(row, officialState, cadence, coverage.time === 'hourly', mode);
       const begin = index * segment;
-      const end = begin + segment - 1.5;
+      const end = begin + segment - 0.6;
       if (coverage.band && coverage.band !== band) {
         colors.push(`#e4e8eb ${begin}deg ${end}deg`);
-      } else if (status === 'partial') {
-        const count = row?.[coverage.time === 'hourly' ? 3 : 1] || 1;
-        const complete = row?.[coverage.time === 'hourly' ? 4 : 2] || 0;
-        const partial = row?.[coverage.time === 'hourly' ? 6 : 5] || 0;
-        const fullEnd = begin + (end - begin) * Math.min(1, complete / count);
-        const partialEnd = begin + (end - begin) * Math.min(1, (complete + partial) / count);
-        colors.push(`#178353 ${begin}deg ${fullEnd}deg`, `#67ae9b ${fullEnd}deg ${partialEnd}deg`,
-          `#e4a646 ${partialEnd}deg ${end}deg`);
       } else {
-        const color = {complete:'#178353', complete_official_gap:'#178353', error:'#c3454b',
-          processing:'#4192bd', missing:'#e4a646', official_missing:'#b5bec4', unknown:'#e5eaed'}[status] || '#e5eaed';
+        const color = {complete:'var(--green)', complete_official_gap:'var(--green)', partial:'var(--partial)',
+          error:'var(--red)', processing:'var(--blue)', missing:'var(--orange)',
+          official_missing:'#b5bec4', unknown:'var(--empty)'}[status] || 'var(--empty)';
         colors.push(`${color} ${begin}deg ${end}deg`);
       }
       colors.push(`#fff ${end}deg ${(index + 1) * segment}deg`);
@@ -543,6 +726,16 @@ function renderCoverageMonth() {
     label.textContent = String(dayNumber);
     ring.append(label);
     button.append(ring);
+    const count = document.createElement('small');
+    count.className = 'month-band-count';
+    if (coverage.band) {
+      const selected = byBand.get(coverage.band);
+      count.textContent = `${coverageBandName(coverage.band)} ${selected?.[coverage.time === 'hourly' ? 4 : 2] || 0}/${selected?.[coverage.time === 'hourly' ? 3 : 1] || 0}`;
+    } else {
+      const covered = totals.filter(row => row[2] > 0 || row[5] > 0).length;
+      count.textContent = `${covered}/${coverage.bands.length} 波段`;
+    }
+    button.append(count);
     const bar = document.createElement('span');
     bar.className = 'month-hours';
     for (const [, expected, ok, partial, errors, processing] of hours) {
@@ -1498,15 +1691,23 @@ async function loadMonitor(schedule = true) {
 }
 
 const accessKindLabels = {
-  laads: 'LAADS', earthdata: 'Earthdata', earthcare: 'ESA MAAP', eumetsat: 'EUMETSAT', cloudsat: 'CloudSat DPC',
+  laads: 'LAADS', earthdata: 'Earthdata', earthcare: 'ESA MAAP', eumetsat: 'EUMETSAT', cloudsat: 'CloudSat DPC', cds: 'CDS',
 };
-const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat'};
+const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat', era5: 'cds'};
 const credentialGuides = {
+  cds: {
+    title: 'Copernicus CDS Personal Access Token',
+    summary: '用于 ERA5 与 ERA5-Land，使用 CDS 个人访问 Token。',
+    steps: ['登录 Copernicus Climate Data Store。', '在个人资料的 API 区域复制 Personal Access Token。', '先在数据集页面接受使用条款，再将完整 Token 填入下方并绑定 ERA5 账号。'],
+    note: '凭据由中心加密保存。已提交的 CDS 任务绑定原账号与凭据，修改 Token 后需恢复原凭据才能继续查询该任务。',
+    url: 'https://cds.climate.copernicus.eu/profile',
+    link: '打开 CDS 个人资料',
+  },
   laads: {
     title: 'LAADS Download Token',
     summary: '用于 MODIS 与 VIIRS。优先使用 LAADS 自己生成的下载 Token，而不是通用 Earthdata Token。',
     steps: ['登录 NASA LAADS DAAC。', '在 Token / Download Token 区域生成或复制当前 Token。', '把完整 Token 粘贴到下方 Token 输入框；保存后网页只保留掩码。'],
-    note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。下载器会优先读取 LAADS Token 自带的 exp 到期字段；只有 Token 本身不提供 exp 时才显示“官网未提供”。',
+    note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。中心会优先读取 LAADS Token 自带的 exp 到期字段；只有 Token 本身不提供 exp 时才显示“官网未提供”。',
     url: 'https://ladsweb.modaps.eosdis.nasa.gov/',
     link: '打开 LAADS DAAC',
   },
@@ -1514,7 +1715,7 @@ const credentialGuides = {
     title: 'NASA Earthdata User Token',
     summary: '当前用于 CALIPSO。需要 Earthdata Login 账号生成 User Token。',
     steps: ['登录 Earthdata Login。', '进入 Generate Token / User Token 页面并生成 Token。', '点击 Show Token，复制完整值后粘贴到下方。'],
-    note: 'Earthdata User Token 当前有效 60 天；保存后下载器会自动读取 Token 的 exp 字段显示到期时间，无需手填。',
+    note: 'Earthdata User Token 当前有效 60 天；保存后中心会自动读取 Token 的 exp 字段显示到期时间，无需手填。',
     url: 'https://urs.earthdata.nasa.gov/',
     link: '打开 Earthdata Login',
   },
@@ -1522,15 +1723,15 @@ const credentialGuides = {
     title: 'ESA MAAP EarthCARE Token',
     summary: '用于 EarthCARE 数据访问。需要 ESA EO / MAAP 账号，并生成 EarthCARE MAAP 长期访问 Token。',
     steps: ['登录 ESA MAAP，并确保账号有 EarthCARE 数据访问权限。', '打开 MAAP Token 页面生成长期 Token。', '复制生成的 Token 粘贴到下方；不要填写示例里的 CLIENT_SECRET。'],
-    note: 'offline token 当前有效 90 天；下载器会自动读取 Token 的 exp 字段。部分 Cal/Val 或 Commissioning 集合仍取决于你的 ESA 账号权限。',
+    note: 'offline token 当前有效 90 天；中心会自动读取 Token 的 exp 字段。部分 Cal/Val 或 Commissioning 集合仍取决于你的 ESA 账号权限。',
     url: 'https://portal.maap.eo.esa.int/ini/services/auth/token/90dToken.php',
     link: '生成 ESA MAAP Token',
   },
   eumetsat: {
     title: 'EUMETSAT API 凭据 · Consumer Key / Consumer Secret',
-    summary: '用于 MTG。这里只保存 API Key Management 提供的 Consumer Key + Consumer Secret；下载器会用 OAuth2 client_credentials 自动换取短期 Access Token。',
+    summary: '用于 MTG。这里只保存 API Key Management 提供的 Consumer Key + Consumer Secret；中心会用 OAuth2 client_credentials 自动换取短期 Access Token。',
     steps: ['登录 EUMETSAT Data Store / User Portal。', '进入 API Key Management，在 User credentials 区域找到 Consumer key 与 Consumer secret。', '只把这两个值分别复制到下方两个输入框；页面下方的一小时 API token 不需要复制。'],
-    note: '本凭据表单只接收 Consumer Key + Consumer Secret。下载器会自动向 EUMETSAT /token 端点申请并续期 Bearer Access Token。',
+    note: '本凭据表单只接收 Consumer Key + Consumer Secret。中心会自动向 EUMETSAT /token 端点申请并续期 Bearer Access Token。',
     url: 'https://api.eumetsat.int/api-key/',
     link: '打开 EUMETSAT API Key',
   },
@@ -1545,23 +1746,63 @@ const credentialGuides = {
 };
 
 async function loadAccess() {
-  $('#access-login-error').textContent = '';
+  $('#access-error').textContent = '';
   try {
-    const session = await json('/api/v1/access/session');
-    state.access.user = session.user;
-    $('#access-user').textContent = session.user?.username ? `${session.user.username} · admin` : '管理员';
-    $('#access-login').classList.add('hidden');
-    $('#access-manager').classList.remove('hidden');
-    $('#logout-access').classList.remove('hidden');
-    $('#refresh-access').classList.remove('hidden');
     await loadAccessPools();
   } catch (error) {
-    state.access.user = null;
-    $('#access-user').textContent = '';
-    $('#access-manager').classList.add('hidden');
-    $('#access-login').classList.remove('hidden');
-    $('#logout-access').classList.add('hidden');
+    $('#access-error').textContent = error.message;
   }
+}
+
+let cliKeyGeneration = 0;
+
+function clearCLIKey() {
+  cliKeyGeneration++;
+  $('#cli-key-value').value = '';
+  $('#cli-key-new').classList.add('hidden');
+}
+
+async function loadCLIKeys() {
+  const keys = await json('/api/v1/me/api-keys');
+  const node = $('#cli-key-list');
+  node.innerHTML = keys.length ? keys.map(key => `<div class="cli-key-row"><div><strong>${esc(key.name)}</strong><code>${esc(key.prefix)}</code><small>创建 ${esc(key.created_at)}${key.last_used_at ? ' · 最近使用 ' + esc(key.last_used_at) : ''}${key.revoked_at ? ' · 已撤销' : ''}</small></div>${key.revoked_at ? '' : `<button type="button" data-cli-key-revoke="${esc(key.id)}">撤销</button>`}</div>`).join('') : '<div class="pool-empty">暂无 API Key</div>';
+}
+
+async function createCLIKey(event) {
+  event.preventDefault();
+  const button = $('#cli-key-create');
+  if (button.disabled) return;
+  clearCLIKey();
+  const generation = cliKeyGeneration;
+  $('#cli-key-error').textContent = '';
+  button.disabled = true;
+  try {
+    const payload = await json('/api/v1/me/api-keys', {method:'POST', headers:{'Content-Type':'application/json', 'X-Satellite-Action':'1'}, body:JSON.stringify({name:$('#cli-key-name').value.trim()})});
+    if (generation !== cliKeyGeneration) return;
+    $('#cli-key-value').value = payload.api_key;
+    $('#cli-key-new').classList.remove('hidden');
+    $('#cli-key-name').value = '';
+    await loadCLIKeys();
+  } catch (error) { if (generation === cliKeyGeneration) $('#cli-key-error').textContent = error.message; }
+  finally { button.disabled = false; }
+}
+
+async function revokeCLIKey(event) {
+  const button = event.target.closest('[data-cli-key-revoke]');
+  if (!button || !confirm('撤销这个 CLI API Key？')) return;
+  button.disabled = true;
+  $('#cli-key-error').textContent = '';
+  try {
+    await json('/api/v1/me/api-keys/' + encodeURIComponent(button.dataset.cliKeyRevoke), {method:'DELETE', headers:{'X-Satellite-Action':'1'}});
+    clearCLIKey();
+    await loadCLIKeys();
+  } catch (error) { $('#cli-key-error').textContent = error.message; }
+  finally { button.disabled = false; }
+}
+
+async function copyCLIKey() {
+  try { await navigator.clipboard.writeText($('#cli-key-value').value); }
+  catch { $('#cli-key-error').textContent = '剪贴板不可用'; }
 }
 
 async function loadAccessPools() {
@@ -1569,10 +1810,10 @@ async function loadAccessPools() {
   state.access.credentials = payload.credentials || [];
   state.access.proxies = payload.proxies || [];
   state.access.accounts = payload.accounts || [];
+  const bound = new Set(state.access.accounts.map(item => item.credential_id).filter(Boolean));
   $('#access-account-count').textContent = state.access.accounts.length;
-  $('#access-credential-count').textContent = state.access.credentials.length;
+  $('#access-credential-count').textContent = state.access.credentials.filter(item => !bound.has(item.id)).length;
   $('#access-proxy-count').textContent = state.access.proxies.length;
-  renderCredentialList();
   renderAccountList();
   renderProxyList();
   rebuildAccessSelects();
@@ -1582,25 +1823,6 @@ function poolStatePill(item) {
   const stateName = item.enabled === false ? 'disabled' : (item.state || 'ready');
   const label = {ready: '可用', auth_required: '需认证', degraded: '降级', disabled: '已停用'}[stateName] || stateName;
   return `<span class="pool-pill ${esc(stateName)}">${esc(label)}</span>`;
-}
-
-function renderCredentialList() {
-  const node = $('#credential-list');
-  node.replaceChildren();
-  if (!state.access.credentials.length) {
-    node.innerHTML = '<div class="pool-empty">暂无凭据</div>';
-    return;
-  }
-  for (const item of state.access.credentials) {
-    const row = document.createElement('div');
-    row.className = 'pool-row';
-    row.innerHTML = `
-      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(accessKindLabels[item.kind] || item.kind)} · ${esc(item.secret_hint || 'Secret 已保存')}</small></div>
-      <div class="pool-actions"><button type="button" data-edit-credential="${item.id}">编辑</button><button type="button" data-delete-credential="${item.id}">删除</button></div></div>
-      <div class="pool-meta">${poolStatePill(item)}${credentialExpiryPill(item)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
-      ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
-    node.append(row);
-  }
 }
 
 function credentialExpiryPill(item) {
@@ -1626,19 +1848,28 @@ function credentialExpiryPill(item) {
 function renderAccountList() {
   const node = $('#account-list');
   node.replaceChildren();
-  if (!state.access.accounts.length) {
-    node.innerHTML = '<div class="pool-empty">暂无账号路由</div>';
-    return;
-  }
+  const credentialById = new Map(state.access.credentials.map(item => [item.id, item]));
+  const bound = new Set(state.access.accounts.map(item => item.credential_id).filter(Boolean));
+  if (!state.access.accounts.length && !state.access.credentials.length) node.innerHTML = '<div class="pool-empty">暂无访问配置</div>';
   for (const item of state.access.accounts) {
     const route = item.proxy_mode === 'direct' ? '直连' : item.proxy_mode === 'auto' ? '代理池' : `固定 · ${item.proxy_alias || '—'}`;
+    const stored = credentialById.get(item.credential_id);
     const row = document.createElement('div');
     row.className = 'pool-row';
     row.innerHTML = `
-      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(item.source_id)} · ${esc(item.credential_alias || '匿名')} · ${esc(route)}</small></div>
+      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(item.source_id)} · ${esc(stored ? `${accessKindLabels[stored.kind] || stored.kind} · Secret 已保存` : '匿名')} · ${esc(route)}</small></div>
       <div class="pool-actions"><button type="button" data-edit-account="${item.id}">编辑</button><button type="button" data-delete-account="${item.id}">删除</button></div></div>
-      <div class="pool-meta">${poolStatePill(item)}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
+      <div class="pool-meta">${poolStatePill(item)}${stored ? credentialExpiryPill(stored) : ''}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
       ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
+    node.append(row);
+  }
+  for (const item of state.access.credentials) {
+    if (bound.has(item.id)) continue;
+    const row = document.createElement('div');
+    row.className = 'pool-row';
+    row.innerHTML = `<div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(accessKindLabels[item.kind] || item.kind)} · 已加密，尚未绑定 Provider</small></div>
+      <div class="pool-actions"><button type="button" data-bind-credential="${item.id}">绑定</button><button type="button" data-delete-credential="${item.id}">删除</button></div></div>
+      <div class="pool-meta"><span class="pool-pill">待绑定</span>${credentialExpiryPill(item)}</div>`;
     node.append(row);
   }
 }
@@ -1668,16 +1899,22 @@ function formatAccessTime(value) {
 }
 
 function credentialFields() {
-  const kind = $('#credential-kind').value;
+  const kind = providerKinds[$('#account-source').value];
   const node = $('#credential-secret-fields');
   const note = $('#credential-secret-note');
   const password = (id, label, placeholder = '') => `<label>${label}<input id="${id}" type="password" autocomplete="new-password" placeholder="${placeholder}"></label>`;
-  if (['laads','earthdata','earthcare'].includes(kind)) {
+  if (!kind) {
+    node.replaceChildren();
+    note.textContent = '该 Provider 无需凭据。';
+    renderCredentialGuide();
+    return;
+  }
+  if (['laads','earthdata','earthcare','cds'].includes(kind)) {
     node.innerHTML = `<div class="secret-grid">${password('credential-token','Token','编辑时留空即保留')}</div>`;
-    note.textContent = '新增必须填写 Token；编辑时留空表示保留原 Token。';
+    note.textContent = '可沿用上方已加密 Token；填写新 Token 则为此配置创建独立凭据。';
   } else if (kind === 'eumetsat') {
     node.innerHTML = `<div class="secret-grid">${password('credential-consumer-key','Consumer Key','从 EUMETSAT API Key Management 复制')}${password('credential-consumer-secret','Consumer Secret','从 EUMETSAT API Key Management 复制')}</div>`;
-    note.textContent = '这里只填写官网 User credentials 区域的 Consumer Key + Consumer Secret。API Token 无需填写，下载器会自动申请并刷新；编辑时两项都留空表示保留原凭据。';
+    note.textContent = '这里只填写官网 User credentials 区域的 Consumer Key + Consumer Secret。API Token 无需填写，中心会自动申请并刷新；编辑时两项都留空表示保留原凭据。';
   } else {
     node.innerHTML = `<div class="secret-grid"><label>用户名<input id="credential-username" autocomplete="off" placeholder="编辑时留空即保留"></label>${password('credential-password','密码')}</div>`;
     note.textContent = '新增必须填写账号凭据；编辑时留空表示保留原凭据。';
@@ -1686,7 +1923,7 @@ function credentialFields() {
 }
 
 function renderCredentialGuide() {
-  const kind = $('#credential-kind').value;
+  const kind = providerKinds[$('#account-source').value];
   const guide = credentialGuides[kind];
   const node = $('#credential-guide');
   if (!guide) {
@@ -1710,12 +1947,15 @@ function renderCredentialGuide() {
 function rebuildAccessSelects() {
   const credentialSelect = $('#account-credential');
   const previousCredential = credentialSelect.value;
-  credentialSelect.replaceChildren(new Option('匿名 / 无凭据', ''));
+  credentialSelect.replaceChildren(new Option('新凭据 / 无凭据', ''));
   const required = providerKinds[$('#account-source').value] || '';
-  for (const item of state.access.credentials.filter(item => required && item.kind === required)) {
-    credentialSelect.add(new Option(`${item.alias} · ${accessKindLabels[item.kind] || item.kind}`, String(item.id)));
+  const profileByCredential = new Map(state.access.accounts.filter(item => item.credential_id).map(item => [item.credential_id, item.alias]));
+  for (const item of state.access.credentials) {
+    if (item.kind !== required) continue;
+    credentialSelect.add(new Option(`${profileByCredential.get(item.id) || item.alias} · ${accessKindLabels[item.kind] || item.kind}`, String(item.id)));
   }
   if ([...credentialSelect.options].some(option => option.value === previousCredential)) credentialSelect.value = previousCredential;
+  $('#account-credential-row').classList.toggle('hidden', !required);
 
   const proxySelect = $('#account-proxy');
   const previousProxy = proxySelect.value;
@@ -1725,18 +1965,10 @@ function rebuildAccessSelects() {
   $('#account-proxy-row').classList.toggle('hidden', $('#account-proxy-mode').value !== 'fixed');
 }
 
-function openPoolForm(kind, item = null) {
+function openPoolForm(kind, item = null, savedCredential = null) {
   $(`#${kind}-form`).classList.remove('hidden');
   $(`#${kind}-error`).textContent = '';
-  if (kind === 'credential') {
-    $('#credential-id').value = item?.id || '';
-    $('#credential-alias').value = item?.alias || '';
-    $('#credential-kind').value = item?.kind || 'laads';
-    $('#credential-kind').disabled = Boolean(item);
-    $('#credential-priority').value = item?.priority ?? 0;
-    $('#credential-enabled').checked = item?.enabled ?? true;
-    credentialFields();
-  } else if (kind === 'proxy') {
+  if (kind === 'proxy') {
     $('#proxy-id').value = item?.id || '';
     $('#proxy-alias').value = item?.alias || '';
     $('#proxy-url').value = '';
@@ -1745,51 +1977,22 @@ function openPoolForm(kind, item = null) {
     $('#proxy-enabled').checked = item?.enabled ?? true;
   } else {
     $('#account-id').value = item?.id || '';
-    $('#account-alias').value = item?.alias || '';
-    $('#account-source').value = item?.source_id || 'goes';
+    $('#account-alias').value = item?.alias || (savedCredential ? `${savedCredential.alias} access`.slice(0, 64) : '');
+    $('#account-source').value = item?.source_id || ({cds:'era5',laads:'modis',earthdata:'calipso',earthcare:'earthcare',eumetsat:'mtg',cloudsat:'cloudsat'}[savedCredential?.kind] || 'goes');
     $('#account-proxy-mode').value = item?.proxy_mode || 'direct';
     $('#account-priority').value = item?.priority ?? 0;
     $('#account-enabled').checked = item?.enabled ?? true;
     rebuildAccessSelects();
-    $('#account-credential').value = item?.credential_id ? String(item.credential_id) : '';
+    credentialFields();
+    $('#account-credential').value = item?.credential_id ? String(item.credential_id) : savedCredential ? String(savedCredential.id) : '';
     $('#account-proxy').value = item?.proxy_id ? String(item.proxy_id) : '';
   }
 }
 
 function closePoolForm(kind) {
   $(`#${kind}-form`).classList.add('hidden');
-  if (kind === 'credential') $('#credential-kind').disabled = false;
-}
-
-async function saveCredential(event) {
-  event.preventDefault();
-  const kind = $('#credential-kind').value;
-  const currentId = Number($('#credential-id').value || 0);
-  const alias = $('#credential-alias').value.trim();
-  if (duplicateAlias(state.access.credentials, alias, currentId)) {
-    $('#credential-error').textContent = `凭据别名“${alias}”已存在，请编辑已有凭据或换一个别名。`;
-    return;
-  }
-  const secret = {};
-  if (['laads','earthdata','earthcare'].includes(kind)) secret.token = $('#credential-token')?.value || '';
-  else if (kind === 'eumetsat') {
-    secret.consumer_key = $('#credential-consumer-key')?.value || '';
-    secret.consumer_secret = $('#credential-consumer-secret')?.value || '';
-  } else {
-    secret.username = $('#credential-username')?.value || '';
-    secret.password = $('#credential-password')?.value || '';
-  }
-  Object.keys(secret).forEach(key => { if (!secret[key]) delete secret[key]; });
-  const payload = {
-    alias, kind, secret,
-    priority: Number($('#credential-priority').value || 0), enabled: $('#credential-enabled').checked,
-  };
-  if (currentId) payload.id = currentId;
-  try {
-    await json('/api/v1/access/credentials', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-    closePoolForm('credential');
-    await loadAccessPools();
-  } catch (error) { $('#credential-error').textContent = error.message; }
+  if (kind === 'account') $('#credential-secret-fields').replaceChildren();
+  if (kind === 'proxy') $('#proxy-url').value = '';
 }
 
 async function saveProxy(event) {
@@ -1823,14 +2026,28 @@ async function saveAccount(event) {
   }
   const credential = $('#account-credential').value;
   const proxy = $('#account-proxy').value;
+  const kind = providerKinds[$('#account-source').value];
+  const secret = {};
+  if (['laads','earthdata','earthcare','cds'].includes(kind)) secret.token = $('#credential-token')?.value || '';
+  else if (kind === 'eumetsat') {
+    secret.consumer_key = $('#credential-consumer-key')?.value || '';
+    secret.consumer_secret = $('#credential-consumer-secret')?.value || '';
+  } else if (kind === 'cloudsat') {
+    secret.username = $('#credential-username')?.value || '';
+    secret.password = $('#credential-password')?.value || '';
+  }
+  Object.keys(secret).forEach(key => { if (!secret[key]) delete secret[key]; });
+  const newSecret = Object.keys(secret).length > 0;
+  if (newSecret && credential && !confirm('新凭据将仅用于当前配置，原加密凭据保留。继续吗？')) return;
   const payload = {
     alias, source_id: $('#account-source').value,
-    credential_id: credential ? Number(credential) : null, proxy_mode: $('#account-proxy-mode').value,
+    credential_id: !newSecret && credential ? Number(credential) : null, secret,
+    proxy_mode: $('#account-proxy-mode').value,
     proxy_id: proxy ? Number(proxy) : null, priority: Number($('#account-priority').value || 0), enabled: $('#account-enabled').checked,
   };
   if (currentId) payload.id = currentId;
   try {
-    await json('/api/v1/access/accounts', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    await json('/api/v1/access/profiles', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     closePoolForm('account');
     await loadAccessPools();
   } catch (error) { $('#account-error').textContent = error.message; }
@@ -1843,7 +2060,7 @@ function duplicateAlias(items, alias, currentId = 0) {
 }
 
 async function deletePoolItem(kind, id) {
-  if (!confirm('确认删除这条配置？关联账号可能会立即失去可用路由。')) return;
+  if (!confirm(kind === 'account' ? '确认删除此访问配置？已加密凭据会保留为待绑定项。' : '确认删除这条配置？关联账号可能会立即失去可用路由。')) return;
   try {
     const resource = kind === 'proxy' ? 'proxies' : `${kind}s`;
     await json(`/api/v1/access/${resource}/${id}`, {method:'DELETE'});
@@ -1851,20 +2068,12 @@ async function deletePoolItem(kind, id) {
   } catch (error) { alert(error.message); }
 }
 
-async function loginAccess(event) {
-  event.preventDefault();
-  $('#access-login-error').textContent = '';
+async function logoutPortal() {
+  clearCLIKey();
   try {
-    await json('/api/v1/access/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:$('#access-username').value, password:$('#access-password').value})});
-    $('#access-password').value = '';
-    await loadAccess();
-  } catch (error) { $('#access-login-error').textContent = error.message; }
-}
-
-async function logoutAccess() {
-  try { await json('/api/v1/access/logout', {method:'POST'}); } catch {}
-  state.access.user = null;
-  await loadAccess();
+    await json('/api/v1/auth/logout', {method:'POST'});
+    window.location.replace('/login');
+  } catch (error) { $('#service-label').textContent = error.message; }
 }
 
 async function health() {
@@ -1885,6 +2094,7 @@ function bind() {
   document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', () => {
     setView(node.dataset.view);
     if (node.dataset.view === 'access-view') loadAccess();
+    if (node.dataset.view === 'cli-view') loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; });
     if (node.dataset.view === 'monitor-view') loadMonitor(true);
     if (node.dataset.view === 'downloads-view') loadDownloads(true);
   }));
@@ -1989,6 +2199,8 @@ function bind() {
   });
   $('#close-detail').addEventListener('click', closeDetail);
   $('#refresh-sources').addEventListener('click', loadSources);
+  $('#era5-form').addEventListener('submit', submitERA5);
+  $('#era5-refresh').addEventListener('click', refreshERA5);
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
   $('#refresh-downloads').addEventListener('click', () => loadDownloads(true, true));
   $('#download-monitor-provider').addEventListener('change', event => {
@@ -2028,23 +2240,19 @@ function bind() {
     localStorage.setItem('satellite-data-monitor-source', state.monitor.selected);
     renderMonitor();
   });
-  $('#access-login-form').addEventListener('submit', loginAccess);
+  $('#portal-logout').addEventListener('click', logoutPortal);
+  $('#refresh-cli-keys').addEventListener('click', () => { clearCLIKey(); loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; }); });
+  $('#cli-key-form').addEventListener('submit', createCLIKey);
+  $('#cli-key-list').addEventListener('click', revokeCLIKey);
+  $('#cli-key-copy').addEventListener('click', copyCLIKey);
+  $('#cli-key-dismiss').addEventListener('click', clearCLIKey);
   $('#refresh-access').addEventListener('click', loadAccess);
-  $('#logout-access').addEventListener('click', logoutAccess);
   document.querySelectorAll('[data-pool-new]').forEach(node => node.addEventListener('click', () => openPoolForm(node.dataset.poolNew)));
   document.querySelectorAll('[data-form-cancel]').forEach(node => node.addEventListener('click', () => closePoolForm(node.dataset.formCancel)));
-  $('#credential-kind').addEventListener('change', credentialFields);
-  $('#account-source').addEventListener('change', rebuildAccessSelects);
-  $('#account-proxy-mode').addEventListener('change', rebuildAccessSelects);
-  $('#credential-form').addEventListener('submit', saveCredential);
+  $('#account-source').addEventListener('change', () => { rebuildAccessSelects(); credentialFields(); });
+  $('#account-proxy-mode').addEventListener('change', () => $('#account-proxy-row').classList.toggle('hidden', $('#account-proxy-mode').value !== 'fixed'));
   $('#proxy-form').addEventListener('submit', saveProxy);
   $('#account-form').addEventListener('submit', saveAccount);
-  $('#credential-list').addEventListener('click', event => {
-    const edit = event.target.closest('[data-edit-credential]');
-    const remove = event.target.closest('[data-delete-credential]');
-    if (edit) openPoolForm('credential', state.access.credentials.find(item => item.id === Number(edit.dataset.editCredential)));
-    if (remove) deletePoolItem('credential', Number(remove.dataset.deleteCredential));
-  });
   $('#proxy-list').addEventListener('click', event => {
     const edit = event.target.closest('[data-edit-proxy]');
     const remove = event.target.closest('[data-delete-proxy]');
@@ -2054,12 +2262,27 @@ function bind() {
   $('#account-list').addEventListener('click', event => {
     const edit = event.target.closest('[data-edit-account]');
     const remove = event.target.closest('[data-delete-account]');
+    const bind = event.target.closest('[data-bind-credential]');
+    const discard = event.target.closest('[data-delete-credential]');
     if (edit) openPoolForm('account', state.access.accounts.find(item => item.id === Number(edit.dataset.editAccount)));
     if (remove) deletePoolItem('account', Number(remove.dataset.deleteAccount));
+    if (bind) openPoolForm('account', null, state.access.credentials.find(item => item.id === Number(bind.dataset.bindCredential)));
+    if (discard) deletePoolItem('credential', Number(discard.dataset.deleteCredential));
+  });
+  $('#satellite-timeline-rows').addEventListener('click', event => {
+    const row = event.target.closest('[data-satellite]');
+    if (!row || ![...satelliteEl.options].some(option => option.value === row.dataset.satellite)) return;
+    satelliteEl.value = row.dataset.satellite;
+    rebuildFilters('satellite');
+    persistFilters();
   });
 }
 
 async function boot() {
+  const session = await json('/api/v1/auth/session');
+  state.access.user = session.user;
+  $('#portal-user').textContent = session.user.username;
+  document.querySelectorAll('[data-admin-only]').forEach(node => node.classList.toggle('hidden', session.user.role !== 'admin'));
   setSidebar(localStorage.getItem(SIDEBAR_KEY) === '1');
   timezoneEl.value = state.displayZone;
   fillYears();

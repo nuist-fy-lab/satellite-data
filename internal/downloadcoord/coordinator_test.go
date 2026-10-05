@@ -29,3 +29,30 @@ func TestArchiveRelativeDir(t *testing.T) {
 		t.Fatalf("path=%q want=%q", got, want)
 	}
 }
+
+func TestSharedArchiveRelativeDirs(t *testing.T) {
+	date := time.Date(2026, 9, 24, 1, 2, 3, 0, time.UTC)
+	for _, item := range []struct{ source, dataType, want string }{
+		{"earthcare", "AUX_JSG_1D", "AUX_JSG_1D/20260924"},
+		{"era5", "reanalysis-era5-single-levels", "CDS/reanalysis-era5-single-levels/2026/09/24"},
+	} {
+		if got := archiveRelativeDir(item.source, model.Product{DataType: item.dataType}, date); got != item.want {
+			t.Errorf("%s: %q, want %q", item.source, got, item.want)
+		}
+	}
+}
+
+func TestDiscoveryRetryDelayHasJitterAndCap(t *testing.T) {
+	for _, tc := range []struct {
+		failure  int
+		min, max time.Duration
+	}{{1, 5 * time.Second, 7500 * time.Millisecond}, {2, 10 * time.Second, 15 * time.Second},
+		{20, 5 * time.Minute, 5 * time.Minute}} {
+		for range 16 {
+			got := discoveryRetryDelay(tc.failure)
+			if got < tc.min || got > tc.max {
+				t.Fatalf("failure %d: delay %s outside [%s,%s]", tc.failure, got, tc.min, tc.max)
+			}
+		}
+	}
+}

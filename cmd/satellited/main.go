@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/app"
 	"github.com/nuist-fy-lab/satellite-data/internal/archiveevent"
 	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
+	"github.com/nuist-fy-lab/satellite-data/internal/central"
 	"github.com/nuist-fy-lab/satellite-data/internal/config"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
@@ -30,7 +32,36 @@ func main() {
 	addr := flag.String("addr", envOr("SATELLITED_ADDR", "127.0.0.1:8080"), "HTTP listen address")
 	stateDB := flag.String("state-db", envOr("SATELLITED_STATE_DB", defaultStateDB()), "persistent state database")
 	archiveRoot := flag.String("archive", envOr("SATELLITED_ARCHIVE", defaultArchiveRoot()), "local satellite archive root")
+	migrateAccess := flag.Bool("migrate-access", false, "import legacy downloader access into an empty central vault and exit")
+	legacyDB := flag.String("legacy-access-db", "", "stopped downloader database path (migration only)")
+	legacyKey := flag.String("legacy-access-key", "", "legacy private master key path (migration only)")
 	flag.Parse()
+	centralVault, err := central.OpenVault(runtimeConfig.AccessMasterKey)
+	if err != nil {
+		slog.Error("open central credential vault", "error", err)
+		os.Exit(1)
+	}
+	centralStore, err := central.OpenStore(runtimeConfig.AccessDB, centralVault)
+	if err != nil {
+		slog.Error("open central access store", "error", err)
+		os.Exit(1)
+	}
+	defer centralStore.Close()
+	if *migrateAccess {
+		if *legacyDB == "" || *legacyKey == "" {
+			slog.Error("migration requires legacy-access-db and legacy-access-key paths")
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		counts, err := centralStore.ImportLegacy(ctx, *legacyDB, *legacyKey)
+		if err != nil {
+			slog.Error("access migration failed; destination unchanged", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("access migration committed", "credentials", counts.Credentials, "proxies", counts.Proxies, "accounts", counts.Accounts)
+		return
+	}
 
 	registry, err := app.NewRegistry()
 	if err != nil {
@@ -39,6 +70,10 @@ func main() {
 	}
 	if err := os.MkdirAll(filepath.Dir(*stateDB), 0o750); err != nil {
 		slog.Error("create state directory", "error", err)
+		os.Exit(1)
+	}
+	if err := checkLegacyStateDB(*stateDB); err != nil {
+		slog.Error("open persistent state", "error", err)
 		os.Exit(1)
 	}
 	store, err := state.Open(*stateDB)
@@ -61,7 +96,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	linkmon.New(store).Run(ctx)
-	archiveIndexer := indexer.New(registry, store, *archiveRoot)
+	archiveIndexer := indexer.New(registry, store, *archiveRoot,
+		os.Getenv("SATELLITED_EARTHCARE_ARCHIVE"), os.Getenv("SATELLITED_ERA5_ARCHIVE"), os.Getenv("SATELLITED_HIMAWARI_ARCHIVE"))
 	archiveIndexer.Run(ctx)
 	downloaderClient := downloader.New(runtimeConfig.DownloaderSocket)
 	downloadmon.New(store, downloaderClient).Run(ctx)
@@ -71,14 +107,21 @@ func main() {
 		os.Exit(1)
 	}
 	defer authStore.Close()
-	coordinator, err := downloadcoord.New(registry, store, downloaderClient)
+	centralService := central.NewService(centralStore)
+	go func() {
+		if err := central.RunGateway(ctx, runtimeConfig.CentralSocket, centralService); err != nil && ctx.Err() == nil {
+			slog.Error("central access gateway stopped", "error", err)
+			stop()
+		}
+	}()
+	coordinator, err := downloadcoord.New(registry, store, downloaderClient, centralService)
 	if err != nil {
 		slog.Error("initialize download coordinator", "error", err)
 		os.Exit(1)
 	}
 	coordinator.Run(ctx)
 	go func() {
-		if err := archiveevent.Run(ctx, runtimeConfig.ArchiveEventSocket, archiveIndexer.TriggerLocalScan); err != nil && ctx.Err() == nil {
+		if err := archiveevent.Run(ctx, runtimeConfig.ArchiveEventSocket, archiveIndexer.RecordArchiveEvent); err != nil && ctx.Err() == nil {
 			slog.Error("archive event listener stopped", "error", err)
 			stop()
 		}
@@ -86,7 +129,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              *addr,
-		Handler:           httpapi.NewWithAuth(registry, store, downloaderClient, authStore, runtimeConfig.SessionTTL),
+		Handler:           httpapi.NewWithAuth(registry, store, downloaderClient, authStore, runtimeConfig.SessionTTL, centralService),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      2 * time.Minute,
@@ -116,13 +159,31 @@ func envOr(name, fallback string) string {
 
 func defaultStateDB() string {
 	if root := os.Getenv("XDG_STATE_HOME"); root != "" {
-		return filepath.Join(root, "satellite-data", "state.db")
+		return filepath.Join(root, "satellite-data", "state.sqlite3")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "satellite-data.db"
+		return "satellite-data.sqlite3"
 	}
-	return filepath.Join(home, ".local", "state", "satellite-data", "state.db")
+	return filepath.Join(home, ".local", "state", "satellite-data", "state.sqlite3")
+}
+
+func checkLegacyStateDB(path string) error {
+	if filepath.Base(path) != "state.sqlite3" {
+		return nil
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	legacy := filepath.Join(filepath.Dir(path), "state.db")
+	if _, err := os.Stat(legacy); err == nil {
+		return fmt.Errorf("legacy state database %s exists; stop satellited and migrate it to %s before starting", legacy, path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func defaultArchiveRoot() string {

@@ -91,7 +91,7 @@ func (s *Store) init(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS api_keys (
+		`CREATE TABLE IF NOT EXISTS satellite_api_keys (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
@@ -101,8 +101,8 @@ func (s *Store) init(ctx context.Context) error {
 			last_used_at TEXT,
 			revoked_at TEXT
 		)`,
-		`CREATE INDEX IF NOT EXISTS api_keys_user_idx ON api_keys(user_id, created_at)`,
-		`CREATE TABLE IF NOT EXISTS web_sessions (
+		`CREATE INDEX IF NOT EXISTS satellite_api_keys_user_idx ON satellite_api_keys(user_id, created_at)`,
+		`CREATE TABLE IF NOT EXISTS satellite_web_sessions (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			secret_hash BLOB NOT NULL,
@@ -110,7 +110,7 @@ func (s *Store) init(ctx context.Context) error {
 			last_used_at TEXT NOT NULL,
 			expires_at TEXT NOT NULL
 		)`,
-		`CREATE INDEX IF NOT EXISTS web_sessions_user_idx ON web_sessions(user_id, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS satellite_web_sessions_user_idx ON satellite_web_sessions(user_id, expires_at)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -175,7 +175,7 @@ func (s *Store) SetPassword(ctx context.Context, username, password string) erro
 		return sql.ErrNoRows
 	}
 	_, _ = s.db.ExecContext(ctx,
-		`DELETE FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE username=? COLLATE NOCASE)`,
+		`DELETE FROM satellite_web_sessions WHERE user_id=(SELECT id FROM users WHERE username=? COLLATE NOCASE)`,
 		strings.TrimSpace(username),
 	)
 	return nil
@@ -199,7 +199,7 @@ func (s *Store) SetDisabled(ctx context.Context, username string, disabled bool)
 	}
 	if disabled {
 		_, _ = s.db.ExecContext(ctx,
-			`DELETE FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE username=? COLLATE NOCASE)`,
+			`DELETE FROM satellite_web_sessions WHERE user_id=(SELECT id FROM users WHERE username=? COLLATE NOCASE)`,
 			strings.TrimSpace(username),
 		)
 	}
@@ -261,17 +261,17 @@ func (s *Store) CreateSession(ctx context.Context, userID string, ttl time.Durat
 	now := time.Now().UTC()
 	expires := now.Add(ttl)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO web_sessions(id,user_id,secret_hash,created_at,last_used_at,expires_at) VALUES(?,?,?,?,?,?)`,
+		`INSERT INTO satellite_web_sessions(id,user_id,secret_hash,created_at,last_used_at,expires_at) VALUES(?,?,?,?,?,?)`,
 		id, userID, hashSecret(secret), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return "", err
 	}
-	return "nsmcsess_v1_" + id + "_" + base64.RawURLEncoding.EncodeToString(secret), nil
+	return "satellitesess_v1_" + id + "_" + base64.RawURLEncoding.EncodeToString(secret), nil
 }
 
 func (s *Store) VerifySession(ctx context.Context, token string) (User, error) {
-	id, secret, err := parseToken(token, "nsmcsess_v1")
+	id, secret, err := parseToken(token, "satellitesess_v1")
 	if err != nil {
 		return User{}, err
 	}
@@ -281,7 +281,7 @@ func (s *Store) VerifySession(ctx context.Context, token string) (User, error) {
 	var expiresText string
 	err = s.db.QueryRowContext(ctx,
 		`SELECT u.id,u.username,u.role,u.disabled,u.created_at,s.secret_hash,s.expires_at
-		 FROM web_sessions s JOIN users u ON u.id=s.user_id WHERE s.id=?`, id,
+		 FROM satellite_web_sessions s JOIN users u ON u.id=s.user_id WHERE s.id=?`, id,
 	).Scan(&user.ID, &user.Username, &user.Role, &disabled, &user.CreatedAt, &expected, &expiresText)
 	if err != nil {
 		return User{}, err
@@ -293,16 +293,16 @@ func (s *Store) VerifySession(ctx context.Context, token string) (User, error) {
 	if err != nil || time.Now().UTC().After(expires) {
 		return User{}, errors.New("session expired")
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE web_sessions SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
+	_, _ = s.db.ExecContext(ctx, `UPDATE satellite_web_sessions SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
 	return user, nil
 }
 
 func (s *Store) RevokeSession(ctx context.Context, token string) error {
-	id, _, err := parseToken(token, "nsmcsess_v1")
+	id, _, err := parseToken(token, "satellitesess_v1")
 	if err != nil {
 		return nil
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE id=?`, id)
+	_, err = s.db.ExecContext(ctx, `DELETE FROM satellite_web_sessions WHERE id=?`, id)
 	return err
 }
 
@@ -320,22 +320,22 @@ func (s *Store) CreateAPIKey(ctx context.Context, userID, name string) (APIKey, 
 		return APIKey{}, "", err
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(secret)
-	prefix := "nsmc_v1_" + id + "_" + encoded[:6]
+	prefix := "satellite_v1_" + id
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO api_keys(id,user_id,name,prefix,secret_hash,created_at) VALUES(?,?,?,?,?,?)`,
+		`INSERT INTO satellite_api_keys(id,user_id,name,prefix,secret_hash,created_at) VALUES(?,?,?,?,?,?)`,
 		id, userID, name, prefix, hashSecret(secret), now,
 	)
 	if err != nil {
 		return APIKey{}, "", err
 	}
 	key := APIKey{ID: id, Name: name, Prefix: prefix, CreatedAt: now}
-	return key, "nsmc_v1_" + id + "_" + encoded, nil
+	return key, "satellite_v1_" + id + "_" + encoded, nil
 }
 
 func (s *Store) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,name,prefix,created_at,last_used_at,revoked_at FROM api_keys WHERE user_id=? ORDER BY created_at DESC`, userID,
+		`SELECT id,name,prefix,created_at,last_used_at,revoked_at FROM satellite_api_keys WHERE user_id=? ORDER BY created_at DESC`, userID,
 	)
 	if err != nil {
 		return nil, err
@@ -361,7 +361,7 @@ func (s *Store) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, error
 
 func (s *Store) RevokeAPIKey(ctx context.Context, userID, keyID string) error {
 	result, err := s.db.ExecContext(ctx,
-		`UPDATE api_keys SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL`,
+		`UPDATE satellite_api_keys SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL`,
 		time.Now().UTC().Format(time.RFC3339Nano), keyID, userID,
 	)
 	if err != nil {
@@ -375,7 +375,7 @@ func (s *Store) RevokeAPIKey(ctx context.Context, userID, keyID string) error {
 }
 
 func (s *Store) AuthenticateAPIKey(ctx context.Context, token string) (User, error) {
-	id, secret, err := parseToken(token, "nsmc_v1")
+	id, secret, err := parseToken(token, "satellite_v1")
 	if err != nil {
 		return User{}, err
 	}
@@ -385,7 +385,7 @@ func (s *Store) AuthenticateAPIKey(ctx context.Context, token string) (User, err
 	var revoked sql.NullString
 	err = s.db.QueryRowContext(ctx,
 		`SELECT u.id,u.username,u.role,u.disabled,u.created_at,k.secret_hash,k.revoked_at
-		 FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?`, id,
+		 FROM satellite_api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?`, id,
 	).Scan(&user.ID, &user.Username, &user.Role, &disabled, &user.CreatedAt, &expected, &revoked)
 	if err != nil {
 		return User{}, err
@@ -393,7 +393,7 @@ func (s *Store) AuthenticateAPIKey(ctx context.Context, token string) (User, err
 	if disabled != 0 || revoked.Valid || !hmac.Equal(hashSecret(secret), expected) {
 		return User{}, errors.New("invalid API key")
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE api_keys SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
+	_, _ = s.db.ExecContext(ctx, `UPDATE satellite_api_keys SET last_used_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), id)
 	return user, nil
 }
 
@@ -418,7 +418,7 @@ func hashSecret(secret []byte) []byte {
 
 func parseToken(token, prefix string) (string, []byte, error) {
 	parts := strings.SplitN(token, "_", 4)
-	// nsmc_v1_<id>_<secret> and nsmcsess_v1_<id>_<secret>
+	// Prefix, version, public id, then the URL-safe secret (which may contain '_').
 	if len(parts) != 4 || parts[0]+"_"+parts[1] != prefix {
 		return "", nil, errors.New("invalid token format")
 	}

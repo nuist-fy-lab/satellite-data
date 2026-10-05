@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -16,24 +15,39 @@ import (
 )
 
 type client struct {
-	base string
-	http *http.Client
+	base   string
+	apiKey string
+	http   *http.Client
 }
 
 func main() {
-	server := envOr("SATELLITE_SERVER", "http://127.0.0.1:8080")
 	args := os.Args[1:]
 	if len(args) < 2 {
 		usage()
 		os.Exit(2)
 	}
-	c := &client{base: strings.TrimRight(server, "/"), http: &http.Client{Timeout: 2 * time.Minute}}
-	var err error
+	if args[0] == "config" && args[1] == "set" {
+		if err := runConfigSet(args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "satellite:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	cfg, err := loadCLIConfig(configPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "satellite:", err)
+		os.Exit(1)
+	}
+	c := newClient(cfg)
 	switch args[0] + " " + args[1] {
 	case "source list":
-		err = c.sourceList()
+		err = c.sourceList(args[2:]...)
 	case "catalog list":
 		err = c.catalogList(args[2:])
+	case "product list":
+		err = c.productList(args[2:])
+	case "product show":
+		err = c.productShow(args[2:])
 	case "query list":
 		err = c.query(args[2:])
 	case "download create":
@@ -46,6 +60,14 @@ func main() {
 		err = c.downloadStatus(args[2:])
 	case "download providers":
 		err = c.downloadProviders()
+	case "era5 schema":
+		err = c.era5Schema(args[2:])
+	case "era5 submit":
+		err = c.era5Submit(args[2:])
+	case "era5 status":
+		err = c.era5Status(args[2:])
+	case "era5 result":
+		err = c.era5Result(args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -54,6 +76,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "satellite:", err)
 		os.Exit(1)
 	}
+}
+
+func newClient(cfg cliConfig) *client {
+	return &client{base: cfg.Server, apiKey: cfg.APIKey, http: &http.Client{
+		Timeout: 2 * time.Minute,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}}
 }
 
 type downloadRequest struct {
@@ -74,6 +105,10 @@ type downloadRequest struct {
 	FilesDone          int       `json:"files_done"`
 	FilesFailed        int       `json:"files_failed"`
 	FilesWaitingAuth   int       `json:"files_waiting_auth"`
+	FailureCount       int       `json:"failure_count"`
+	RequestedAt        time.Time `json:"requested_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	CompletedAt        time.Time `json:"completed_at,omitempty"`
 	LastError          string    `json:"last_error,omitempty"`
 }
 
@@ -87,84 +122,11 @@ func (r *repeatedTimes) Set(value string) error {
 
 // Submit uses inclusive UTC calendar dates, matching nsmc-lab job create.
 func (c *client) downloadSubmit(args []string) error {
-	set := flag.NewFlagSet("download submit", flag.ContinueOnError)
-	source := set.String("source", "", "source id")
-	collection := set.String("collection", "", "collection id")
-	start := set.String("start", "", "first UTC date YYYY-MM-DD (inclusive)")
-	end := set.String("end", "", "last UTC date YYYY-MM-DD (inclusive)")
-	band := set.Int("band", 0, "GOES ABI band (1-16)")
-	hourly := set.Bool("hourly", false, "select every UTC hour at HH:00")
-	jsonOutput := set.Bool("json", false, "print JSON")
-	var times repeatedTimes
-	set.Var(&times, "time", "UTC scan time HH:MM; repeatable")
-	if err := set.Parse(args); err != nil {
-		return err
-	}
-	if set.NArg() != 0 {
-		return errors.New("unexpected positional arguments")
-	}
-	if *source == "" || *collection == "" {
-		return errors.New("--source and --collection are required")
-	}
-	first, err := time.Parse(time.DateOnly, *start)
-	if err != nil || first.Format(time.DateOnly) != *start {
-		return errors.New("--start must be YYYY-MM-DD")
-	}
-	last, err := time.Parse(time.DateOnly, *end)
-	if err != nil || last.Format(time.DateOnly) != *end || last.Before(first) {
-		return errors.New("--end must be YYYY-MM-DD and not before --start")
-	}
-	if *hourly && len(times) > 0 {
-		return errors.New("use --hourly or --time, not both")
-	}
-	if *hourly {
-		for hour := 0; hour < 24; hour++ {
-			times = append(times, fmt.Sprintf("%02d:00", hour))
-		}
-	}
-	var payload struct {
-		Download downloadRequest `json:"download"`
-	}
-	if err := c.post("/api/v1/downloads", map[string]any{
-		"source": *source, "collection": *collection, "start": *start,
-		"end": last.AddDate(0, 0, 1).Format(time.DateOnly), "band": *band, "times": times,
-	}, &payload); err != nil {
-		return err
-	}
-	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(payload.Download)
-	}
-	printDownload(payload.Download)
-	return nil
+	return c.dataOrder(args, true)
 }
 
 func (c *client) downloadCreate(args []string) error {
-	set := flag.NewFlagSet("download create", flag.ContinueOnError)
-	source := set.String("source", "", "source id")
-	collection := set.String("collection", "", "collection id")
-	start := set.String("start", "", "start RFC3339 or YYYY-MM-DD")
-	end := set.String("end", "", "end RFC3339 or YYYY-MM-DD")
-	jsonOutput := set.Bool("json", false, "print JSON")
-	if err := set.Parse(args); err != nil {
-		return err
-	}
-	if *source == "" || *collection == "" || *start == "" || *end == "" {
-		return errors.New("--source, --collection, --start and --end are required")
-	}
-	var payload struct {
-		Download downloadRequest `json:"download"`
-	}
-	request := map[string]string{
-		"source": *source, "collection": *collection, "start": *start, "end": *end,
-	}
-	if err := c.post("/api/v1/downloads", request, &payload); err != nil {
-		return err
-	}
-	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(payload.Download)
-	}
-	printDownload(payload.Download)
-	return nil
+	return c.dataOrder(args, false)
 }
 
 func (c *client) downloadList(args []string) error {
@@ -173,6 +135,9 @@ func (c *client) downloadList(args []string) error {
 	jsonOutput := set.Bool("json", false, "print JSON")
 	if err := set.Parse(args); err != nil {
 		return err
+	}
+	if set.NArg() != 0 || *limit < 1 || *limit > 500 {
+		return errors.New("--limit must be 1-500; no positional arguments")
 	}
 	var payload struct {
 		Downloads []downloadRequest `json:"downloads"`
@@ -196,8 +161,8 @@ func (c *client) downloadStatus(args []string) error {
 	if err := set.Parse(args); err != nil {
 		return err
 	}
-	if *id <= 0 {
-		return errors.New("--id is required")
+	if *id <= 0 || set.NArg() != 0 {
+		return errors.New("positive --id required; no positional arguments")
 	}
 	var payload struct {
 		Download downloadRequest `json:"download"`
@@ -217,7 +182,6 @@ func (c *client) downloadProviders() error {
 		Providers []struct {
 			SourceID       string         `json:"source_id"`
 			Enabled        bool           `json:"enabled"`
-			AuthRef        string         `json:"auth_ref"`
 			AuthConfigured bool           `json:"auth_configured"`
 			States         map[string]int `json:"states"`
 		} `json:"providers"`
@@ -226,8 +190,8 @@ func (c *client) downloadProviders() error {
 		return err
 	}
 	for _, item := range payload.Providers {
-		fmt.Printf("%-12s enabled=%-5t auth=%-10s configured=%-5t states=%v\n",
-			item.SourceID, item.Enabled, item.AuthRef, item.AuthConfigured, item.States)
+		fmt.Printf("%-12s enabled=%-5t configured=%-5t states=%v\n",
+			item.SourceID, item.Enabled, item.AuthConfigured, item.States)
 	}
 	return nil
 }
@@ -241,12 +205,23 @@ func printDownload(item downloadRequest) {
 	}
 }
 
-func (c *client) sourceList() error {
+func (c *client) sourceList(args ...string) error {
+	set := flag.NewFlagSet("source list", flag.ContinueOnError)
+	jsonOutput := set.Bool("json", false, "print source capabilities as JSON")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if set.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
 	var payload struct {
 		Sources []model.Source `json:"sources"`
 	}
 	if err := c.get("/api/v1/sources", &payload); err != nil {
 		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(payload.Sources)
 	}
 	for _, source := range payload.Sources {
 		fmt.Printf("%-12s %-14s %-16s %s\n", source.ID, source.Tier, source.Name, source.Method)
@@ -255,59 +230,11 @@ func (c *client) sourceList() error {
 }
 
 func (c *client) catalogList(args []string) error {
-	set := flag.NewFlagSet("catalog list", flag.ContinueOnError)
-	source := set.String("source", "", "source id")
-	if err := set.Parse(args); err != nil {
-		return err
-	}
-	if *source == "" {
-		return errors.New("--source is required")
-	}
-	var payload struct {
-		Collections []model.Collection `json:"collections"`
-	}
-	if err := c.get("/api/v1/catalog?source="+url.QueryEscape(*source), &payload); err != nil {
-		return err
-	}
-	for _, collection := range payload.Collections {
-		fmt.Printf("%-38s %-10s %-8s %-7s %s\n", collection.ID, collection.Instrument, collection.Level, collection.Cadence, collection.Product)
-	}
-	return nil
+	return c.productList(args)
 }
 
 func (c *client) query(args []string) error {
-	set := flag.NewFlagSet("query list", flag.ContinueOnError)
-	source := set.String("source", "", "source id")
-	collection := set.String("collection", "", "collection id")
-	start := set.String("start", "", "start RFC3339 or YYYY-MM-DD")
-	end := set.String("end", "", "end RFC3339 or YYYY-MM-DD")
-	jsonOutput := set.Bool("json", false, "print JSON")
-	if err := set.Parse(args); err != nil {
-		return err
-	}
-	if *source == "" || *collection == "" || *start == "" || *end == "" {
-		return errors.New("--source, --collection, --start and --end are required")
-	}
-	values := url.Values{
-		"source":     {*source},
-		"collection": {*collection},
-		"start":      {*start},
-		"end":        {*end},
-	}
-	var payload struct {
-		Count    int             `json:"count"`
-		Granules []model.Granule `json:"granules"`
-	}
-	if err := c.get("/api/v1/search?"+values.Encode(), &payload); err != nil {
-		return err
-	}
-	if *jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(payload.Granules)
-	}
-	for _, granule := range payload.Granules {
-		fmt.Printf("%s  assets=%d  %s\n", granule.Start.Format(time.RFC3339), len(granule.Assets), granule.ID)
-	}
-	return nil
+	return c.queryProducts(args)
 }
 
 func (c *client) get(path string, target any) error {
@@ -334,6 +261,9 @@ func (c *client) do(method, path string, body any, target any) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -350,6 +280,9 @@ func (c *client) do(method, path string, body any, target any) error {
 		if problem.Error == "" {
 			problem.Error = resp.Status
 		}
+		if c.apiKey != "" {
+			problem.Error = strings.ReplaceAll(problem.Error, c.apiKey, "[REDACTED]")
+		}
 		return errors.New(problem.Error)
 	}
 	if target == nil {
@@ -360,22 +293,27 @@ func (c *client) do(method, path string, body any, target any) error {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `Usage:
-  satellite source list
-  satellite catalog list --source goes18
+  satellite config set
+  satellite source list [--json]
+  satellite product list [--source SOURCE] [--search TEXT] [--instrument NAME] [--level LEVEL] [--json]
+  satellite product show --product SOURCE:PRODUCT
+  satellite catalog list [--source SOURCE] [--search TEXT] [--json]
+  satellite query list --product goes18:ABI-L1b-RadF --day 2026-09-22 [--band 6] [--json]
   satellite query list --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22T09:00:00Z --end 2026-09-22T10:00:00Z [--json]
   satellite download create --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22 --end 2026-09-23 [--json]
   satellite download submit --source goes18 --collection goes18:ABI-L1b-RadF --start 2023-06-01 --end 2023-06-30 --band 6 --hourly [--json]
+  satellite download submit --product SOURCE:PRODUCT --day YYYY-MM-DD [--json]
+  satellite download submit --product era5:reanalysis-era5-single-levels --start 2024-01-01 --end 2024-01-02 --variable 2m_temperature --area 32.25,-118.75,32,-118.5 [--json]
   satellite download list [--limit 50] [--json]
   satellite download status --id 1 [--json]
   satellite download providers
+  satellite era5 schema --collection era5:reanalysis-era5-single-levels
+  satellite era5 submit --collection era5:reanalysis-era5-single-levels --variable 2m_temperature --product-type reanalysis --year 2024 --month 01 --day 01 --time 00:00 --area 32.25,-118.75,32,-118.5 --data-format netcdf --download-format unarchived [--json]
+  satellite era5 submit --collection era5:reanalysis-era5-single-levels --inputs-file request.json [--json]
+  satellite era5 status --id JOB_ID [--json]
+  satellite era5 result --id JOB_ID [--json]
 
 Environment:
-  SATELLITE_SERVER=http://127.0.0.1:8080`)
-}
-
-func envOr(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
+  SATELLITE_CONFIG selects the private CLI config file.
+  SATELLITE_SERVER and SATELLITE_API_KEY override the saved centre configuration.`)
 }

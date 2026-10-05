@@ -67,7 +67,8 @@ func (h *HTTP) DownloadAuthorized(ctx context.Context, asset model.Asset, destin
 	if err != nil {
 		return Result{}, err
 	}
-	if err := os.MkdirAll(destinationDir, 0o750); err != nil {
+	// The archive's default ACL determines group and public data access.
+	if err := os.MkdirAll(destinationDir, 0o777); err != nil {
 		return Result{}, err
 	}
 	finalPath := filepath.Join(destinationDir, name)
@@ -138,7 +139,7 @@ func (h *HTTP) DownloadAuthorized(ctx context.Context, asset model.Asset, destin
 	} else {
 		flags |= os.O_TRUNC
 	}
-	handle, err := os.OpenFile(partPath, flags, 0o640)
+	handle, err := os.OpenFile(partPath, flags, 0o666)
 	if err != nil {
 		return Result{}, err
 	}

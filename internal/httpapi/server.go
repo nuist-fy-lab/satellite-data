@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
+	"github.com/nuist-fy-lab/satellite-data/internal/central"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
@@ -30,6 +31,8 @@ type Server struct {
 	downloader *downloader.Client
 	auth       *authstore.Store
 	sessionTTL time.Duration
+	central    *central.Service
+	portalAuth bool
 }
 
 func New(registry *provider.Registry, store *state.Store, clients ...*downloader.Client) http.Handler {
@@ -37,27 +40,43 @@ func New(registry *provider.Registry, store *state.Store, clients ...*downloader
 	if len(clients) > 0 {
 		downloaderClient = clients[0]
 	}
-	return newHandler(registry, store, downloaderClient, nil, 0)
+	return newHandler(registry, store, downloaderClient, nil, 0, false)
 }
 
-func NewWithAuth(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration) http.Handler {
-	return newHandler(registry, store, downloaderClient, auth, sessionTTL)
+func NewWithAuth(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration, services ...*central.Service) http.Handler {
+	return newHandler(registry, store, downloaderClient, auth, sessionTTL, true, services...)
 }
 
-func newHandler(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration) http.Handler {
-	s := &Server{registry: registry, store: store, downloader: downloaderClient, auth: auth, sessionTTL: sessionTTL}
+func newHandler(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration, portalAuth bool, services ...*central.Service) http.Handler {
+	s := &Server{registry: registry, store: store, downloader: downloaderClient, auth: auth, sessionTTL: sessionTTL, portalAuth: portalAuth}
+	if len(services) > 0 {
+		s.central = services[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("POST /login", s.accessLogin)
+	mux.HandleFunc("POST /logout", s.accessLogout)
+	mux.HandleFunc("POST /api/v1/auth/login", s.accessLogin)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.accessLogout)
+	mux.HandleFunc("GET /api/v1/auth/session", s.portalSession)
 	mux.HandleFunc("GET /api/v1/sources", s.sources)
 	mux.HandleFunc("GET /api/v1/catalog", s.catalog)
 	mux.HandleFunc("GET /api/v1/search", s.search)
+	mux.HandleFunc("GET /api/v1/era5/schema", s.era5Schema)
+	mux.HandleFunc("POST /api/v1/era5/requests", s.era5Submit)
+	mux.HandleFunc("GET /api/v1/era5/requests/{id}", s.era5Job)
+	mux.HandleFunc("GET /api/v1/era5/requests/{id}/result", s.era5Result)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
 	mux.HandleFunc("GET /api/v1/downloads/catalog", s.downloadCatalog)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.download)
 	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
+	mux.HandleFunc("GET /api/v1/archive/index-status", s.archiveIndexStatus)
 	mux.HandleFunc("GET /api/v1/monitor/downloads", s.downloadMonitor)
 	mux.HandleFunc("GET /api/v1/monitor/links", s.linkMonitor)
+	mux.HandleFunc("GET /api/v1/me/api-keys", s.listAPIKeys)
+	mux.HandleFunc("POST /api/v1/me/api-keys", s.createAPIKey)
+	mux.HandleFunc("DELETE /api/v1/me/api-keys/{id}", s.revokeAPIKey)
 	mux.HandleFunc("POST /api/v1/access/login", s.accessLogin)
 	mux.HandleFunc("POST /api/v1/access/logout", s.accessLogout)
 	mux.HandleFunc("GET /api/v1/access/session", s.accessSession)
@@ -68,6 +87,11 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("DELETE /api/v1/access/proxies/{id}", s.deleteAccessProxy)
 	mux.HandleFunc("POST /api/v1/access/accounts", s.accessAccount)
 	mux.HandleFunc("DELETE /api/v1/access/accounts/{id}", s.deleteAccessAccount)
+	mux.HandleFunc("POST /api/v1/access/profiles", s.centralProfile)
+	mux.HandleFunc("POST /api/v1/access/central/credentials", s.centralCredential)
+	mux.HandleFunc("POST /api/v1/access/central/proxies", s.centralProxy)
+	mux.HandleFunc("POST /api/v1/access/central/accounts", s.centralAccount)
+	mux.HandleFunc("DELETE /api/v1/access/central/{kind}/{id}", s.centralDelete)
 	mux.HandleFunc("GET /api/products", s.products)
 	mux.HandleFunc("GET /api/year", s.year)
 	mux.HandleFunc("GET /api/day", s.day)
@@ -81,8 +105,31 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	if err != nil {
 		panic(err)
 	}
+	mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := s.webUser(r); err == nil {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		data, err := fs.ReadFile(static, "login.html")
+		if err != nil {
+			http.Error(w, "login page unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(data)
+	})
 	mux.Handle("GET /", http.FileServerFS(static))
-	return withHeaders(mux)
+	return withHeaders(s.withPortalAuth(mux))
+}
+
+func (s *Server) archiveIndexStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := s.store.ArchiveScanStatus(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 type monitorWindow struct {
@@ -223,13 +270,23 @@ func (s *Server) accessLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := decodeRequestJSON(w, r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	isForm := strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded")
+	if isForm {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		if err := r.ParseForm(); err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid login form"))
+			return
+		}
+		request.Username, request.Password = r.PostFormValue("username"), r.PostFormValue("password")
+	} else {
+		if err := decodeRequestJSON(w, r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	user, err := s.auth.VerifyPassword(r.Context(), request.Username, request.Password)
-	if err != nil || user.Role != "admin" {
-		writeError(w, http.StatusUnauthorized, errors.New("invalid administrator credentials"))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, errors.New("invalid portal credentials"))
 		return
 	}
 	ttl := s.sessionTTL
@@ -245,6 +302,10 @@ func (s *Server) accessLogin(w http.ResponseWriter, r *http.Request) {
 		Name: accessSessionCookie, Value: token, Path: "/", MaxAge: int(ttl.Seconds()),
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
+	if isForm {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": user})
 }
 
@@ -261,7 +322,7 @@ func (s *Server) accessLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) accessSession(w http.ResponseWriter, r *http.Request) {
 	user, err := s.adminUser(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		s.writeAdminError(w, r)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": user})
@@ -269,123 +330,51 @@ func (s *Server) accessSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) accessPools(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.adminUser(r); err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		s.writeAdminError(w, r)
 		return
 	}
-	if s.downloader == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("satellite downloader is not configured"))
+	if s.central == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("central access store unavailable"))
 		return
 	}
-	pools, err := s.downloader.AccessPools(r.Context())
+	pools, err := s.central.Store.Pools(r.Context())
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, err)
+		writeError(w, http.StatusServiceUnavailable, errors.New("central access store unavailable"))
 		return
 	}
 	writeJSON(w, http.StatusOK, pools)
 }
 
 func (s *Server) accessCredential(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	var payload map[string]any
-	if err := decodeRequestJSON(w, r, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	item, err := s.downloader.UpsertCredential(r.Context(), payload)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"credential": item})
+	s.centralCredential(w, r)
 }
 
 func (s *Server) deleteAccessCredential(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, errors.New("invalid credential id"))
-		return
-	}
-	if err := s.downloader.DeleteCredential(r.Context(), id); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	r.SetPathValue("kind", "credentials")
+	s.centralDelete(w, r)
 }
 
 func (s *Server) accessProxy(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	var payload map[string]any
-	if err := decodeRequestJSON(w, r, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	item, err := s.downloader.UpsertProxy(r.Context(), payload)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"proxy": item})
+	s.centralProxy(w, r)
 }
 
 func (s *Server) deleteAccessProxy(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, errors.New("invalid proxy id"))
-		return
-	}
-	if err := s.downloader.DeleteProxy(r.Context(), id); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	r.SetPathValue("kind", "proxies")
+	s.centralDelete(w, r)
 }
 
 func (s *Server) accessAccount(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	var payload map[string]any
-	if err := decodeRequestJSON(w, r, &payload); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	item, err := s.downloader.UpsertAccount(r.Context(), payload)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"account": item})
+	s.centralAccount(w, r)
 }
 
 func (s *Server) deleteAccessAccount(w http.ResponseWriter, r *http.Request) {
-	if !s.authorizeMutation(w, r) {
-		return
-	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, errors.New("invalid account id"))
-		return
-	}
-	if err := s.downloader.DeleteAccount(r.Context(), id); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	r.SetPathValue("kind", "accounts")
+	s.centralDelete(w, r)
 }
 
-func (s *Server) authorizeMutation(w http.ResponseWriter, r *http.Request) bool {
+func (s *Server) authorizeAdminMutation(w http.ResponseWriter, r *http.Request) bool {
 	if _, err := s.adminUser(r); err != nil {
-		writeError(w, http.StatusUnauthorized, errors.New("administrator session required"))
+		s.writeAdminError(w, r)
 		return false
 	}
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
@@ -395,14 +384,26 @@ func (s *Server) authorizeMutation(w http.ResponseWriter, r *http.Request) bool 
 			return false
 		}
 	}
-	if s.downloader == nil {
-		writeError(w, http.StatusServiceUnavailable, errors.New("satellite downloader is not configured"))
-		return false
-	}
 	return true
 }
 
+func (s *Server) writeAdminError(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.webUser(r); err == nil {
+		writeError(w, http.StatusForbidden, errors.New("administrator role required"))
+		return
+	}
+	writeError(w, http.StatusUnauthorized, errors.New("portal session required"))
+}
+
 func (s *Server) adminUser(r *http.Request) (authstore.User, error) {
+	user, err := s.webUser(r)
+	if err != nil || user.Role != "admin" {
+		return authstore.User{}, errors.New("admin session required")
+	}
+	return user, nil
+}
+
+func (s *Server) webUser(r *http.Request) (authstore.User, error) {
 	if s.auth == nil {
 		return authstore.User{}, errors.New("auth unavailable")
 	}
@@ -410,11 +411,7 @@ func (s *Server) adminUser(r *http.Request) (authstore.User, error) {
 	if err != nil {
 		return authstore.User{}, err
 	}
-	user, err := s.auth.VerifySession(r.Context(), cookie.Value)
-	if err != nil || user.Role != "admin" {
-		return authstore.User{}, errors.New("admin session required")
-	}
-	return user, nil
+	return s.auth.VerifySession(r.Context(), cookie.Value)
 }
 
 func decodeRequestJSON(w http.ResponseWriter, r *http.Request, target any) error {
@@ -428,16 +425,22 @@ func decodeRequestJSON(w http.ResponseWriter, r *http.Request, target any) error
 }
 
 func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.orderUser(w, r)
+	if !ok {
+		return
+	}
 	defer r.Body.Close()
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
 	var payload struct {
-		Source     string   `json:"source"`
-		Collection string   `json:"collection"`
-		Start      string   `json:"start"`
-		End        string   `json:"end"`
-		Band       int      `json:"band"`
-		Times      []string `json:"times"`
+		Source     string                     `json:"source"`
+		Collection string                     `json:"collection"`
+		Product    string                     `json:"product"`
+		Start      string                     `json:"start"`
+		End        string                     `json:"end"`
+		Band       int                        `json:"band"`
+		Times      []string                   `json:"times"`
+		Inputs     map[string]json.RawMessage `json:"inputs"`
 	}
 	if err := decoder.Decode(&payload); err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid download request JSON"))
@@ -445,6 +448,13 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	payload.Source = strings.TrimSpace(payload.Source)
 	payload.Collection = strings.TrimSpace(payload.Collection)
+	if payload.Product != "" {
+		if payload.Collection != "" && payload.Collection != payload.Product {
+			writeError(w, http.StatusBadRequest, errors.New("conflicting product and collection"))
+			return
+		}
+		payload.Collection = strings.TrimSpace(payload.Product)
+	}
 	start, err := parseTime(payload.Start)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid start time; use RFC3339 or YYYY-MM-DD"))
@@ -460,8 +470,43 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("unknown collection"))
 		return
 	}
+	if payload.Source == "" {
+		payload.Source = productSource
+	}
 	if productSource != payload.Source {
 		writeError(w, http.StatusBadRequest, errors.New("collection does not belong to source"))
+		return
+	}
+	if payload.Source == "era5" {
+		if payload.Band != 0 {
+			writeError(w, http.StatusBadRequest, errors.New("ERA5 uses variables, not --band"))
+			return
+		}
+		if payload.Inputs == nil {
+			payload.Inputs = make(map[string]json.RawMessage)
+		}
+		if len(payload.Times) > 0 {
+			if _, exists := payload.Inputs["time"]; exists {
+				writeError(w, http.StatusBadRequest, errors.New("time must be specified once"))
+				return
+			}
+			selection, err := (downloadfilter.Selection{Times: payload.Times}).Normalize(payload.Source, payload.Collection)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			payload.Inputs["time"], _ = json.Marshal(selection.Times)
+		}
+		request, err := s.store.EnqueueERA5OrderOwned(r.Context(), user.ID, payload.Collection, start, end, payload.Inputs)
+		if err != nil {
+			writeERA5Error(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"download": request})
+		return
+	}
+	if len(payload.Inputs) != 0 {
+		writeError(w, http.StatusBadRequest, errors.New("inputs are only supported by on-demand products"))
 		return
 	}
 	providerID, ok := downloadcoord.ProviderForSource(payload.Source)
@@ -474,7 +519,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	request, err := s.store.EnqueueSelectedDownloadRequest(r.Context(), payload.Source, providerID, payload.Collection, start, end, selection)
+	request, err := s.store.EnqueueSelectedDownloadRequestOwned(r.Context(), user.ID, payload.Source, providerID, payload.Collection, start, end, selection)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -488,8 +533,18 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.orderUser(w, r)
+	if !ok {
+		return
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items, err := s.store.DownloadRequests(r.Context(), limit)
+	var items []state.DownloadRequest
+	var err error
+	if user.Role == "admin" {
+		items, err = s.store.DownloadRequests(r.Context(), limit)
+	} else {
+		items, err = s.store.DownloadRequestsOwned(r.Context(), limit, user.ID)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -501,9 +556,11 @@ func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
 // only concrete assets and never needs to know about satellites or bands.
 func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 	source := strings.TrimSpace(r.URL.Query().Get("source"))
-	if _, err := s.registry.Provider(source); err != nil {
-		writeError(w, http.StatusNotFound, err)
-		return
+	if source != "" {
+		if _, err := s.registry.Provider(source); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
 	}
 	products, err := s.store.Products(r.Context(), source)
 	if err != nil {
@@ -512,11 +569,15 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	type option struct {
 		model.Product
-		Bands []downloadfilter.Band `json:"bands"`
+		Bands     []downloadfilter.Band `json:"bands"`
+		OrderMode string                `json:"order_mode"`
 	}
 	items := make([]option, 0, len(products))
 	for _, product := range products {
-		item := option{Product: product, Bands: []downloadfilter.Band{}}
+		item := option{Product: product, Bands: []downloadfilter.Band{}, OrderMode: "archive"}
+		if product.SourceID == "era5" {
+			item.OrderMode = "on-demand"
+		}
 		if profile := downloadfilter.ForProduct(product.SourceID, product.ProductKey); profile != nil {
 			item.Bands = profile.Bands
 		}
@@ -526,12 +587,21 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.orderUser(w, r)
+	if !ok {
+		return
+	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		writeError(w, http.StatusBadRequest, errors.New("invalid download id"))
 		return
 	}
-	item, err := s.store.DownloadRequest(r.Context(), id)
+	var item state.DownloadRequest
+	if user.Role == "admin" {
+		item, err = s.store.DownloadRequest(r.Context(), id)
+	} else {
+		item, err = s.store.DownloadRequestOwned(r.Context(), id, user.ID)
+	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, errors.New("download request not found"))
 		return
@@ -548,6 +618,9 @@ func (s *Server) downloaderProviders(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
+	}
+	for i := range items {
+		items[i].AuthRef = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"providers": items})
 }
@@ -589,8 +662,11 @@ func (s *Server) day(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid day"))
 		return
 	}
-	if _, _, err := s.store.ProductSource(r.Context(), product); err != nil {
+	if _, selected, err := s.store.ProductSource(r.Context(), product); err != nil {
 		writeError(w, http.StatusNotFound, errors.New("unknown product"))
+		return
+	} else if selected.Metadata["availability_mode"] == "on-demand" {
+		writeError(w, http.StatusConflict, provider.ErrOnDemand)
 		return
 	}
 	if !at.After(time.Now().UTC()) {
@@ -620,8 +696,11 @@ func (s *Server) indexRange(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid end day"))
 		return
 	}
-	if _, _, err := s.store.ProductSource(r.Context(), product); err != nil {
+	if _, selected, err := s.store.ProductSource(r.Context(), product); err != nil {
 		writeError(w, http.StatusNotFound, errors.New("unknown product"))
+		return
+	} else if selected.Metadata["availability_mode"] == "on-demand" {
+		writeError(w, http.StatusConflict, provider.ErrOnDemand)
 		return
 	}
 	todayEnd := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 1)
@@ -670,6 +749,26 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	values := r.URL.Query()
 	sourceID := strings.TrimSpace(values.Get("source"))
 	collectionID := strings.TrimSpace(values.Get("collection"))
+	if key := strings.TrimSpace(values.Get("product")); key != "" {
+		if collectionID != "" && collectionID != key {
+			writeError(w, http.StatusBadRequest, errors.New("conflicting product and collection"))
+			return
+		}
+		collectionID = key
+	}
+	if prefix, suffix, ok := strings.Cut(collectionID, ":"); ok {
+		if sourceID != "" && sourceID != prefix {
+			writeError(w, http.StatusBadRequest, errors.New("collection does not belong to source"))
+			return
+		}
+		if suffix == "" {
+			writeError(w, http.StatusBadRequest, errors.New("collection is required"))
+			return
+		}
+		sourceID = prefix
+	} else if sourceID != "" && collectionID != "" {
+		collectionID = sourceID + ":" + collectionID
+	}
 	start, err := parseTime(values.Get("start"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid start time; use RFC3339 or YYYY-MM-DD"))
@@ -685,14 +784,29 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	granules, err := p.Search(r.Context(), model.Query{
+	band := 0
+	if value := values.Get("band"); value != "" {
+		band, err = strconv.Atoi(value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid band"))
+			return
+		}
+	}
+	selection, err := (downloadfilter.Selection{Band: band}).Normalize(sourceID, collectionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	granules, err := searchGranules(r.Context(), p, model.Query{
 		CollectionID: collectionID,
 		Start:        start,
 		End:          end,
-	})
+	}, selection)
 	if err != nil {
 		status := http.StatusBadGateway
-		if errors.Is(err, provider.ErrUnsupportedCollection) || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "window") || strings.Contains(err.Error(), "after start") {
+		if errors.Is(err, provider.ErrOnDemand) {
+			status = http.StatusConflict
+		} else if errors.Is(err, provider.ErrUnsupportedCollection) || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "window") || strings.Contains(err.Error(), "after start") {
 			status = http.StatusBadRequest
 		}
 		writeError(w, status, err)

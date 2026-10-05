@@ -121,3 +121,55 @@ func TestDownloadSelectionSurvivesRestartAndMigratesOldSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDownloadOwnershipMigrationKeepsExistingOrdersPrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(downloadSchema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE download_requests ADD COLUMN selection_json TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO download_requests(source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,state,requested_at,updated_at)
+	VALUES('goes18','goes','goes18:ABI-L1b-RadF','2024-01-01T00:00:00Z','2024-01-02T00:00:00Z','2024-01-01T00:00:00Z','done','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
+	owned, err := store.EnqueueSelectedDownloadRequestOwned(t.Context(), "user-a", "goes18", "goes", "goes18:ABI-L1b-RadF", start, start.AddDate(0, 0, 1), downloadfilter.Selection{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.DownloadRequestOwned(t.Context(), 1, "user-a"); err != sql.ErrNoRows {
+		t.Fatalf("legacy order visible to user: %v", err)
+	}
+	if _, err := store.DownloadRequestOwned(t.Context(), owned.ID, "user-b"); err != sql.ErrNoRows {
+		t.Fatalf("other user's order visible: %v", err)
+	}
+	items, err := store.DownloadRequestsOwned(t.Context(), 20, "user-a")
+	if err != nil || len(items) != 1 || items[0].ID != owned.ID || items[0].OwnerUserID != "user-a" {
+		t.Fatalf("owned order not retained: %+v err=%v", items, err)
+	}
+	all, err := store.DownloadRequests(t.Context(), 20)
+	if err != nil || len(all) != 2 || all[1].OwnerUserID != "" {
+		t.Fatalf("legacy migration changed history: %+v err=%v", all, err)
+	}
+}

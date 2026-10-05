@@ -13,18 +13,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
           cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Check web JavaScript syntax
-        run: node --check web/static/app.js
+        run: |
+          node --check web/static/app.js
+          node --check web/static/login.js
+      - name: Test ERA5 request controls without a browser
+        run: node --test web/era5.test.mjs
+      - name: Test historical EarthCARE verification controls
+        run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
+      - name: Verify EarthCARE user units
+        run: systemd-analyze verify deploy/systemd/earthcare-verification.service deploy/systemd/earthcare-verification.timer
+      - name: Validate portal styles and HTML without a browser
+        run: |
+          npm install --prefix "$RUNNER_TEMP/satellite-web" --no-save --ignore-scripts css-tree@3.1.0 parse5@7.2.1
+          NODE_PATH="$RUNNER_TEMP/satellite-web/node_modules" node --test web/style.test.mjs
       - name: Vet
         run: go vet ./...
+      - name: Install ACL tools for archive inheritance checks
+        run: sudo apt-get update && sudo apt-get install -y acl
       - name: Test
         run: go test ./...
+      - name: Race-check persistent orders and centre dispatch
+        run: go test -race ./internal/state ./internal/downloadcoord ./internal/httpapi ./internal/central
 
   build:
     runs-on: ubuntu-latest
@@ -34,6 +55,8 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -48,21 +71,50 @@ jobs:
           mkdir -p dist
           go build -trimpath -ldflags='-s -w' -o dist/satellited ./cmd/satellited
           go build -trimpath -ldflags='-s -w' -o dist/satellite ./cmd/satellite
+          cp deploy/verify-earthcare-archive.py dist/verify-earthcare-archive.py
+          cp deploy/normalize-earthcare-packages.py dist/normalize-earthcare-packages.py
       - name: Record cloud build digests
         run: |
           cd dist
-          sha256sum satellite satellited > SHA256SUMS
-      - name: Store short-lived cloud binaries
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+          sha256sum satellite satellited verify-earthcare-archive.py normalize-earthcare-packages.py > SHA256SUMS
+      - uses: actions/setup-node@v4
         with:
-          name: satellite-release
-          path: |
-            dist/satellite
-            dist/satellited
-            dist/SHA256SUMS
-          retention-days: 2
-          if-no-files-found: error
+          node-version: '24'
+      - uses: browser-actions/setup-firefox@2ddc1281882c66dd6a359947714eed0a4b91afc1
+        id: firefox
+        with:
+          firefox-version: 'latest-esr'
+      - uses: browser-actions/setup-geckodriver@fac5b0424c584257f32cf12c5eb4ba86014c34f8
+        with:
+          token: ${{ github.token }}
+      - name: Check desktop and mobile layouts in cloud Firefox
+        env:
+          FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/satellite-visual" --no-save --ignore-scripts selenium-webdriver@4.35.0
+          NODE_PATH="$RUNNER_TEMP/satellite-visual/node_modules" node web/visual-check.mjs
+      - name: Publish and verify PR binaries
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          tag="ci-pr-${PR_NUMBER}-${SOURCE_SHA:0:12}"
+          gh release create "$tag" dist/satellite dist/satellited dist/verify-earthcare-archive.py dist/normalize-earthcare-packages.py --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" --title "CI PR ${PR_NUMBER} ${SOURCE_SHA:0:12}" \
+            --notes "Cloud-verified PR binaries for $SOURCE_SHA" --prerelease
+          gh release upload "$tag" dist/visual/*.png --repo "$GITHUB_REPOSITORY"
+          mkdir -p verify
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir verify
+          target="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .target_commitish)"
+          [[ "$target" == "$SOURCE_SHA" ]]
+          for name in satellite satellited verify-earthcare-archive.py normalize-earthcare-packages.py; do
+            cmp "dist/$name" "verify/$name"
+            expected="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq ".assets[] | select(.name==\"$name\") | .digest")"
+            [[ "$expected" == "sha256:$(sha256sum "verify/$name" | cut -d' ' -f1)" ]]
+          done
       - name: Publish rolling CI binaries
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
