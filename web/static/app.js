@@ -575,7 +575,24 @@ function renderCoverageShell() {
   const coverage = state.coverage;
   const visible = coverage.supported;
   const onDemand = state.selected?.metadata?.availability_mode === 'on-demand';
-  $('#coverage-tools').classList.toggle('hidden', !visible);
+  const tools = $('#coverage-tools');
+  tools.classList.toggle('hidden', onDemand);
+  tools.classList.toggle('coverage-tools-limited', !visible && !onDemand);
+  tools.title = !visible && !onDemand ? '当前产品仅支持年视图' : '';
+  const band = $('#coverage-band');
+  band.disabled = !visible;
+  if (!visible) {
+    band.replaceChildren(new Option('无波段维度', '0'));
+    coverage.band = 0;
+    coverage.view = 'year';
+    coverage.time = 'all';
+  }
+  document.querySelectorAll('[data-coverage-view]').forEach(button => {
+    button.disabled = !visible && button.dataset.coverageView !== 'year';
+  });
+  document.querySelectorAll('[data-coverage-time]').forEach(button => {
+    button.disabled = !visible;
+  });
   $('.legend').classList.toggle('hidden', visible || onDemand);
   $('#year-layout').classList.toggle('hidden', onDemand || (visible && coverage.view !== 'year'));
   $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');

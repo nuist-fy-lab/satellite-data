@@ -93,6 +93,10 @@ try {
     await writeFile('dist/visual/login-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     await driver.get(base);
     await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
+    await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
+    const supportedTimelineTop = await driver.executeScript('return document.querySelector("#satellite-timelines").getBoundingClientRect().top');
+    const limitedTimelineTop = await driver.executeScript("state.coverage.supported=false;renderCoverageShell();return document.querySelector('#satellite-timelines').getBoundingClientRect().top");
+    assert.equal(limitedTimelineTop,supportedTimelineTop,'coverage capability changed timeline vertical position');
     for (const [view,mode] of cases) {
       await driver.executeScript('window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
       const metrics = await driver.executeScript(`
