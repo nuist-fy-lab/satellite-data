@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -23,7 +24,7 @@ type Event struct {
 	SHA256       string `json:"sha256"`
 }
 
-func Run(ctx context.Context, socket string, trigger func()) error {
+func Run(ctx context.Context, socket string, record func(context.Context, Event) error) error {
 	socket = strings.TrimSpace(socket)
 	if socket == "" {
 		return nil
@@ -49,12 +50,16 @@ func Run(ctx context.Context, socket string, trigger func()) error {
 			http.Error(w, "invalid event", http.StatusBadRequest)
 			return
 		}
-		if trigger != nil {
-			trigger()
+		if record != nil {
+			if err := record(r.Context(), event); err != nil {
+				slog.Warn("archive event could not be verified", "source", event.SourceID, "task", event.TaskID, "error", err)
+				http.Error(w, "archive verification failed", http.StatusUnprocessableEntity)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Minute}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

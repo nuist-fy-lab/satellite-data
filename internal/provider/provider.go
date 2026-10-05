@@ -12,6 +12,7 @@ import (
 )
 
 var ErrUnsupportedCollection = errors.New("unsupported collection")
+var ErrOnDemand = errors.New("on-demand dataset: use the ERA5 request API with explicit variables, dates and area; there is no published granule listing")
 
 type Provider interface {
 	Source() model.Source
@@ -35,7 +36,7 @@ func NewRegistry(providers ...Provider) *Registry {
 func (r *Registry) Register(p Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.providers[p.Source().ID] = p
+	r.providers[p.Source().ID] = &adaptiveProvider{Provider: p, flow: newQueryFlow()}
 }
 
 func (r *Registry) Sources() []model.Source {
@@ -68,6 +69,14 @@ func (r *Registry) Provider(id string) (Provider, error) {
 		return nil, fmt.Errorf("provider %q: %w", id, ErrUnsupportedCollection)
 	}
 	return p, nil
+}
+
+// Underlying returns the concrete provider for APIs outside the common catalog/search interface.
+func Underlying(p Provider) Provider {
+	if limited, ok := p.(*adaptiveProvider); ok {
+		return limited.Provider
+	}
+	return p
 }
 
 func ProductFromCollection(source model.Source, collection model.Collection) model.Product {
@@ -134,6 +143,8 @@ func catalogSource(sourceID string) string {
 		return "ESA MAAP OpenSearch/STAC catalogue"
 	case "cloudsat":
 		return "CloudSat DPC THREDDS catalogue"
+	case "era5":
+		return "Copernicus Climate Data Store STAC catalogue"
 	default:
 		if len(sourceID) >= 4 && sourceID[:4] == "goes" {
 			return "NOAA Open Data Dissemination (NODD) object catalogue"

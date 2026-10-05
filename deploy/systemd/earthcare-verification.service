@@ -1,0 +1,12 @@
+[Unit]
+Description=Verify historical EarthCARE files against official content (bounded batch)
+ConditionPathExists=%h/.local/state/satellite-data/central.sock
+ConditionPathIsDirectory=/misc/nuist_data1/public_sharing/EarthCare
+
+[Service]
+Type=oneshot
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=20min
+ExecStart=/bin/bash -c '/usr/bin/python3 -u %h/.local/lib/satellite-data/verify-earthcare-archive.py --state-db %h/.local/state/satellite-data/state.sqlite3 --progress-db %h/.local/state/satellite-data/earthcare-verification.sqlite3 --root /misc/nuist_data1/public_sharing/EarthCare --socket %h/.local/state/satellite-data/central.sock --max-files 40 --max-bytes 536870912 --max-file-bytes 201326592 --max-seconds 900 --pause-seconds 3 >>%h/.local/state/satellite-data/earthcare-verification.log 2>&1'

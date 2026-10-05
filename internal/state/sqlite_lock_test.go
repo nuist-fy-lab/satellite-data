@@ -93,6 +93,88 @@ func TestWriteTransactionsAcquireLockBeforeReads(t *testing.T) {
 	}
 }
 
+func TestWriterQueueIsCancelableAndDoesNotBlockReaders(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if store.writer.Stats().MaxOpenConnections != 1 || store.db.Stats().MaxOpenConnections != 8 {
+		t.Fatal("expected one writer and an independent reader pool")
+	}
+	if _, err := store.ProductCount(ctx); err != nil {
+		t.Fatalf("reader blocked behind writer: %v", err)
+	}
+	if batch, err := store.ClaimBatch(ctx, 7); err != nil || len(batch.Days) != 0 {
+		t.Fatalf("idle catalogue claim reserved writer: batch=%v, error=%v", batch, err)
+	}
+	if _, claimed, err := store.ClaimDownloadRequest(ctx, "earthcare"); err != nil || claimed {
+		t.Fatalf("idle discovery claim reserved writer: claimed=%t, error=%v", claimed, err)
+	}
+	queued, stop := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer stop()
+	if err := store.RecoverOfficialWork(queued); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("queued write must honor cancellation, got %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecoverOfficialWork(ctx); err != nil {
+		t.Fatalf("writer queue did not recover: %v", err)
+	}
+}
+
+func TestLocalScanStagingDoesNotAcquireMainWriterLock(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Simulate the external Python verifier reserving the main database writer.
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	conn, err := store.writer.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=0"); err != nil {
+		t.Fatal(err)
+	}
+	files := []LocalFile{{Path: "/archive/one", Filename: "one", Size: 1}}
+	if err := stageLocalFiles(ctx, conn, files); err != nil {
+		t.Fatalf("TEMP-only scan staging acquired main writer lock: %v", err)
+	}
+	var count int
+	if err := conn.QueryRowContext(ctx, "SELECT count(*) FROM scanned_local_files").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("staged count=%d, error=%v", count, err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=30000"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := store.ReplaceLocalFiles(ctx, files, "staged"); err != nil || !changed {
+		t.Fatalf("scan reconciliation failed: changed=%t, error=%v", changed, err)
+	}
+}
+
 func TestConcurrentCalendarEnqueueAndClaim(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
