@@ -1652,12 +1652,20 @@ async function loadDownloads(schedule = true, forceHistory = false) {
     const verifyPending = (states.verifying || 0) + (states.verify_wait || 0);
     const verifyActive = states.promoting || 0;
     const verifyLimit = item.verify_concurrency || 0;
-    return '<div class="download-provider"><strong>' + esc(item.source_id) + '</strong>' +
-      '<span>' + esc(downloadRate(item.bytes_per_second)) + '</span>' +
-      '<span>' + esc(item.active_transfers || 0) + ' / ' + esc(item.adaptive_concurrency || item.transfer_concurrency || 0) + ' 并发</span>' +
-      '<span>' + esc(waiting) + ' 排队 · ' + esc(verifyActive) + ' / ' + esc(verifyLimit) + ' 校验/归档 · ' +
-      esc(verifyPending) + ' 待校验 · ' + esc(states.done || 0) + ' 完成</span>' +
-      '<span>' + esc(states.failed || 0) + ' 失败 · ' + esc(states.waiting_auth || 0) + ' 待授权</span></div>';
+    const transferLimit = item.adaptive_concurrency || item.transfer_concurrency || 0;
+    const chip = (label, value, kind = '') =>
+      '<span class="download-provider-chip ' + kind + '"><b>' + esc(label) + '</b><span>' + esc(value) + '</span></span>';
+    return '<div class="download-provider"><strong class="download-provider-name">' + esc(item.source_id) + '</strong>' +
+      '<div class="download-provider-chips">' +
+      chip('速度', downloadRate(item.bytes_per_second), item.bytes_per_second > 0 ? 'info' : '') +
+      chip('下载', (item.active_transfers || 0) + ' / ' + transferLimit, (item.active_transfers || 0) > 0 ? 'info' : '') +
+      chip('校验', verifyActive + ' / ' + verifyLimit, verifyActive > 0 ? 'info' : '') +
+      chip('排队', waiting, waiting > 0 ? 'wait' : '') +
+      chip('待校验', verifyPending, verifyPending > 0 ? 'wait' : '') +
+      chip('完成', states.done || 0, (states.done || 0) > 0 ? 'good' : '') +
+      chip('失败', states.failed || 0, (states.failed || 0) > 0 ? 'bad' : '') +
+      chip('待授权', states.waiting_auth || 0, (states.waiting_auth || 0) > 0 ? 'bad' : '') +
+      '</div></div>';
   }).join('') || '<div class="pool-empty">暂无 Provider 状态</div>';
   const items = requests.status === 'fulfilled' ? requests.value.downloads || [] : [];
   $('#download-requests').innerHTML = items.map(item => '<div class="download-request">' +
