@@ -19,7 +19,8 @@ func (w *gzipResponseWriter) WriteHeader(status int) {
 	}
 	w.wroteHeader = true
 	contentType := strings.ToLower(w.Header().Get("Content-Type"))
-	if status >= 200 && status != http.StatusNoContent && status != http.StatusPartialContent && status != http.StatusNotModified && compressibleContentType(contentType) {
+	if status >= 200 && status != http.StatusNoContent && status != http.StatusPartialContent && status != http.StatusNotModified &&
+		w.Header().Get("Content-Encoding") == "" && compressibleContentType(contentType) {
 		w.compress = true
 		w.Header().Del("Content-Length")
 		w.Header().Set("Content-Encoding", "gzip")

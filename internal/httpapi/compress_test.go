@@ -52,6 +52,24 @@ func TestCompressionSkipsStreams(t *testing.T) {
 	}
 }
 
+func TestCompressionDoesNotReencodeExistingEncoding(t *testing.T) {
+	handler := withCompression(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = io.WriteString(w, "already-compressed")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("content encoding=%q want gzip", got)
+	}
+	if got := rec.Body.String(); got != "already-compressed" {
+		t.Fatalf("body=%q want passthrough", got)
+	}
+}
+
 func TestVersionedStaticAssetsAreImmutable(t *testing.T) {
 	handler := withHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
