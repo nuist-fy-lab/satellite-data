@@ -1391,7 +1391,8 @@ function renderMonitor() {
 
 const downloadStates = {
   pending: '等待发现', discovering: '正在发现', retry_wait: '等待重试', transferring: '传输中',
-  verifying: '校验中', waiting_auth: '等待授权', done: '已完成', failed: '失败',
+  verifying: '待校验', verify_wait: '校验重试', promoting: '校验/归档中',
+  waiting_auth: '等待授权', done: '已完成', failed: '失败',
 };
 
 const dlStages = [
@@ -1648,10 +1649,14 @@ async function loadDownloads(schedule = true, forceHistory = false) {
   $('#download-providers').innerHTML = statuses.map(item => {
     const states = item.states || {};
     const waiting = (states.queued || 0) + (states.retry_wait || 0);
+    const verifyPending = (states.verifying || 0) + (states.verify_wait || 0);
+    const verifyActive = states.promoting || 0;
+    const verifyLimit = item.verify_concurrency || 0;
     return '<div class="download-provider"><strong>' + esc(item.source_id) + '</strong>' +
       '<span>' + esc(downloadRate(item.bytes_per_second)) + '</span>' +
       '<span>' + esc(item.active_transfers || 0) + ' / ' + esc(item.adaptive_concurrency || item.transfer_concurrency || 0) + ' 并发</span>' +
-      '<span>' + esc(waiting) + ' 排队 · ' + esc(states.verifying || 0) + ' 校验 · ' + esc(states.done || 0) + ' 完成</span>' +
+      '<span>' + esc(waiting) + ' 排队 · ' + esc(verifyActive) + ' / ' + esc(verifyLimit) + ' 校验/归档 · ' +
+      esc(verifyPending) + ' 待校验 · ' + esc(states.done || 0) + ' 完成</span>' +
       '<span>' + esc(states.failed || 0) + ' 失败 · ' + esc(states.waiting_auth || 0) + ' 待授权</span></div>';
   }).join('') || '<div class="pool-empty">暂无 Provider 状态</div>';
   const items = requests.status === 'fulfilled' ? requests.value.downloads || [] : [];
