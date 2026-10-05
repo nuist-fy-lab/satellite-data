@@ -119,7 +119,8 @@ const viewPaths = Object.freeze({
 const pathViews = new Map(Object.entries(viewPaths).map(([view, path]) => [path, view]));
 
 function viewFromPath(pathname = location.pathname) {
-  const normalized = pathname !== '/' ? pathname.replace(//+$/, '') : pathname;
+  let normalized = pathname || '/';
+  while (normalized.length > 1 && normalized.endsWith('/')) normalized = normalized.slice(0, -1);
   if (normalized === '/' || normalized === '/index.html') return 'calendar-view';
   return pathViews.get(normalized) || 'calendar-view';
 }
