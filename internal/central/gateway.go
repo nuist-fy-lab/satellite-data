@@ -7,8 +7,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -128,6 +130,10 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid asset request", http.StatusBadRequest)
 		return
 	}
+	diagnostics := newTransferDiagnostics(request.SourceID, u.Hostname(), path.Base(u.Path), request.Range)
+	upstream = upstream.WithContext(httptrace.WithClientTrace(upstream.Context(), diagnostics.trace()))
+	stopDiagnostics := diagnostics.start(upstream.Context())
+	defer stopDiagnostics()
 	upstream.Header.Set("Accept-Encoding", "identity")
 	if request.Range != "" {
 		upstream.Header.Set("Range", request.Range)
@@ -182,7 +188,7 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(response.StatusCode)
-	_, copyErr := io.CopyBuffer(w, response.Body, make([]byte, 128<<10))
+	_, copyErr := io.CopyBuffer(diagnostics.writer(w), response.Body, make([]byte, 128<<10))
 	if copyErr == nil && response.StatusCode/100 == 2 {
 		s.Store.markResult(context.WithoutCancel(r.Context()), route, true)
 	}
