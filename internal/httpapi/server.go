@@ -68,9 +68,12 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/era5/requests/{id}/result", s.era5Result)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
+	mux.HandleFunc("GET /api/v1/downloads/updates", s.downloadUpdates)
 	mux.HandleFunc("GET /api/v1/downloads/catalog", s.downloadCatalog)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.download)
 	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
+	mux.HandleFunc("GET /api/v1/downloader/providers/stream", s.downloaderProviderStream)
+	mux.HandleFunc("GET /api/v1/index/stream", s.indexStream)
 	mux.HandleFunc("GET /api/v1/archive/index-status", s.archiveIndexStatus)
 	mux.HandleFunc("GET /api/v1/monitor/downloads", s.downloadMonitor)
 	mux.HandleFunc("GET /api/v1/monitor/links", s.linkMonitor)
@@ -160,12 +163,23 @@ func (s *Server) downloadMonitor(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("unsupported download monitor window"))
 		return
 	}
+	seriesSince := time.Now().UTC().Add(-window.duration)
+	if raw := strings.TrimSpace(r.URL.Query().Get("since")); raw != "" {
+		at, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid monitor cursor"))
+			return
+		}
+		if at.After(seriesSince) {
+			seriesSince = at.UTC()
+		}
+	}
 	latest, err := s.store.LatestDownloadSamples(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	points, err := s.store.DownloadSeries(r.Context(), time.Now().UTC().Add(-window.duration), window.bucket)
+	points, err := s.store.DownloadSeries(r.Context(), seriesSince, window.bucket)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -211,12 +225,23 @@ func (s *Server) linkMonitor(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("unsupported monitor window"))
 		return
 	}
+	seriesSince := time.Now().UTC().Add(-window.duration)
+	if raw := strings.TrimSpace(r.URL.Query().Get("since")); raw != "" {
+		at, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid monitor cursor"))
+			return
+		}
+		if at.After(seriesSince) {
+			seriesSince = at.UTC()
+		}
+	}
 	latest, err := s.store.LatestLinkSamples(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	series, err := s.store.LinkSeries(r.Context(), time.Now().UTC().Add(-window.duration), window.bucket)
+	series, err := s.store.LinkSeries(r.Context(), seriesSince, window.bucket)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

@@ -60,7 +60,7 @@ func cliRouteAllowed(method, path string) bool {
 		return false
 	}
 	switch path {
-	case "/api/v1/sources", "/api/v1/catalog", "/api/v1/search", "/api/v1/downloads", "/api/v1/downloader/providers", "/api/v1/monitor/downloads", "/api/v1/monitor/links", "/api/v1/era5/schema", "/api/products", "/api/year", "/api/day":
+	case "/api/v1/sources", "/api/v1/catalog", "/api/v1/search", "/api/v1/downloads", "/api/v1/downloads/updates", "/api/v1/downloader/providers", "/api/v1/downloader/providers/stream", "/api/v1/index/stream", "/api/v1/monitor/downloads", "/api/v1/monitor/links", "/api/v1/era5/schema", "/api/products", "/api/year", "/api/day":
 		return true
 	}
 	return strings.HasPrefix(path, "/api/v1/downloads/") || strings.HasPrefix(path, "/api/coverage/") || era5JobRoute(path)

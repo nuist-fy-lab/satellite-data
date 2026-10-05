@@ -292,6 +292,44 @@ func (s *Store) DownloadRequestsOwned(ctx context.Context, limit int, ownerUserI
 	return s.downloadRequests(ctx, limit, ownerUserID, true)
 }
 
+func (s *Store) DownloadRequestUpdates(ctx context.Context, limit int, since time.Time, sinceID int64) ([]DownloadRequest, error) {
+	return s.downloadRequestUpdates(ctx, limit, since, sinceID, "", false)
+}
+
+func (s *Store) DownloadRequestUpdatesOwned(ctx context.Context, limit int, since time.Time, sinceID int64, ownerUserID string) ([]DownloadRequest, error) {
+	return s.downloadRequestUpdates(ctx, limit, since, sinceID, ownerUserID, true)
+}
+
+func (s *Store) downloadRequestUpdates(ctx context.Context, limit int, since time.Time, sinceID int64, ownerUserID string, scoped bool) ([]DownloadRequest, error) {
+	if limit < 1 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	stamp := formatTime(since.UTC())
+	query := downloadRequestSelect + ` WHERE (updated_at>? OR (updated_at=? AND id>?)) ORDER BY updated_at,id LIMIT ?`
+	args := []any{stamp, stamp, sinceID, limit}
+	if scoped {
+		query = downloadRequestSelect + ` WHERE owner_user_id=? AND (updated_at>? OR (updated_at=? AND id>?)) ORDER BY updated_at,id LIMIT ?`
+		args = []any{ownerUserID, stamp, stamp, sinceID, limit}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]DownloadRequest, 0, limit)
+	for rows.Next() {
+		item, err := scanDownloadRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) downloadRequests(ctx context.Context, limit int, ownerUserID string, scoped bool) ([]DownloadRequest, error) {
 	if limit < 1 {
 		limit = 50

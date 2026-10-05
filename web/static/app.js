@@ -20,6 +20,8 @@ const state = {
     view: 'year', time: 'all', band: 0, day: '', hour: 0,
     requestSeq: 0, fileSeq: 0, poll: 0,
   },
+  indexStream: null,
+  indexStreamKey: '',
   yearPoll: 0,
   dayPoll: 0,
   era5: {schema: null, seq: 0, submitting: false, checking: false},
@@ -31,6 +33,7 @@ const state = {
   },
   downloads: {
     poll: 0, pollSeq: 0, catalog: [], source: '', loading: 0,
+    cursor: '', requests: [], providers: [], stream: null,
     history: {
       window: localStorage.getItem('satellite-data-download-window') || '1h',
       selected: localStorage.getItem('satellite-data-download-provider') || 'all',
@@ -95,7 +98,11 @@ function setSidebar(expanded, persist = false) {
 function setView(id) {
   if (id !== 'cli-view') clearCLIKey();
   if (id !== 'monitor-view') clearTimeout(state.monitor.poll);
-  if (id !== 'downloads-view') clearTimeout(state.downloads.poll);
+  if (id !== 'calendar-view') stopIndexStream();
+  if (id !== 'downloads-view') {
+    clearTimeout(state.downloads.poll);
+    if (state.downloads.stream) { state.downloads.stream.close(); state.downloads.stream = null; }
+  }
   document.querySelectorAll('.view').forEach(node => node.classList.toggle('active', node.id === id));
   document.querySelectorAll('.nav-item').forEach(node => node.classList.toggle('active', node.dataset.view === id));
 }
@@ -483,6 +490,76 @@ function renderCoverageShell() {
   });
 }
 
+function applyCoverageYearRows(year, rows) {
+  const changed = [];
+  for (const row of rows || []) {
+    const day = new Date(Date.UTC(year, 0, row[0] + 1)).toISOString().slice(0, 10);
+    state.coverage.yearDays.set(day, row);
+    state.dayState.set(day, {
+      day, status: row[1], official_count: row[2], local_ok_count: row[3],
+      hourly_official_count: row[4], hourly_local_ok_count: row[5],
+      official_gap_count: row[6], missing_count: row[7], error_count: row[8],
+      processing_count: row[9], indexing: row[10], updated_at: row[11],
+    });
+    changed.push(day);
+  }
+  return changed;
+}
+
+function stopIndexStream() {
+  if (state.indexStream) state.indexStream.close();
+  state.indexStream = null;
+  state.indexStreamKey = '';
+}
+
+function ensureIndexStream(product, year) {
+  const key = product + '|' + year;
+  if (state.indexStream && state.indexStreamKey === key) return;
+  stopIndexStream();
+  const stream = new EventSource('/api/v1/index/stream?product=' + encodeURIComponent(product) + '&year=' + year);
+  state.indexStream = stream;
+  state.indexStreamKey = key;
+  stream.addEventListener('index', event => {
+    if (state.indexStream !== stream || state.selected?.id !== product || Number(yearEl.value) !== year) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    const changed = [];
+    if (payload.coverage) {
+      if (payload.bands?.length) state.coverage.bands = payload.bands;
+      changed.push(...applyCoverageYearRows(year, payload.days || []));
+      for (const day of payload.removed || []) {
+        state.coverage.yearDays.delete(day);
+        state.dayState.delete(day);
+        changed.push(day);
+      }
+    } else {
+      for (const day of payload.days || []) {
+        state.dayState.set(day.day, day);
+        changed.push(day.day);
+      }
+      for (const day of payload.removed || []) {
+        state.dayState.delete(day);
+        changed.push(day);
+      }
+    }
+    if (changed.length) {
+      renderCalendar();
+      if (state.coverage.supported && state.coverage.view === 'month') {
+        const monthPrefix = year + '-' + String(Number(monthEl.value) + 1).padStart(2, '0') + '-';
+        if (changed.some(day => day.startsWith(monthPrefix))) loadCoverageMonth();
+      }
+      if (state.coverage.supported && state.coverage.view === 'day' && changed.includes(state.coverage.day)) {
+        openCoverageDay(state.coverage.day);
+      } else if (!state.coverage.supported && detailEl.dataset.day && changed.includes(detailEl.dataset.day)) {
+        openDay(detailEl.dataset.day, false);
+      }
+    }
+  });
+  stream.addEventListener('complete', () => {
+    if (state.indexStream === stream) stopIndexStream();
+  });
+}
+
 async function loadCoverageYear(schedulePoll = true) {
   const product = state.selected.id;
   const year = Number(yearEl.value);
@@ -497,16 +574,7 @@ async function loadCoverageYear(schedulePoll = true) {
     coverage.bands = payload.bands;
     coverage.yearDays = new Map();
     state.dayState.clear();
-    for (const row of payload.days) {
-      const day = new Date(Date.UTC(year, 0, row[0] + 1)).toISOString().slice(0, 10);
-      coverage.yearDays.set(day, row);
-      state.dayState.set(day, {
-        day, status: row[1], official_count: row[2], local_ok_count: row[3],
-        hourly_official_count: row[4], hourly_local_ok_count: row[5],
-        official_gap_count: row[6], missing_count: row[7], error_count: row[8],
-        processing_count: row[9], indexing: row[10], updated_at: row[11],
-      });
-    }
+    applyCoverageYearRows(year, payload.days || []);
     const bandEl = $('#coverage-band');
     if (bandEl.options.length !== coverage.bands.length + 1 ||
         coverage.bands.some((band, i) => Number(bandEl.options[i + 1]?.value) !== band)) {
@@ -519,9 +587,7 @@ async function loadCoverageYear(schedulePoll = true) {
     renderCoverageShell();
     renderCalendar();
     if (coverage.view === 'month') loadCoverageMonth();
-    if (schedulePoll && payload.days.some(row => row[10])) {
-      state.yearPoll = setTimeout(() => loadYear(true), 6000);
-    }
+    if (schedulePoll && payload.days.some(row => row[10])) ensureIndexStream(product, year);
   } catch (error) {
     if (seq === state.coverage.requestSeq) {
       $('#coverage-status').textContent = `年历读取失败 · ${error.message}`;
@@ -601,6 +667,8 @@ function dayTip(day) {
 async function loadYear(schedulePoll = true) {
   clearTimeout(state.yearPoll);
   if (!state.selected || state.selected.metadata?.availability_mode === 'on-demand') return;
+  const streamKey = state.selected.id + '|' + Number(yearEl.value || defaultYear());
+  if (state.indexStreamKey && state.indexStreamKey !== streamKey) stopIndexStream();
   if (bandCoverageSupported(state.selected)) {
     await loadCoverageYear(schedulePoll);
     return;
@@ -615,9 +683,7 @@ async function loadYear(schedulePoll = true) {
     state.dayState.clear();
     for (const day of payload.days || []) state.dayState.set(day.day, day);
     renderCalendar();
-    if (schedulePoll && (payload.days || []).some(day => day.indexing)) {
-      state.yearPoll = setTimeout(() => loadYear(true), 6000);
-    }
+    if (schedulePoll && (payload.days || []).some(day => day.indexing)) ensureIndexStream(product, year);
   } catch (error) {
     $('#product-meta').textContent = `年历索引读取失败 · ${error.message}`;
   }
@@ -800,9 +866,6 @@ async function openCoverageDay(day) {
     coverage.dayData = payload;
     coverage.cells = new Map(payload.cells.map(cell => [`${cell[0]}:${cell[1]}`, cell]));
     renderCoverageDay();
-    if (payload.indexing && !payload.official_state) {
-      coverage.poll = setTimeout(() => openCoverageDay(day), 3000);
-    }
   } catch (error) {
     if (seq === coverage.requestSeq) $('#coverage-day-summary').textContent = `日度覆盖读取失败 · ${error.message}`;
   }
@@ -970,6 +1033,7 @@ async function openDay(day, schedulePoll = false) {
   }
   if (state.selected?.id !== product) return;
   detailEl.classList.remove('hidden');
+  detailEl.dataset.day = day;
   $('#detail-day').textContent = `${day} · ${state.displayZone}`;
   const official = item.official_day;
   const localFiles = (item.slots || []).reduce((sum, slot) => sum + (slot.local?.length || 0), 0);
@@ -978,7 +1042,7 @@ async function openDay(day, schedulePoll = false) {
     : (item.indexing ? '官方索引中…' : '尚未生成官方索引');
   renderTimeline(item);
   renderGranules(item.slots || []);
-  if (schedulePoll && item.indexing && !official) state.dayPoll = setTimeout(() => openDay(day, true), 3000);
+  if (schedulePoll && item.indexing && !official) ensureIndexStream(product, Number(yearEl.value || defaultYear()));
 }
 
 function renderTimeline(day) {
@@ -1050,6 +1114,7 @@ function renderGranules(slots) {
 function closeDetail() {
   clearTimeout(state.dayPoll);
   detailEl.classList.add('hidden');
+  delete detailEl.dataset.day;
 }
 
 function showTip(event, day) {
@@ -1626,26 +1691,59 @@ function renderDownloadMonitor(statuses, liveAvailable) {
   }
 }
 
-async function loadDownloads(schedule = true, forceHistory = false) {
-  clearTimeout(state.downloads.poll);
-  const ticket = ++state.downloads.pollSeq;
-  const history = state.downloads.history;
-  if (!downloadWindowSeconds[history.window]) history.window = '1h';
-  const cacheFresh = !forceHistory && history.payload?.window === history.window && Date.now() - history.loadedAt < 15_000;
-  const [requests, providers, samples] = await Promise.allSettled([
-    json('/api/v1/downloads?limit=50'), json('/api/v1/downloader/providers'),
-    cacheFresh ? Promise.resolve(history.payload) : json('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window)),
-  ]);
-  if (ticket !== state.downloads.pollSeq) return;
-  const error = [requests, providers].filter(result => result.status === 'rejected').map(result => result.reason.message);
-  $('#downloads-error').textContent = error.join(' · ');
-  if (samples.status === 'fulfilled') {
-    history.payload = samples.value;
-    if (!cacheFresh) history.loadedAt = Date.now();
+function incrementalSeriesSince(payload, collection) {
+  const latestPerSeries = [];
+  for (const item of payload?.[collection] || []) {
+    let latest = 0;
+    for (const point of item.points || []) latest = Math.max(latest, new Date(point.sampled_at).getTime() || 0);
+    if (latest) latestPerSeries.push(latest);
   }
-  $('#download-monitor-error').textContent = samples.status === 'rejected' ? '历史采样读取失败 · ' + samples.reason.message : '';
-  const statuses = providers.status === 'fulfilled' ? providers.value.providers || [] : [];
-  renderDownloadMonitor(statuses, providers.status === 'fulfilled');
+  if (!latestPerSeries.length) return '';
+  return new Date(Math.min(...latestPerSeries)).toISOString();
+}
+
+function mergePointSeries(previous = [], incoming = [], cutoff = 0) {
+  const points = new Map();
+  for (const point of previous) {
+    const at = new Date(point.sampled_at).getTime() || 0;
+    if (!cutoff || at >= cutoff) points.set(point.sampled_at, point);
+  }
+  for (const point of incoming) points.set(point.sampled_at, point);
+  return [...points.values()].sort((a, b) => new Date(a.sampled_at) - new Date(b.sampled_at));
+}
+
+function mergeDownloadHistory(previous, incoming, windowName) {
+  if (!previous || previous.window !== incoming.window) return incoming;
+  const cutoff = Date.now() - (downloadWindowSeconds[windowName] || 3600) * 1000;
+  const bySource = new Map((previous.providers || []).map(item => [item.source_id, {...item, points: [...(item.points || [])]}]));
+  for (const item of incoming.providers || []) {
+    const old = bySource.get(item.source_id) || {source_id:item.source_id, points:[]};
+    bySource.set(item.source_id, {
+      ...old, ...item,
+      latest: item.latest || old.latest,
+      points: mergePointSeries(old.points, item.points || [], cutoff),
+    });
+  }
+  return {...previous, ...incoming, providers:[...bySource.values()]};
+}
+
+function mergeLinkHistory(previous, incoming, windowName) {
+  if (!previous || previous.window !== incoming.window) return incoming;
+  const cutoff = Date.now() - (downloadWindowSeconds[windowName] || 3600) * 1000;
+  const bySource = new Map((previous.links || []).map(item => [item.source_id, {...item, points:[...(item.points || [])]}]));
+  for (const item of incoming.links || []) {
+    const old = bySource.get(item.source_id) || {source_id:item.source_id, points:[]};
+    bySource.set(item.source_id, {
+      ...old, ...item,
+      latest: item.latest || old.latest,
+      points: mergePointSeries(old.points, item.points || [], cutoff),
+    });
+  }
+  return {...previous, ...incoming, links:[...bySource.values()]};
+}
+
+function renderDownloadProviders(statuses, liveAvailable = true) {
+  renderDownloadMonitor(statuses, liveAvailable);
   $('#download-providers').innerHTML = statuses.map(item => {
     const states = item.states || {};
     const waiting = (states.queued || 0) + (states.retry_wait || 0);
@@ -1667,15 +1765,98 @@ async function loadDownloads(schedule = true, forceHistory = false) {
       chip('待授权', states.waiting_auth || 0, (states.waiting_auth || 0) > 0 ? 'bad' : '') +
       '</div></div>';
   }).join('') || '<div class="pool-empty">暂无 Provider 状态</div>';
-  const items = requests.status === 'fulfilled' ? requests.value.downloads || [] : [];
+}
+
+function renderDownloadRequests(items) {
   $('#download-requests').innerHTML = items.map(item => '<div class="download-request">' +
     '<strong>#' + esc(item.id) + ' · ' + esc(item.collection_id) + '</strong>' +
     '<span>' + esc(downloadStates[item.state] || item.state) + ' · ' + esc(item.files_done) + '/' + esc(item.assets_queued) + ' 文件</span>' +
     '<span>' + esc(String(item.start).slice(0, 16)) + ' - ' + esc(String(item.end).slice(0, 16)) + ' UTC · ' +
-    esc(item.selection?.band ? `C${String(item.selection.band).padStart(2, '0')}` : '全波段') + ' · ' +
-    esc(item.selection?.times?.length ? item.selection.times.length + ' 时次/天' : '全部时次') + '</span>' +
+    esc(item.band ? `C${String(item.band).padStart(2, '0')}` : '全波段') + ' · ' +
+    esc(item.times_count ? item.times_count + ' 时次/天' : '全部时次') + '</span>' +
     (item.last_error ? '<small title="' + esc(item.last_error) + '">' + esc(item.last_error) + '</small>' : '') +
     '</div>').join('') || '<div class="pool-empty">暂无下载任务</div>';
+}
+
+function mergeDownloadUpdates(payload, reset = false) {
+  const byID = new Map((reset ? [] : state.downloads.requests).map(item => [item.id, item]));
+  for (const item of payload.downloads || []) byID.set(item.id, item);
+  state.downloads.requests = [...byID.values()].sort((a, b) => Number(b.id) - Number(a.id)).slice(0, 50);
+  state.downloads.cursor = payload.cursor || state.downloads.cursor;
+  renderDownloadRequests(state.downloads.requests);
+}
+
+function ensureDownloadProviderStream() {
+  if (state.downloads.stream || !$('#downloads-view').classList.contains('active')) return;
+  const stream = new EventSource('/api/v1/downloader/providers/stream');
+  state.downloads.stream = stream;
+  stream.addEventListener('providers', event => {
+    if (state.downloads.stream !== stream) return;
+    try {
+      const payload = JSON.parse(event.data);
+      state.downloads.providers = payload.providers || [];
+      state.downloads.providerError = payload.error || '';
+      renderDownloadProviders(state.downloads.providers, !payload.error);
+      $('#downloads-error').textContent = [state.downloads.requestError, state.downloads.providerError].filter(Boolean).join(' · ');
+    } catch (error) {
+      state.downloads.providerError = error.message;
+    }
+  });
+  stream.addEventListener('provider', event => {
+    if (state.downloads.stream !== stream) return;
+    try {
+      const item = JSON.parse(event.data);
+      const bySource = new Map(state.downloads.providers.map(provider => [provider.source_id, provider]));
+      bySource.set(item.source_id, item);
+      state.downloads.providers = [...bySource.values()].sort((a, b) => a.source_id.localeCompare(b.source_id));
+      renderDownloadProviders(state.downloads.providers, !state.downloads.providerError);
+    } catch (error) {
+      state.downloads.providerError = error.message;
+    }
+  });
+  stream.addEventListener('provider_error', event => {
+    if (state.downloads.stream !== stream) return;
+    try {
+      const payload = JSON.parse(event.data);
+      state.downloads.providerError = payload.error || '';
+      $('#downloads-error').textContent = [state.downloads.requestError, state.downloads.providerError].filter(Boolean).join(' · ');
+    } catch {}
+  });
+  stream.onerror = () => {
+    state.downloads.providerError = 'Provider 实时流重连中';
+    $('#downloads-error').textContent = [state.downloads.requestError, state.downloads.providerError].filter(Boolean).join(' · ');
+  };
+  stream.onopen = () => {
+    state.downloads.providerError = '';
+    $('#downloads-error').textContent = state.downloads.requestError || '';
+  };
+}
+
+async function loadDownloads(schedule = true, forceHistory = false) {
+  clearTimeout(state.downloads.poll);
+  const ticket = ++state.downloads.pollSeq;
+  ensureDownloadProviderStream();
+  const history = state.downloads.history;
+  if (!downloadWindowSeconds[history.window]) history.window = '1h';
+  const cacheFresh = !forceHistory && history.payload?.window === history.window && Date.now() - history.loadedAt < 15_000;
+  const historySince = !forceHistory && history.payload?.window === history.window ? incrementalSeriesSince(history.payload, 'providers') : '';
+  const requestURL = '/api/v1/downloads/updates?limit=' + (state.downloads.cursor ? '100' : '50') +
+    (state.downloads.cursor ? '&cursor=' + encodeURIComponent(state.downloads.cursor) : '');
+  const [requests, samples] = await Promise.allSettled([
+    json(requestURL),
+    cacheFresh ? Promise.resolve(history.payload) : json('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window) +
+      (historySince ? '&since=' + encodeURIComponent(historySince) : '')),
+  ]);
+  if (ticket !== state.downloads.pollSeq) return;
+  state.downloads.requestError = requests.status === 'rejected' ? requests.reason.message : '';
+  $('#downloads-error').textContent = [state.downloads.requestError, state.downloads.providerError].filter(Boolean).join(' · ');
+  if (requests.status === 'fulfilled') mergeDownloadUpdates(requests.value, !state.downloads.cursor);
+  if (samples.status === 'fulfilled') {
+    history.payload = cacheFresh ? samples.value : mergeDownloadHistory(history.payload, samples.value, history.window);
+    if (!cacheFresh) history.loadedAt = Date.now();
+  }
+  $('#download-monitor-error').textContent = samples.status === 'rejected' ? '历史采样读取失败 · ' + samples.reason.message : '';
+  renderDownloadProviders(state.downloads.providers, state.downloads.providers.length > 0 && !state.downloads.providerError);
   if (schedule && $('#downloads-view').classList.contains('active')) {
     state.downloads.poll = setTimeout(() => loadDownloads(true), 3000);
   }
@@ -1691,8 +1872,10 @@ async function loadMonitor(schedule = true) {
   clearTimeout(state.monitor.poll);
   syncMonitorWindowButtons();
   try {
-    const payload = await json('/api/v1/monitor/links?window=' + encodeURIComponent(state.monitor.window));
-    state.monitor.payload = payload;
+    const since = incrementalSeriesSince(state.monitor.payload, 'links');
+    const payload = await json('/api/v1/monitor/links?window=' + encodeURIComponent(state.monitor.window) +
+      (since ? '&since=' + encodeURIComponent(since) : ''));
+    state.monitor.payload = mergeLinkHistory(state.monitor.payload, payload, state.monitor.window);
     $('#monitor-error').textContent = '';
     renderMonitor();
   } catch (error) {
@@ -2243,6 +2426,7 @@ function bind() {
     const button = event.target.closest('[data-monitor-window]');
     if (!button) return;
     state.monitor.window = button.dataset.monitorWindow;
+    state.monitor.payload = null;
     localStorage.setItem('satellite-data-monitor-window', state.monitor.window);
     loadMonitor(true);
   });
