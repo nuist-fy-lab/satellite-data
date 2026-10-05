@@ -193,7 +193,8 @@ func (r *Runtime) ProviderStatuses(ctx context.Context) ([]model.ProviderStatus,
 		if err != nil {
 			return nil, err
 		}
-		limit, active, rate := r.flows[item.SourceID].snapshot()
+		limit, _, rate := r.flows[item.SourceID].snapshot()
+		active := providerActiveTransfers(counts)
 		out = append(out, model.ProviderStatus{
 			SourceID: item.SourceID, Enabled: item.Enabled,
 			TransferConcurrency: item.TransferConcurrency, VerifyConcurrency: item.VerifyConcurrency,
@@ -202,6 +203,10 @@ func (r *Runtime) ProviderStatuses(ctx context.Context) ([]model.ProviderStatus,
 		})
 	}
 	return out, nil
+}
+
+func providerActiveTransfers(counts map[string]int) int {
+	return max(0, counts["downloading"])
 }
 
 func (r *Runtime) ValidateTask(spec model.TaskSpec) error {
