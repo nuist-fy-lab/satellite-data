@@ -32,6 +32,7 @@ type Config struct {
 func Load() Config {
 	home, _ := os.UserHomeDir()
 	state := filepath.Join(home, ".local", "state", "satellite-data-downloader")
+	runtime := runtimeRoot(home)
 	providers := []Provider{
 		provider("goes", true, 4, 2, 3*time.Minute, ""),
 		provider("himawari8", true, 1, 1, 3*time.Minute, ""),
@@ -45,15 +46,22 @@ func Load() Config {
 		provider("era5", true, 2, 2, 10*time.Minute, "cds"),
 	}
 	return Config{
-		SocketPath:           env("SATDOWN_SOCKET", filepath.Join(state, "downloader.sock")),
+		SocketPath:           env("SATDOWN_SOCKET", filepath.Join(runtime, "satellite-data-downloader", "downloader.sock")),
 		DBPath:               env("SATDOWN_DB", filepath.Join(state, "downloader.sqlite3")),
-		CentralSocket:        env("SATDOWN_CENTRAL_SOCKET", filepath.Join(home, ".local", "state", "satellite-data", "central.sock")),
+		CentralSocket:        env("SATDOWN_CENTRAL_SOCKET", filepath.Join(runtime, "satellite-data", "central.sock")),
 		DownloadRoot:         env("SATDOWN_DOWNLOAD_ROOT", filepath.Join(state, "delivery")),
 		ArchiveRoot:          env("SATDOWN_ARCHIVE_ROOT", filepath.Join(home, "satellite-downloads")),
 		ArchiveGroupWritable: envBool("SATDOWN_ARCHIVE_GROUP_WRITABLE", true),
-		ArchiveEventSocket:   env("SATDOWN_ARCHIVE_EVENT_SOCKET", filepath.Join(home, ".local", "state", "satellite-data", "archive-events.sock")),
+		ArchiveEventSocket:   env("SATDOWN_ARCHIVE_EVENT_SOCKET", filepath.Join(runtime, "satellite-data", "archive-events.sock")),
 		Providers:            providers,
 	}
+}
+
+func runtimeRoot(home string) string {
+	if value := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); value != "" {
+		return value
+	}
+	return filepath.Join(home, ".local", "state")
 }
 
 func provider(source string, enabled bool, transfers, verifiers int, timeout time.Duration, authRef string) Provider {

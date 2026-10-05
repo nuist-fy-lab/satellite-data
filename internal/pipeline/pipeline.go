@@ -241,7 +241,11 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 			return
 		case <-poll.C:
 		}
-		if worker == 0 && provider.AuthRef != "" && r.access.Configured(ctx, provider.SourceID, provider.AuthRef) {
+		// A task can enter waiting_auth whenever the centre reports no usable
+		// route. Anonymous providers such as GOES have an empty AuthRef, but
+		// still depend on the centre for direct/proxy routing. Release their
+		// waiting tasks as soon as the centre reports a usable route again.
+		if worker == 0 && r.access.Configured(ctx, provider.SourceID, provider.AuthRef) {
 			if err := r.store.ReleaseWaitingAuth(ctx, provider.SourceID); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Warn("release provider auth wait", "provider", provider.SourceID, "worker", worker, "error", err)
 			}
