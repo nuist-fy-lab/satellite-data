@@ -75,7 +75,7 @@ func TestVersionedStaticAssetsAreImmutable(t *testing.T) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		_, _ = io.WriteString(w, "export default 1")
 	}))
-	req := httptest.NewRequest(http.MethodGet, "/app.js?v=22", nil)
+	req := httptest.NewRequest(http.MethodGet, "/app.js?v=23", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
