@@ -56,6 +56,91 @@ func TestProviderClaimsAreIsolated(t *testing.T) {
 	}
 }
 
+func TestClaimTransferPrioritizesReadyRetry(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	queued, _, err := state.Enqueue(ctx, model.TaskSpec{
+		Key: "goes-queued", SourceID: "goes", CollectionID: "goes:product",
+		GranuleID: "queued", AssetID: "a", Name: "queued.nc",
+		URL: "https://example.invalid/queued", RelativeDir: "goes/2026",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, _, err := state.Enqueue(ctx, model.TaskSpec{
+		Key: "goes-retry", SourceID: "goes", CollectionID: "goes:product",
+		GranuleID: "retry", AssetID: "b", Name: "retry.nc",
+		URL: "https://example.invalid/retry", RelativeDir: "goes/2026",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.ID >= retry.ID {
+		t.Fatalf("test requires queued id < retry id: %d >= %d", queued.ID, retry.ID)
+	}
+	if err := state.RetryTransfer(ctx, retry.ID, errors.New("temporary timeout"), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.ExecContext(ctx, "UPDATE tasks SET next_attempt_ns=? WHERE id=?", time.Now().Add(-time.Second).UnixNano(), retry.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := state.ClaimTransfer(ctx, "goes")
+	if err != nil || !ok {
+		t.Fatalf("claim retry ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != retry.ID {
+		t.Fatalf("claimed task=%d want ready retry=%d", claimed.ID, retry.ID)
+	}
+}
+
+func TestClaimVerifyPrioritizesReadyRetry(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	ctx := context.Background()
+	verifying, _, err := state.Enqueue(ctx, model.TaskSpec{
+		Key: "goes-verify", SourceID: "goes", CollectionID: "goes:product",
+		GranuleID: "verify", AssetID: "a", Name: "verify.nc",
+		URL: "https://example.invalid/verify", RelativeDir: "goes/2026",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, _, err := state.Enqueue(ctx, model.TaskSpec{
+		Key: "goes-verify-retry", SourceID: "goes", CollectionID: "goes:product",
+		GranuleID: "verify-retry", AssetID: "b", Name: "verify-retry.nc",
+		URL: "https://example.invalid/verify-retry", RelativeDir: "goes/2026",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkDownloaded(ctx, verifying.ID, "/tmp/verify", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.MarkDownloaded(ctx, retry.ID, "/tmp/verify-retry", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RetryVerification(ctx, retry.ID, errors.New("temporary verify error"), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.db.ExecContext(ctx, "UPDATE tasks SET next_attempt_ns=? WHERE id=?", time.Now().Add(-time.Second).UnixNano(), retry.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := state.ClaimVerify(ctx, "goes")
+	if err != nil || !ok {
+		t.Fatalf("claim verify retry ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != retry.ID {
+		t.Fatalf("claimed verify task=%d want ready retry=%d", claimed.ID, retry.ID)
+	}
+}
+
 func TestEnqueueRefreshesStaleAssetURL(t *testing.T) {
 	state, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
 	if err != nil {
