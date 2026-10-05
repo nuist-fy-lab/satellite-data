@@ -53,6 +53,14 @@ Configuration (choose production paths explicitly):
   `SATDOWN_CENTRAL_SOCKET`, e.g. `/run/satellite-data/central.sock`
 
 The socket is `0600`; both daemons must run as the same trusted service user.
+When `XDG_RUNTIME_DIR` is available, both projects default their local IPC
+sockets beneath that node-local directory. Do not place Unix sockets in a
+shared HOME/state filesystem such as GPFS or NFS: another node can otherwise
+unlink the pathname while the original process still holds the listener open.
+On shared-HOME clusters, also pin the user services to the intended service
+host. The c2ln1 deployment uses the drop-ins under
+`deploy/systemd/c2ln1/` for that purpose.
+
 The private fetch endpoint accepts only provider-allowlisted HTTPS asset URLs,
 injects authentication centrally and streams the original status, Range, ETag
 and content headers. No credentials or proxy passwords are returned to the

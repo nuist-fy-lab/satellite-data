@@ -1,0 +1,17 @@
+[Unit]
+Description=Satellite Data Centre
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/satellite-data/runtime.env
+ExecStart=%h/.local/opt/satellite-data/current/satellited -addr 127.0.0.1:8787
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

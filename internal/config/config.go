@@ -19,17 +19,25 @@ type Config struct {
 
 func Load() Config {
 	home, _ := os.UserHomeDir()
+	runtime := runtimeRoot(home)
 	return Config{
 		DownloaderSocket: env("SATELLITE_DOWNLOADER_SOCKET",
-			filepath.Join(home, ".local", "state", "satellite-data-downloader", "downloader.sock")),
+			filepath.Join(runtime, "satellite-data-downloader", "downloader.sock")),
 		ArchiveEventSocket: env("SATELLITE_ARCHIVE_EVENT_SOCKET",
-			filepath.Join(home, ".local", "state", "satellite-data", "archive-events.sock")),
+			filepath.Join(runtime, "satellite-data", "archive-events.sock")),
 		AuthDB:          env("SATELLITE_AUTH_DB", filepath.Join(home, ".local", "state", "satellite-data", "auth.sqlite3")),
 		SessionTTL:      12 * time.Hour,
 		AccessDB:        env("SATELLITE_ACCESS_DB", filepath.Join(home, ".local", "state", "satellite-data", "access.sqlite3")),
 		AccessMasterKey: env("SATELLITE_ACCESS_MASTER_KEY", filepath.Join(home, ".config", "satellite-data", "master.key")),
-		CentralSocket:   env("SATELLITE_CENTRAL_SOCKET", filepath.Join(home, ".local", "state", "satellite-data", "central.sock")),
+		CentralSocket:   env("SATELLITE_CENTRAL_SOCKET", filepath.Join(runtime, "satellite-data", "central.sock")),
 	}
+}
+
+func runtimeRoot(home string) string {
+	if value := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); value != "" {
+		return value
+	}
+	return filepath.Join(home, ".local", "state")
 }
 
 func env(name, fallback string) string {
