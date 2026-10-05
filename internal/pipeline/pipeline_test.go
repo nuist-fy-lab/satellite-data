@@ -96,6 +96,15 @@ func TestProviderPacingAndCooldown(t *testing.T) {
 	}
 }
 
+func TestProviderActiveTransfersUsesDownloadingTasks(t *testing.T) {
+	if got := providerActiveTransfers(map[string]int{"done": 66}); got != 0 {
+		t.Fatalf("idle provider active transfers=%d want 0", got)
+	}
+	if got := providerActiveTransfers(map[string]int{"downloading": 3, "queued": 20}); got != 3 {
+		t.Fatalf("active transfers=%d want 3", got)
+	}
+}
+
 func TestCongestionClassification(t *testing.T) {
 	if !isCongestion(&transfer.HTTPError{Status: 429}) || !isCongestion(&transfer.HTTPError{Status: 503}) {
 		t.Fatal("rate limiting and server errors should reduce concurrency")
