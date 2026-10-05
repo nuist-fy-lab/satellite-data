@@ -80,6 +80,24 @@ func TestProviderFlowAdaptsWithinCeiling(t *testing.T) {
 	}
 }
 
+func TestProviderFlowCanGrowAboveInitialLimit(t *testing.T) {
+	flow := &providerFlow{limit: 4, gap: 200 * time.Millisecond}
+	for range 32 {
+		flow.active++
+		flow.finish(true, false, 8)
+	}
+	if flow.limit != 8 {
+		t.Fatalf("adaptive concurrency=%d want ceiling 8", flow.limit)
+	}
+	for range 20 {
+		flow.active++
+		flow.finish(false, true, 8)
+	}
+	if flow.limit != 1 {
+		t.Fatalf("adaptive concurrency=%d want floor 1", flow.limit)
+	}
+}
+
 func TestProviderPacingAndCooldown(t *testing.T) {
 	flow := &providerFlow{limit: 2, gap: time.Hour}
 	if err := flow.pace(t.Context()); err != nil {
