@@ -43,6 +43,62 @@ func TestDownloadClaimsAreProviderIsolated(t *testing.T) {
 	}
 }
 
+func TestDownloadRequestUpdatesRespectTimestampAndIDCursor(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := t.Context()
+	start := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	first, err := store.EnqueueDownloadRequest(ctx, "goes18", "goes", "goes18:a", start, start.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.EnqueueDownloadRequest(ctx, "goes18", "goes", "goes18:b", start, start.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Date(2026, 10, 5, 12, 0, 0, 123456000, time.UTC)
+	if _, err := store.writer.ExecContext(ctx, "UPDATE download_requests SET updated_at=? WHERE id IN (?,?)",
+		formatTime(stamp), first.ID, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.DownloadRequestUpdates(ctx, 10, stamp, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != second.ID {
+		t.Fatalf("updates=%+v want only id=%d", items, second.ID)
+	}
+}
+
+func TestDownloadRequestUpdatesReturnOldRequestAfterChange(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := t.Context()
+	start := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	old, err := store.EnqueueDownloadRequest(ctx, "goes18", "goes", "goes18:old", start, start.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := time.Now().UTC()
+	if _, err := store.writer.ExecContext(ctx, "UPDATE download_requests SET updated_at=? WHERE id=?",
+		formatTime(cursor.Add(time.Second)), old.ID); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.DownloadRequestUpdates(ctx, 10, cursor, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != old.ID {
+		t.Fatalf("updates=%+v want id=%d", items, old.ID)
+	}
+}
+
 func TestTransferProgressDoesNotFinishDiscovery(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
 	if err != nil {
