@@ -16,7 +16,17 @@ type Provider struct {
 	TransferConcurrency        int
 	VerifyConcurrency          int
 	RequestTimeout             time.Duration
+	LowThroughput              LowThroughputPolicy
 	AuthRef                    string
+}
+
+type LowThroughputPolicy struct {
+	Enabled             bool
+	StartupGrace        time.Duration
+	Window              time.Duration
+	Sustain             time.Duration
+	FloorBytesPerSecond int64
+	BaselineFraction    float64
 }
 
 type Config struct {
@@ -68,6 +78,7 @@ func runtimeRoot(home string) string {
 func provider(source string, enabled bool, initialTransfers, maxTransfers, verifiers int, timeout time.Duration, authRef string) Provider {
 	prefix := "SATDOWN_" + strings.ToUpper(strings.ReplaceAll(source, "-", "_"))
 	transferConcurrency := envInt(prefix+"_TRANSFER_CONCURRENCY", maxTransfers, 1, 32)
+	lowThroughputDefault := source == "goes"
 	return Provider{
 		SourceID:                   source,
 		ArchiveRoot:                strings.TrimSpace(os.Getenv(prefix + "_ARCHIVE_ROOT")),
@@ -76,7 +87,15 @@ func provider(source string, enabled bool, initialTransfers, maxTransfers, verif
 		TransferConcurrency:        transferConcurrency,
 		VerifyConcurrency:          envInt(prefix+"_VERIFY_CONCURRENCY", verifiers, 1, 32),
 		RequestTimeout:             envDuration(prefix+"_REQUEST_TIMEOUT", timeout),
-		AuthRef:                    authRef,
+		LowThroughput: LowThroughputPolicy{
+			Enabled:             envBool(prefix+"_LOW_THROUGHPUT_ENABLED", lowThroughputDefault),
+			StartupGrace:        envDuration(prefix+"_LOW_THROUGHPUT_STARTUP_GRACE", 30*time.Second),
+			Window:              envDuration(prefix+"_LOW_THROUGHPUT_WINDOW", 30*time.Second),
+			Sustain:             envDuration(prefix+"_LOW_THROUGHPUT_SUSTAIN", 45*time.Second),
+			FloorBytesPerSecond: envInt64(prefix+"_LOW_THROUGHPUT_FLOOR_BPS", 64<<10, 1, 1<<40),
+			BaselineFraction:    envFloat(prefix+"_LOW_THROUGHPUT_BASELINE_FRACTION", 0.15, 0.01, 1),
+		},
+		AuthRef: authRef,
 	}
 }
 
@@ -104,6 +123,28 @@ func envInt(name string, fallback, minimum, maximum int) int {
 		return fallback
 	}
 	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return fallback
+	}
+	return parsed
+}
+func envInt64(name string, fallback, minimum, maximum int64) int64 {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return fallback
+	}
+	return parsed
+}
+func envFloat(name string, fallback, minimum, maximum float64) float64 {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil || parsed < minimum || parsed > maximum {
 		return fallback
 	}

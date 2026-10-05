@@ -3,6 +3,7 @@ package transfer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -215,6 +216,91 @@ func TestDownloadIdleTimeoutStopsStalledBody(t *testing.T) {
 	var idle *IdleTimeoutError
 	if !errors.As(err, &idle) {
 		t.Fatalf("error=%v want IdleTimeoutError", err)
+	}
+}
+
+func TestDownloadLowThroughputRecyclesAndResumesPart(t *testing.T) {
+	const total = 256 << 10
+	payload := make([]byte, total)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("ETag", `"slow-flow"`)
+		if requests == 1 {
+			w.Header().Set("Content-Length", fmt.Sprint(total))
+			for offset := 0; offset < total; offset += 512 {
+				end := min(offset+512, total)
+				if _, err := w.Write(payload[offset:end]); err != nil {
+					return
+				}
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			return
+		}
+
+		var start int
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-", &start); err != nil || start <= 0 || start >= total {
+			t.Errorf("invalid resume range %q", r.Header.Get("Range"))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("If-Range") != `"slow-flow"` {
+			t.Errorf("unexpected If-Range %q", r.Header.Get("If-Range"))
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, total-1, total))
+		w.Header().Set("Content-Length", fmt.Sprint(total-start))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload[start:])
+	}))
+	defer server.Close()
+
+	task := model.Task{ID: 45, TaskSpec: model.TaskSpec{
+		SourceID: "goes",
+		Name:     "slow-flow.nc",
+		URL:      server.URL,
+		Size:     total,
+	}}
+	root := t.TempDir()
+	base := NewHTTP(server.Client())
+	guarded := base.WithLowThroughput(LowThroughputPolicy{
+		StartupGrace: 40 * time.Millisecond,
+		Window:       40 * time.Millisecond,
+		Sustain:      40 * time.Millisecond,
+		Threshold:    func() int64 { return 128 << 10 },
+	})
+	_, err := guarded.Download(context.Background(), task, root, nil)
+	var slow *LowThroughputError
+	if !errors.As(err, &slow) {
+		t.Fatalf("error=%v want LowThroughputError", err)
+	}
+	partPath := filepath.Join(root, "staging", "goes", "45", "slow-flow.nc.part")
+	info, err := os.Stat(partPath)
+	if err != nil || info.Size() <= 0 || info.Size() >= total {
+		t.Fatalf("partial download size=%v err=%v", info, err)
+	}
+
+	result, err := base.Download(context.Background(), task, root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(result.Path)
+	if err != nil || len(data) != total || requests != 2 {
+		t.Fatalf("resumed bytes=%d requests=%d err=%v", len(data), requests, err)
+	}
+	for i := range data {
+		if data[i] != payload[i] {
+			t.Fatalf("resumed content differs at byte %d", i)
+		}
 	}
 }
 

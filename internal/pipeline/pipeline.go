@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,7 @@ type providerFlow struct {
 	gap                      time.Duration
 	nextStart                time.Time
 	errorRate                float64
+	normalTransferRates      []float64
 }
 
 func (f *providerFlow) start() bool {
@@ -117,6 +119,45 @@ func (f *providerFlow) addBytes(n int64) {
 	f.Lock()
 	f.bytes += n
 	f.Unlock()
+}
+
+func (f *providerFlow) observeTransferRate(bytes int64, elapsed time.Duration, floor int64) {
+	if bytes <= 0 || elapsed < 5*time.Second {
+		return
+	}
+	rate := float64(bytes) / elapsed.Seconds()
+	if rate < float64(floor) {
+		return
+	}
+	f.Lock()
+	defer f.Unlock()
+	f.normalTransferRates = append(f.normalTransferRates, rate)
+	if len(f.normalTransferRates) > 16 {
+		f.normalTransferRates = append([]float64(nil), f.normalTransferRates[len(f.normalTransferRates)-16:]...)
+	}
+}
+
+func (f *providerFlow) lowThroughputThreshold(policy config.LowThroughputPolicy) int64 {
+	threshold := policy.FloorBytesPerSecond
+	f.Lock()
+	rates := append([]float64(nil), f.normalTransferRates...)
+	f.Unlock()
+	if len(rates) == 0 {
+		return threshold
+	}
+	sort.Float64s(rates)
+	var baseline float64
+	middle := len(rates) / 2
+	if len(rates)%2 == 0 {
+		baseline = (rates[middle-1] + rates[middle]) / 2
+	} else {
+		baseline = rates[middle]
+	}
+	adaptive := int64(baseline * policy.BaselineFraction)
+	if adaptive > threshold {
+		threshold = adaptive
+	}
+	return threshold
 }
 
 func (f *providerFlow) snapshot() (limit, active int, rate float64) {
@@ -287,9 +328,36 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 			_ = r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, err, time.Second)
 			return
 		}
-		result, err := route.Transfer.Download(ctx, task, r.cfg.DownloadRoot, route.Authorizer, flow.addBytes)
+		transferClient := route.Transfer
+		if provider.LowThroughput.Enabled {
+			transferClient = transferClient.WithLowThroughput(transfer.LowThroughputPolicy{
+				StartupGrace: provider.LowThroughput.StartupGrace,
+				Window:       provider.LowThroughput.Window,
+				Sustain:      provider.LowThroughput.Sustain,
+				Threshold: func() int64 {
+					return flow.lowThroughputThreshold(provider.LowThroughput)
+				},
+			})
+		}
+		started := time.Now()
+		var transferred int64
+		result, err := transferClient.Download(ctx, task, r.cfg.DownloadRoot, route.Authorizer, func(n int64) {
+			transferred += n
+			flow.addBytes(n)
+		})
 		if err != nil {
 			flow.finish(false, isCongestion(err), provider.TransferConcurrency)
+			var lowThroughput *transfer.LowThroughputError
+			if errors.As(err, &lowThroughput) {
+				slog.Warn("recycle low-throughput transfer",
+					"provider", provider.SourceID,
+					"task", task.ID,
+					"bytes_per_second", lowThroughput.BytesPerSecond,
+					"threshold_bytes_per_second", lowThroughput.Threshold,
+					"window", lowThroughput.Window,
+					"sustained", lowThroughput.Sustained,
+				)
+			}
 			var httpErr *transfer.HTTPError
 			if errors.As(err, &httpErr) && isCongestion(err) {
 				flow.cooldown(httpErr.RetryAfter)
@@ -298,6 +366,7 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 			poll.Reset(25 * time.Millisecond)
 			continue
 		}
+		flow.observeTransferRate(transferred, time.Since(started), provider.LowThroughput.FloorBytesPerSecond)
 		flow.finish(true, false, provider.TransferConcurrency)
 		r.access.MarkSuccess(context.WithoutCancel(ctx), route)
 		if err := r.store.MarkDownloaded(context.WithoutCancel(ctx), task.ID, result.Path, result.Size); err != nil {

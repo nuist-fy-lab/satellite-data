@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/auth"
@@ -69,8 +70,9 @@ type PromoteResult struct {
 }
 
 type HTTP struct {
-	client      *http.Client
-	idleTimeout time.Duration
+	client        *http.Client
+	idleTimeout   time.Duration
+	lowThroughput LowThroughputPolicy
 }
 
 func NewHTTP(timeoutClient *http.Client, idleTimeout ...time.Duration) *HTTP {
@@ -88,6 +90,23 @@ func NewHTTP(timeoutClient *http.Client, idleTimeout ...time.Duration) *HTTP {
 	return &HTTP{client: timeoutClient, idleTimeout: idle}
 }
 
+type LowThroughputPolicy struct {
+	StartupGrace time.Duration
+	Window       time.Duration
+	Sustain      time.Duration
+	Threshold    func() int64
+}
+
+func (p LowThroughputPolicy) enabled() bool {
+	return p.StartupGrace > 0 && p.Window > 0 && p.Sustain > 0 && p.Threshold != nil
+}
+
+func (h *HTTP) WithLowThroughput(policy LowThroughputPolicy) *HTTP {
+	clone := *h
+	clone.lowThroughput = policy
+	return &clone
+}
+
 type IdleTimeoutError struct {
 	Duration time.Duration
 }
@@ -98,6 +117,22 @@ func (e *IdleTimeoutError) Error() string {
 
 func (e *IdleTimeoutError) Timeout() bool   { return true }
 func (e *IdleTimeoutError) Temporary() bool { return true }
+
+type LowThroughputError struct {
+	BytesPerSecond int64
+	Threshold      int64
+	Window         time.Duration
+	Sustained      time.Duration
+}
+
+func (e *LowThroughputError) Error() string {
+	return fmt.Sprintf(
+		"download remained below throughput threshold for %s: %d B/s over %s (threshold %d B/s)",
+		e.Sustained, e.BytesPerSecond, e.Window, e.Threshold,
+	)
+}
+
+func (e *LowThroughputError) Temporary() bool { return true }
 
 type idleWatchdog struct {
 	pulse chan struct{}
@@ -157,6 +192,97 @@ func (w *idleWatchdog) Stop() {
 	<-w.done
 }
 
+type throughputSample struct {
+	at    time.Time
+	bytes int64
+}
+
+type throughputWatchdog struct {
+	bytes atomic.Int64
+	stop  chan struct{}
+	done  chan struct{}
+}
+
+func newThroughputWatchdog(policy LowThroughputPolicy, cancel context.CancelCauseFunc) *throughputWatchdog {
+	if !policy.enabled() {
+		return nil
+	}
+	w := &throughputWatchdog{
+		stop: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+	go func() {
+		defer close(w.done)
+		started := time.Now()
+		samples := []throughputSample{{at: started}}
+		var belowSince time.Time
+		interval := policy.Window / 6
+		if interval > 5*time.Second {
+			interval = 5 * time.Second
+		}
+		if interval < 10*time.Millisecond {
+			interval = 10 * time.Millisecond
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case now := <-ticker.C:
+				total := w.bytes.Load()
+				samples = append(samples, throughputSample{at: now, bytes: total})
+				cutoff := now.Add(-policy.Window)
+				for len(samples) > 2 && samples[1].at.Before(cutoff) {
+					samples = samples[1:]
+				}
+				if now.Sub(started) < policy.StartupGrace || now.Sub(started) < policy.Window {
+					continue
+				}
+				oldest := samples[0]
+				elapsed := now.Sub(oldest.at)
+				if elapsed <= 0 {
+					continue
+				}
+				rate := int64(float64(total-oldest.bytes) / elapsed.Seconds())
+				threshold := policy.Threshold()
+				if threshold <= 0 || rate >= threshold {
+					belowSince = time.Time{}
+					continue
+				}
+				if belowSince.IsZero() {
+					belowSince = now
+					continue
+				}
+				if now.Sub(belowSince) >= policy.Sustain {
+					cancel(&LowThroughputError{
+						BytesPerSecond: rate,
+						Threshold:      threshold,
+						Window:         elapsed,
+						Sustained:      now.Sub(belowSince),
+					})
+					return
+				}
+			case <-w.stop:
+				return
+			}
+		}
+	}()
+	return w
+}
+
+func (w *throughputWatchdog) Add(n int64) {
+	if w != nil && n > 0 {
+		w.bytes.Add(n)
+	}
+}
+
+func (w *throughputWatchdog) Stop() {
+	if w == nil {
+		return
+	}
+	close(w.stop)
+	<-w.done
+}
+
 type partIdentity struct {
 	URLHash string `json:"url_hash"`
 	ETag    string `json:"etag"`
@@ -176,9 +302,11 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 	requestCtx := ctx
 	var cancel context.CancelCauseFunc
 	var watchdog *idleWatchdog
-	if h.idleTimeout > 0 {
+	if h.idleTimeout > 0 || h.lowThroughput.enabled() {
 		requestCtx, cancel = context.WithCancelCause(ctx)
-		watchdog = newIdleWatchdog(h.idleTimeout, cancel)
+		if h.idleTimeout > 0 {
+			watchdog = newIdleWatchdog(h.idleTimeout, cancel)
+		}
 		defer func() {
 			watchdog.Stop()
 			cancel(nil)
@@ -326,10 +454,13 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 	if err != nil {
 		return DownloadResult{}, err
 	}
+	throughputWatchdog := newThroughputWatchdog(h.lowThroughput, cancel)
+	defer throughputWatchdog.Stop()
 	var destination io.Writer = handle
-	if watchdog != nil || len(onProgress) > 0 && onProgress[0] != nil {
+	if watchdog != nil || throughputWatchdog != nil || len(onProgress) > 0 && onProgress[0] != nil {
 		destination = progressWriter{Writer: handle, report: func(n int64) {
 			watchdog.Pulse()
+			throughputWatchdog.Add(n)
 			if len(onProgress) > 0 && onProgress[0] != nil {
 				onProgress[0](n)
 			}
