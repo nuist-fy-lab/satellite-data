@@ -147,7 +147,9 @@ function navigateView(id, historyMode = 'none') {
 }
 
 function selectedSource() {
-  return state.sources.find(item => item.id === sourceEl.value);
+  const product = selectedCollection();
+  if (product?.source_id) return state.sources.find(item => item.id === product.source_id);
+  return familySources(sourceEl.value)[0] || null;
 }
 
 function selectedCollection() {
@@ -156,6 +158,69 @@ function selectedCollection() {
 
 function uniqueSorted(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), undefined, {numeric: true}));
+}
+
+const sourceFamilyLabels = Object.freeze({
+  goes: 'GOES',
+  himawari: 'Himawari',
+  modis: 'MODIS',
+  viirs: 'VIIRS',
+  earthcare: 'EarthCARE',
+  cloudsat: 'CloudSat',
+  calipso: 'CALIPSO',
+  mtg: 'MTG',
+  era5: 'ERA5',
+});
+const sourceFamilyOrder = Object.keys(sourceFamilyLabels);
+const sourceFamilyHints = Object.freeze({
+  goes: ['goes16', 'goes17', 'goes18', 'goes19'],
+  himawari: ['himawari8', 'himawari9'],
+});
+
+function sourceFamilyID(sourceID) {
+  const id = String(sourceID || '').toLowerCase();
+  if (/^goes\d+$/.test(id)) return 'goes';
+  if (/^himawari\d+$/.test(id)) return 'himawari';
+  return id;
+}
+
+function familySources(familyID) {
+  return state.sources.filter(source => sourceFamilyID(source.id) === familyID);
+}
+
+function sourceFamilies() {
+  const grouped = new Map();
+  for (const source of state.sources) {
+    const id = sourceFamilyID(source.id);
+    if (!grouped.has(id)) grouped.set(id, []);
+    grouped.get(id).push(source);
+  }
+  return [...grouped.entries()].map(([id, sources]) => ({
+    id,
+    sources,
+    label: sourceFamilyLabels[id] || sources[0]?.name || id,
+  })).sort((a, b) => {
+    const ai = sourceFamilyOrder.indexOf(a.id);
+    const bi = sourceFamilyOrder.indexOf(b.id);
+    if (ai >= 0 || bi >= 0) return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
+    return a.label.localeCompare(b.label, undefined, {numeric: true});
+  });
+}
+
+function savedFamily(saved = readFilters()) {
+  return saved.family || sourceFamilyID(saved.source);
+}
+
+function hintedFamilySourceIDs(familyID) {
+  return sourceFamilyHints[familyID] || [familyID];
+}
+
+function sameSourceSet(a, b) {
+  return [...a].sort().join('|') === [...b].sort().join('|');
+}
+
+function familyProductsURL(sourceIDs) {
+  return '/api/products?sources=' + encodeURIComponent(sourceIDs.join(','));
 }
 
 // Mission periods are not file-coverage intervals. An end is shown only for
@@ -279,7 +344,9 @@ function fillMonths() {
   for (let month = 0; month < 12; month++) {
     monthEl.add(new Option(`${month + 1} 月`, String(month)));
   }
-  monthEl.value = String(new Date().getUTCMonth());
+  const saved = readFilters();
+  const current = String(new Date().getUTCMonth());
+  monthEl.value = [...monthEl.options].some(option => option.value === saved.month) ? saved.month : current;
 }
 
 function updateSelectedProduct() {
@@ -1195,7 +1262,7 @@ function renderSourceCounts() {
   }
 }
 
-function applyCatalog(payload, source, saved = readFilters()) {
+function applyCatalog(payload, family, saved = readFilters()) {
   state.collections = (payload || []).map(product => ({
     id: product.product_key,
     source_id: product.source_id,
@@ -1217,8 +1284,12 @@ function applyCatalog(payload, source, saved = readFilters()) {
     },
   }));
   rebuildFilters('source', false);
-  if (saved.source === source) {
-    restoreSelect(satelliteEl, saved.satellite);
+  if (savedFamily(saved) === family) {
+    let rememberedSatellite = saved.satellite;
+    if (!rememberedSatellite && saved.source) {
+      rememberedSatellite = state.sources.find(item => item.id === saved.source)?.name || '';
+    }
+    restoreSelect(satelliteEl, rememberedSatellite);
     rebuildFilters('satellite', false);
     restoreSelect(instrumentEl, saved.instrument);
     rebuildFilters('instrument', false);
@@ -1231,21 +1302,25 @@ function applyCatalog(payload, source, saved = readFilters()) {
 
 async function loadSources() {
   const saved = readFilters();
-  const preferredSource = saved.source || 'goes18';
-  const catalogPromise = preferredSource
-    ? json('/api/products?source=' + encodeURIComponent(preferredSource)).catch(() => null)
+  const preferredFamily = savedFamily(saved) || 'goes';
+  const hintedSources = hintedFamilySourceIDs(preferredFamily);
+  const catalogPromise = preferredFamily
+    ? json(familyProductsURL(hintedSources)).catch(() => null)
     : Promise.resolve(null);
   const [payload, prefetchedCatalog] = await Promise.all([json('/api/v1/sources'), catalogPromise]);
   state.sources = payload.sources || [];
   renderSourceCounts();
   if ($('#sources-view').classList.contains('active')) renderSources();
+  const families = sourceFamilies();
   const previous = sourceEl.value;
   sourceEl.replaceChildren();
-  for (const source of state.sources) sourceEl.add(new Option(source.name, source.id));
-  if (state.sources.some(item => item.id === previous)) sourceEl.value = previous;
-  if (saved.source && state.sources.some(item => item.id === saved.source)) sourceEl.value = saved.source;
-  else if (state.sources.some(item => item.id === 'goes18')) sourceEl.value = 'goes18';
-  if (sourceEl.value === preferredSource && prefetchedCatalog) {
+  for (const family of families) sourceEl.add(new Option(family.label, family.id));
+  if (families.some(item => item.id === previous)) sourceEl.value = previous;
+  if (families.some(item => item.id === preferredFamily)) sourceEl.value = preferredFamily;
+  else if (families.some(item => item.id === 'goes')) sourceEl.value = 'goes';
+  else if (families.length) sourceEl.value = families[0].id;
+  const actualSources = familySources(sourceEl.value).map(item => item.id);
+  if (sourceEl.value === preferredFamily && prefetchedCatalog && sameSourceSet(actualSources, hintedSources)) {
     applyCatalog(prefetchedCatalog, sourceEl.value, saved);
   } else {
     await loadCatalog();
@@ -1260,11 +1335,13 @@ async function loadCatalog() {
   state.selected = null;
   gridEl.classList.add('placeholder-grid');
   gridEl.replaceChildren();
-  const source = sourceEl.value;
-  if (!source) return;
+  const family = sourceEl.value;
+  if (!family) return;
+  const sourceIDs = familySources(family).map(item => item.id);
+  if (!sourceIDs.length) return;
   try {
-    const payload = await json('/api/products?source=' + encodeURIComponent(source));
-    applyCatalog(payload, source);
+    const payload = await json(familyProductsURL(sourceIDs));
+    applyCatalog(payload, family);
   } catch (error) {
     gridEl.classList.remove('placeholder-grid');
     $('#product-title').textContent = '产品目录读取失败';
@@ -1282,20 +1359,24 @@ function readFilters() {
 
 function persistFilters() {
   localStorage.setItem(FILTER_KEY, JSON.stringify({
-    source: sourceEl.value,
+    family: sourceEl.value,
+    source: state.selected?.source_id || '',
     satellite: satelliteEl.value,
     instrument: instrumentEl.value,
     level: levelEl.value,
     product: productEl.value,
     year: yearEl.value,
+    month: monthEl.value,
+    timezone: state.displayZone,
   }));
 }
 
 function resetFilters() {
   localStorage.removeItem(FILTER_KEY);
-  if (state.sources.some(item => item.id === 'goes18')) sourceEl.value = 'goes18';
+  if ([...sourceEl.options].some(item => item.value === 'goes')) sourceEl.value = 'goes';
   else sourceEl.selectedIndex = 0;
   yearEl.value = String(defaultYear());
+  monthEl.value = String(new Date().getUTCMonth());
   loadCatalog();
 }
 
@@ -2364,11 +2445,13 @@ function bind() {
     state.dayState.clear(); closeDetail(); renderCoverageShell(); renderCalendar(); persistFilters(); loadYear(true);
   });
   monthEl.addEventListener('change', () => {
+    persistFilters();
     if (state.coverage.supported && state.coverage.view === 'month') loadCoverageMonth();
   });
   timezoneEl.addEventListener('change', () => {
     state.displayZone = timezoneEl.value;
     localStorage.setItem('satellite-data-zone', state.displayZone);
+    persistFilters();
     closeDetail();
     renderCalendar();
     if (state.coverage.supported && state.coverage.view === 'day') renderCoverageDay();
@@ -2532,6 +2615,8 @@ function bind() {
 async function boot() {
   const sessionPromise = json('/api/v1/auth/session');
   setSidebar(localStorage.getItem(SIDEBAR_KEY) === '1');
+  const saved = readFilters();
+  if (saved.timezone === 'UTC' || saved.timezone === 'BJT') state.displayZone = saved.timezone;
   timezoneEl.value = state.displayZone;
   fillYears();
   fillMonths();

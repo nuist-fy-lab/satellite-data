@@ -664,10 +664,38 @@ func (s *Server) downloaderProviders(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) products(w http.ResponseWriter, r *http.Request) {
 	sourceID := strings.TrimSpace(r.URL.Query().Get("source"))
-	products, err := s.store.Products(r.Context(), sourceID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+	sourceList := strings.TrimSpace(r.URL.Query().Get("sources"))
+	if sourceID != "" && sourceList != "" {
+		writeError(w, http.StatusBadRequest, errors.New("source and sources are mutually exclusive"))
 		return
+	}
+	var products []model.Product
+	if sourceList == "" {
+		items, err := s.store.Products(r.Context(), sourceID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		products = items
+	} else {
+		seen := make(map[string]bool)
+		for _, raw := range strings.Split(sourceList, ",") {
+			id := strings.TrimSpace(raw)
+			if id == "" || seen[id] {
+				continue
+			}
+			if len(seen) >= 32 {
+				writeError(w, http.StatusBadRequest, errors.New("too many sources"))
+				return
+			}
+			seen[id] = true
+			items, err := s.store.Products(r.Context(), id)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			products = append(products, items...)
+		}
 	}
 	writeJSON(w, http.StatusOK, products)
 }
