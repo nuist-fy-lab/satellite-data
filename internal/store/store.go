@@ -166,7 +166,8 @@ func (s *Store) ClaimTransfer(ctx context.Context, sourceID string) (model.Task,
 		WHERE source_id=?
 		  AND state IN ('queued','retry_wait')
 		  AND next_attempt_ns<=?
-		ORDER BY id LIMIT 1`, sourceID, now.UnixNano()).Scan(&id)
+		ORDER BY CASE state WHEN 'retry_wait' THEN 0 ELSE 1 END, next_attempt_ns, id
+		LIMIT 1`, sourceID, now.UnixNano()).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Task{}, false, nil
 	}
@@ -205,7 +206,8 @@ func (s *Store) ClaimVerify(ctx context.Context, sourceID string) (model.Task, b
 	err = tx.QueryRowContext(ctx, `
 		SELECT id FROM tasks
 		WHERE source_id=? AND state IN ('verifying','verify_wait') AND next_attempt_ns<=?
-		ORDER BY id LIMIT 1`, sourceID, time.Now().UnixNano()).Scan(&id)
+		ORDER BY CASE state WHEN 'verify_wait' THEN 0 ELSE 1 END, next_attempt_ns, id
+		LIMIT 1`, sourceID, time.Now().UnixNano()).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Task{}, false, nil
 	}
