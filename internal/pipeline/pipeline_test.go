@@ -22,6 +22,17 @@ func TestAllowedHostAcceptsNativeLAADS(t *testing.T) {
 	}
 }
 
+func TestERA5TasksUseOnlyTheStableCentreReference(t *testing.T) {
+	if !allowedHost("era5", "cds.climate.copernicus.eu") {
+		t.Fatal("stable CDS job reference was rejected")
+	}
+	for _, host := range []string{"object-store.os-api.cci2.ecmwf.int", "127.0.0.1", "example.invalid"} {
+		if allowedHost("era5", host) {
+			t.Fatalf("downloader accepted direct ERA5 asset host %s", host)
+		}
+	}
+}
+
 func TestProviderFlowAdaptsWithinCeiling(t *testing.T) {
 	flow := &providerFlow{limit: 4, gap: 200 * time.Millisecond, lastSample: time.Now().Add(-2 * time.Second)}
 	for range 4 {

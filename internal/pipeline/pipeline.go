@@ -149,7 +149,7 @@ func New(cfg config.Config, state *store.Store, accessManager *access.Manager) (
 	}
 	return &Runtime{
 		cfg: cfg, store: state, access: accessManager, provider: providers, flows: flows,
-		events: archiveevent.New(cfg.ArchiveEventSocket),
+		events: archiveevent.New(cfg.ArchiveEventSocket, state),
 	}, nil
 }
 
@@ -360,8 +360,18 @@ func (r *Runtime) verifyLoop(ctx context.Context, provider config.Provider, work
 			poll.Reset(150 * time.Millisecond)
 			continue
 		}
-		result, err := transfer.Promote(task, r.cfg.ArchiveRoot)
+		archiveRoot := provider.ArchiveRoot
+		if archiveRoot == "" {
+			archiveRoot = r.cfg.ArchiveRoot
+		}
+		result, err := transfer.Promote(task, archiveRoot, provider.ArchiveRoot != "" || r.cfg.ArchiveGroupWritable)
 		if err != nil {
+			var collision *transfer.CollisionError
+			if errors.As(err, &collision) {
+				_ = r.store.RetryVerification(context.WithoutCancel(ctx), task.ID, err, time.Hour)
+				poll.Reset(25 * time.Millisecond)
+				continue
+			}
 			var integrity *transfer.IntegrityError
 			if errors.As(err, &integrity) || errors.Is(err, os.ErrNotExist) {
 				_ = os.Remove(task.StagingPath)
@@ -375,11 +385,7 @@ func (r *Runtime) verifyLoop(ctx context.Context, provider config.Provider, work
 		if err := r.store.Complete(context.WithoutCancel(ctx), task.ID, result.Path, result.SHA256, result.Size); err != nil {
 			slog.Warn("checkpoint provider promotion", "provider", provider.SourceID, "task", task.ID, "error", err)
 		} else {
-			r.events.Notify(archiveevent.Event{
-				TaskID: task.ID, SourceID: task.SourceID, CollectionID: task.CollectionID,
-				GranuleID: task.GranuleID, Filename: task.Name, ArchivePath: result.Path,
-				Size: result.Size, SHA256: result.SHA256,
-			})
+			r.events.Notify()
 		}
 		poll.Reset(10 * time.Millisecond)
 	}
@@ -427,6 +433,8 @@ func allowedHost(sourceID, host string) bool {
 		return host == "data.asdc.earthdata.nasa.gov"
 	case "cloudsat":
 		return host == "dpc-thredds.cira.colostate.edu"
+	case "era5":
+		return host == "cds.climate.copernicus.eu"
 	case "himawari8":
 		return host == "noaa-himawari8.s3.amazonaws.com"
 	case "himawari9":

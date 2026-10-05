@@ -49,6 +49,12 @@ CREATE INDEX IF NOT EXISTS tasks_provider_ready_idx
 ON tasks(source_id,state,next_attempt_ns,id);
 CREATE INDEX IF NOT EXISTS tasks_state_idx
 ON tasks(state,updated_at,id);
+
+CREATE TABLE IF NOT EXISTS archive_event_outbox (
+  task_id INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  next_attempt_ns INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0
+);
 `
 
 type Store struct {
@@ -292,10 +298,59 @@ func (s *Store) Redownload(ctx context.Context, id int64, cause error, delay tim
 
 func (s *Store) Complete(ctx context.Context, id int64, archivePath, digest string, size int64) error {
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE tasks
 		SET state='done',archive_path=?,sha256=?,observed_size=?,staging_path='',completed_at=?,last_error='',updated_at=?
 		WHERE id=?`, archivePath, digest, size, stamp(now), stamp(now), id)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return errors.New("completed task not found")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO archive_event_outbox(task_id) VALUES(?)
+		ON CONFLICT(task_id) DO UPDATE SET next_attempt_ns=0,attempts=0`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) PendingArchiveEvents(ctx context.Context, limit int) ([]model.Task, error) {
+	rows, err := s.db.QueryContext(ctx, taskSelect+`
+		WHERE state='done' AND id IN (SELECT task_id FROM archive_event_outbox WHERE next_attempt_ns<=?)
+		ORDER BY id LIMIT ?`, time.Now().UnixNano(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pending []model.Task
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		pending = append(pending, task)
+	}
+	return pending, rows.Err()
+}
+
+func (s *Store) RetryArchiveEvent(ctx context.Context, taskID int64, delay time.Duration) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE archive_event_outbox
+		SET next_attempt_ns=?,attempts=attempts+1 WHERE task_id=?`, time.Now().Add(delay).UnixNano(), taskID)
+	return err
+}
+
+func (s *Store) AcknowledgeArchiveEvent(ctx context.Context, taskID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM archive_event_outbox WHERE task_id=?`, taskID)
 	return err
 }
 

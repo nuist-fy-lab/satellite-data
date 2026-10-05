@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
 )
@@ -79,5 +80,54 @@ func TestEnqueueRefreshesStaleAssetURL(t *testing.T) {
 	}
 	if refreshed.URL != updated.URL || refreshed.Size != 2 || refreshed.State != "queued" || refreshed.LastError != "" {
 		t.Fatalf("unexpected refreshed task: %#v", refreshed)
+	}
+}
+
+func TestArchiveNotificationOutboxSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite3")
+	state, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	task, _, err := state.Enqueue(ctx, model.TaskSpec{
+		Key: "earthcare-test", SourceID: "earthcare", CollectionID: "collection",
+		GranuleID: "item", AssetID: "asset", Name: "file.h5",
+		URL: "https://example.invalid/file.h5", RelativeDir: "PRODUCT/20260928",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Complete(ctx, task.ID, "/archive/PRODUCT/20260928/file.h5", "digest", 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	pending, err := state.PendingArchiveEvents(ctx, 16)
+	if err != nil || len(pending) != 1 || pending[0].ID != task.ID || pending[0].ArchivePath != "/archive/PRODUCT/20260928/file.h5" {
+		t.Fatalf("outbox after restart: %+v (%v)", pending, err)
+	}
+	if err := state.RetryArchiveEvent(ctx, task.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = state.PendingArchiveEvents(ctx, 16)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("retry should defer event: %+v (%v)", pending, err)
+	}
+	if err := state.AcknowledgeArchiveEvent(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Complete(ctx, task.ID, "/archive/PRODUCT/20260928/file.h5", "digest", 42); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = state.PendingArchiveEvents(ctx, 16)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("recompleted task should requeue event: %+v (%v)", pending, err)
 	}
 }
