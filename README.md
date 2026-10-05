@@ -31,6 +31,12 @@ satellite-data discovery
 
 Every provider has its own worker pools and retry clock. A slow or broken
 provider cannot consume another provider's transfer or verification slots.
+Network starts are paced separately per provider: the interval starts at
+200 ms, rises on repeated 408/429/5xx or timeouts (up to 5 seconds), and
+falls after sustained success (no less than 100 ms). The existing adaptive
+transfer concurrency stays between 1 and the configured per-provider maximum.
+When supplied, `Retry-After` also delays new transfers for that provider,
+up to one hour; individual task retries remain durable and jittered.
 Himawari-8/9 use independent single-transfer/single-verifier pools by default
 so their segmented AHI full-disk objects cannot starve other providers.
 
@@ -54,12 +60,20 @@ Discovery may be public even when science-file transfer is not.
 | CloudSat | CloudSat DPC THREDDS username + password |
 | Himawari-8/9 | anonymous |
 
-Credentials are read only by the downloader process. They are never accepted in
-task JSON, stored in SQLite, or returned by status APIs.
+Credentials, accounts, proxies and provider authentication are owned exclusively
+by the `satellite-data` centre. This downloader has no Vault, access database or
+credential environment fallback. Its transfer client streams data through the
+private centre Unix socket, preserving Range, If-Range and ETag.
 
-On the data node, run `deploy/configure-secrets.sh` interactively to create the
-private systemd EnvironmentFile without putting credentials in shell arguments
-or chat logs.
+Configure `SATDOWN_CENTRAL_SOCKET` to match `SATELLITE_CENTRAL_SOCKET` in the centre.
+The socket is private (`0600`); both processes must use the same trusted service
+user. Queue tables and task APIs are unchanged. Legacy access endpoints return
+HTTP 410 rather than accepting Secrets.
+
+Migration is coordinated with the matching centre release. Stop both processes,
+retain old releases/database/key for rollback, and run the centre's
+`satellited -migrate-access` against the existing local files. The centre must
+have an empty access database. See the centre's `docs/central-access.md`.
 
 ## Configuration
 
@@ -69,4 +83,3 @@ from credentials. See `deploy/systemd/satellite-data-downloader.env.example`.
 The default Unix socket and state paths live under
 `~/.local/state/satellite-data-downloader/`; the archive path must be configured
 for the production data node.
-

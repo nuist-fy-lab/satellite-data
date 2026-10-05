@@ -6,7 +6,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-%h/.config/satellite-data-downloader/runtime.env
-EnvironmentFile=-%h/.config/satellite-data-downloader/secrets.env
 ExecStart=%h/.local/bin/satellite-data-downloader
 Restart=on-failure
 RestartSec=2s
@@ -16,4 +15,3 @@ PrivateTmp=true
 
 [Install]
 WantedBy=default.target
-

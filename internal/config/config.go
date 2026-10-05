@@ -20,7 +20,7 @@ type Provider struct {
 type Config struct {
 	SocketPath         string
 	DBPath             string
-	MasterKey          string
+	CentralSocket      string
 	DownloadRoot       string
 	ArchiveRoot        string
 	ArchiveEventSocket string
@@ -44,7 +44,7 @@ func Load() Config {
 	return Config{
 		SocketPath:         env("SATDOWN_SOCKET", filepath.Join(state, "downloader.sock")),
 		DBPath:             env("SATDOWN_DB", filepath.Join(state, "downloader.sqlite3")),
-		MasterKey:          env("SATDOWN_MASTER_KEY", filepath.Join(home, ".config", "satellite-data-downloader", "master.key")),
+		CentralSocket:      env("SATDOWN_CENTRAL_SOCKET", filepath.Join(home, ".local", "state", "satellite-data", "central.sock")),
 		DownloadRoot:       env("SATDOWN_DOWNLOAD_ROOT", filepath.Join(state, "delivery")),
 		ArchiveRoot:        env("SATDOWN_ARCHIVE_ROOT", filepath.Join(home, "satellite-downloads")),
 		ArchiveEventSocket: env("SATDOWN_ARCHIVE_EVENT_SOCKET", filepath.Join(home, ".local", "state", "satellite-data", "archive-events.sock")),

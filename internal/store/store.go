@@ -71,14 +71,6 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize downloader state: %w", err)
 	}
-	if _, err := db.Exec(accessSchema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("initialize access pool state: %w", err)
-	}
-	if err := migrateAccessSchema(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("migrate access pool state: %w", err)
-	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("secure downloader state: %w", err)

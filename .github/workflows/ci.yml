@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -24,12 +26,16 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./...
+      - name: Race-check IPC and queue contracts
+        run: go test -race ./internal/access ./internal/store ./internal/server ./internal/transfer
 
   build:
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
@@ -44,6 +50,25 @@ jobs:
         run: |
           mkdir -p dist
           go build -trimpath -ldflags='-s -w' -o dist/satellite-data-downloader ./cmd/satellite-data-downloader
+      - name: Publish and verify PR binary
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          tag="ci-pr-${PR_NUMBER}-${SOURCE_SHA:0:12}"
+          gh release create "$tag" dist/satellite-data-downloader --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" --title "CI PR ${PR_NUMBER} ${SOURCE_SHA:0:12}" \
+            --notes "Cloud-verified PR binary for $SOURCE_SHA" --prerelease
+          mkdir -p verify
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir verify
+          target="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .target_commitish)"
+          [[ "$target" == "$SOURCE_SHA" ]]
+          cmp dist/satellite-data-downloader verify/satellite-data-downloader
+          digest="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '.assets[] | select(.name=="satellite-data-downloader") | .digest')"
+          [[ "$digest" == "sha256:$(sha256sum verify/satellite-data-downloader | cut -d' ' -f1)" ]]
       - name: Publish rolling CI binary
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -51,4 +76,3 @@ jobs:
         run: |
           gh release delete ci-latest --yes --cleanup-tag || true
           gh release create ci-latest dist/satellite-data-downloader --target "$GITHUB_SHA" --title "CI latest" --notes "Rolling CI build for $GITHUB_SHA" --prerelease
-
