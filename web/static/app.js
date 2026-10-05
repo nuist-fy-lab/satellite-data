@@ -593,7 +593,7 @@ function renderCoverageShell() {
   document.querySelectorAll('[data-coverage-time]').forEach(button => {
     button.disabled = !visible;
   });
-  $('.legend').classList.toggle('hidden', visible || onDemand);
+  $('.legend').classList.toggle('hidden', onDemand);
   $('#year-layout').classList.toggle('hidden', onDemand || (visible && coverage.view !== 'year'));
   $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');
   $('#day-coverage').classList.toggle('hidden', !visible || coverage.view !== 'day');
