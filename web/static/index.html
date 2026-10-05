@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=15">
+  <link rel="stylesheet" href="/styles.css?v=17">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -58,6 +58,7 @@
             <span class="legend-item"><i class="c complete_official_gap"></i>全部完整·官方缺</span>
             <span class="legend-item"><i class="c hourly_complete"></i>整点完整</span>
             <span class="legend-item"><i class="c hourly_complete_official_gap"></i>整点完整·官方缺</span>
+            <span class="legend-item"><i class="c partial"></i>部分</span>
             <span class="legend-item"><i class="c missing"></i>本地缺失</span>
             <span class="legend-item"><i class="c processing"></i>索引 / 处理中</span>
             <span class="legend-item"><i class="c official_missing"></i>官方缺失</span>
@@ -78,7 +79,7 @@
             <button id="clear-calendar" type="button">刷新年历</button>
           </div>
         </div>
-        <div id="coverage-tools" class="coverage-tools hidden">
+        <div id="coverage-tools" class="coverage-tools">
           <div id="coverage-views" class="coverage-switch" role="group" aria-label="年历视图">
             <button type="button" data-coverage-view="year" class="active">年</button>
             <button type="button" data-coverage-view="month">月</button>
@@ -342,6 +343,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=23"></script>
+  <script type="module" src="/app.js?v=24"></script>
 </body>
 </html>

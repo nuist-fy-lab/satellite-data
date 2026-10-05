@@ -63,6 +63,14 @@ window.styleFixture = function(view, mode, wide) {
     $('#era5-variables').replaceChildren(new Option('2m_temperature','2m_temperature'),new Option('total_precipitation','total_precipitation'));
   }
 };
+window.coverageTimelineStability = function() {
+  const timeline = document.querySelector('#satellite-timelines');
+  const supportedTop = timeline.getBoundingClientRect().top;
+  state.coverage.supported = false;
+  renderCoverageShell();
+  const limitedTop = timeline.getBoundingClientRect().top;
+  return {supportedTop, limitedTop};
+};
 window.styleFixtureReady = true;
 `;
 const assets = new Map();
@@ -93,6 +101,9 @@ try {
     await writeFile('dist/visual/login-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     await driver.get(base);
     await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
+    await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
+    const timelineStability = await driver.executeScript('return window.coverageTimelineStability()');
+    assert.equal(timelineStability.limitedTop,timelineStability.supportedTop,'coverage capability changed timeline vertical position');
     for (const [view,mode] of cases) {
       await driver.executeScript('window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
       const metrics = await driver.executeScript(`
