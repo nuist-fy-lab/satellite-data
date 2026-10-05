@@ -58,6 +58,109 @@ class HistoricalVerificationTest(unittest.TestCase):
         self.assertIn("Validated_MAAP", collection)
         self.assertEqual((item, url), (self.item, self.url))
 
+    def relocate_monthly(self):
+        old = self.path
+        directory = os.path.join(self.root, "ATL_CTH_2A", "2026", "07")
+        os.makedirs(directory, exist_ok=True)
+        self.path = os.path.join(directory, self.name)
+        os.rename(old, self.path)
+        self.index.execute("UPDATE local_files SET path=? WHERE path=?", (self.path, old))
+        self.index.commit()
+        return old
+
+    def test_month_directory_matches_acquisition_not_production_date(self):
+        self.relocate_monthly()
+        self.assertEqual(verify.archive_product_day(self.path, self.name, self.root), ("ATL_CTH_2A", "20260707"))
+        self.assertIsNotNone(verify.official_asset(self.index, self.path, self.name, self.size, self.root))
+        for suffix in ["2026/06", "2025/07", "2026/7", "2026/07/nested", "20260708"]:
+            path = os.path.join(self.root, "ATL_CTH_2A", suffix, self.name)
+            self.assertIsNone(verify.official_asset(self.index, path, self.name, self.size, self.root))
+        self.assertIsNone(verify.archive_product_day(os.path.join(self.root, ".rollback", "2026", "07", self.name), self.name, self.root))
+
+    def test_relocated_evidence_requires_local_hash_and_is_idempotent(self):
+        expected = hashlib.sha256(self.content).hexdigest()
+        with mock.patch.object(verify, "official_digest", return_value=expected):
+            verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+        old = self.relocate_monthly()
+        with mock.patch.object(verify, "official_digest") as upstream:
+            result = verify.repair_layout_evidence(self.index, self.progress, self.root)
+            self.assertEqual(result["layout_restored"], 1)
+            self.assertEqual(verify.repair_layout_evidence(self.index, self.progress, self.root)["layout_already_restored"], 1)
+            upstream.assert_not_called()
+        self.assertEqual(self.index.execute("SELECT sha256 FROM verified_archive_files WHERE path=?", (self.path,)).fetchone()[0], expected)
+        self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (old,)).fetchone()[0], "relocated")
+        self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (self.path,)).fetchone()[0], "matched")
+        self.progress.execute("DELETE FROM attempts WHERE path=?", (self.path,))
+        self.progress.commit()
+        self.assertEqual(verify.repair_layout_evidence(self.index, self.progress, self.root)["layout_already_restored"], 1)
+        self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (self.path,)).fetchone()[0], "matched")
+
+    def test_restore_batch_keeps_valid_proof_when_another_reference_changes(self):
+        expected = hashlib.sha256(self.content).hexdigest()
+        reference = verify.official_asset(self.index, self.path, self.name, self.size, self.root)
+        name = self.name.replace("11979C", "11979D")
+        path = os.path.join(os.path.dirname(self.path), name)
+        with open(path, "wb") as output:
+            output.write(self.content)
+        mtime = os.stat(path).st_mtime_ns
+        self.index.execute("INSERT INTO local_files VALUES(?,?,?,?,'unverified')", (path, name, self.size, mtime))
+        self.index.execute("INSERT INTO official_assets VALUES(?,?,?,?,?,?)", (reference[0], "another-item", name, self.size, self.url, "2026-07-07T19:47:39Z"))
+        self.index.commit()
+        entries = [("old-a", self.path, self.name, self.size, self.mtime, expected, reference, False),
+                   ("old-b", path, name, self.size, mtime, expected, (reference[0], "changed-item", self.url), False)]
+        self.assertEqual(verify.restore_evidence_batch(self.index, self.progress, self.root, entries), (1, 1, 0))
+        self.assertIsNotNone(self.index.execute("SELECT sha256 FROM verified_archive_files WHERE path=?", (self.path,)).fetchone())
+        self.assertIsNone(self.index.execute("SELECT sha256 FROM verified_archive_files WHERE path=?", (path,)).fetchone())
+        self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (path,)).fetchone()[0], "pending_review")
+
+    def test_relocated_modified_file_is_not_promoted(self):
+        expected = hashlib.sha256(self.content).hexdigest()
+        with mock.patch.object(verify, "official_digest", return_value=expected):
+            verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+        self.relocate_monthly()
+        with open(self.path, "wb") as output:
+            output.write(self.content[:-1] + b"X")
+        os.utime(self.path, ns=(self.mtime, self.mtime))
+        self.assertEqual(verify.repair_layout_evidence(self.index, self.progress, self.root)["layout_rejected"], 1)
+        self.assertIsNone(self.index.execute("SELECT sha256 FROM verified_archive_files WHERE path=?", (self.path,)).fetchone())
+        self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (self.path,)).fetchone()[0], "pending_review")
+
+    def test_downloader_stac_asset_id_can_restore_relocated_proof(self):
+        expected = hashlib.sha256(self.content).hexdigest()
+        with mock.patch.object(verify, "official_digest", return_value=expected):
+            verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+        self.index.execute("UPDATE verified_archive_files SET official_asset='enclosure_h5'")
+        self.index.commit()
+        self.relocate_monthly()
+        self.assertEqual(verify.repair_layout_evidence(self.index, self.progress, self.root)["layout_restored"], 1)
+
+    def test_duplicate_relocated_candidates_are_not_promoted(self):
+        expected = hashlib.sha256(self.content).hexdigest()
+        with mock.patch.object(verify, "official_digest", return_value=expected):
+            verify.run(self.index, self.progress, self.root, "unused", 1, 1024, 60)
+        self.relocate_monthly()
+        alternate = os.path.join(os.path.dirname(self.path), "..", "07", self.name)
+        self.index.execute("INSERT INTO local_files VALUES(?,?,?,?,'unverified')", (alternate, self.name, self.size, self.mtime))
+        self.index.commit()
+        self.assertEqual(verify.repair_layout_evidence(self.index, self.progress, self.root)["layout_rejected"], 1)
+        self.assertIsNone(self.index.execute("SELECT sha256 FROM verified_archive_files WHERE path=?", (self.path,)).fetchone())
+
+    def test_layout_migration_resets_only_monthly_unmatched_cache_once(self):
+        self.relocate_monthly()
+        self.progress.execute("INSERT INTO attempts(path,size,mtime_ns,state,detail,checked_at) VALUES(?,?,?,'no_unique_official_asset','',0)", (self.path, self.size, self.mtime))
+        terminal = self.path + '.terminal'
+        self.progress.execute("INSERT INTO attempts(path,size,mtime_ns,state,detail,checked_at) VALUES(?,?,?,'pending_review','official content SHA-256 mismatch',0)", (terminal, self.size, self.mtime))
+        self.progress.execute("INSERT INTO control VALUES(1,9999999999)")
+        self.progress.commit()
+        verify.repair_layout_evidence(self.index, self.progress, self.root)
+        self.assertIsNone(self.progress.execute("SELECT state FROM attempts WHERE path=?", (self.path,)).fetchone())
+        self.assertEqual(self.progress.execute("SELECT state FROM attempts WHERE path=?", (terminal,)).fetchone()[0], "pending_review")
+        self.assertEqual(self.progress.execute("SELECT paused_until FROM control").fetchone()[0], 0)
+        self.progress.execute("UPDATE control SET paused_until=123 WHERE id=1")
+        self.progress.commit()
+        verify.repair_layout_evidence(self.index, self.progress, self.root)
+        self.assertEqual(self.progress.execute("SELECT paused_until FROM control WHERE id=1").fetchone()[0], 123)
+
     def test_verified_content_is_recorded_and_resumed(self):
         expected = hashlib.sha256(self.content).hexdigest()
         with mock.patch.object(verify, "official_digest", return_value=expected) as upstream:
