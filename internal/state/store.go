@@ -197,6 +197,8 @@ CREATE TABLE IF NOT EXISTS download_monitor_samples (
   adaptive_concurrency INTEGER NOT NULL,
   queued INTEGER NOT NULL,
   verifying INTEGER NOT NULL,
+  verify_wait INTEGER NOT NULL DEFAULT 0,
+  promoting INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(provider_id,sampled_at_ns)
 );
 CREATE INDEX IF NOT EXISTS download_monitor_samples_time_idx ON download_monitor_samples(sampled_at_ns);
@@ -384,6 +386,10 @@ func Open(path string) (*Store, error) {
 	if err := initDownloadSchema(writer); err != nil {
 		_ = writer.Close()
 		return nil, fmt.Errorf("initialize download schema: %w", err)
+	}
+	if err := initDownloadMonitorSchema(writer); err != nil {
+		_ = writer.Close()
+		return nil, fmt.Errorf("initialize download monitor schema: %w", err)
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

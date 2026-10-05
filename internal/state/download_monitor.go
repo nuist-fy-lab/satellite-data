@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"math"
 	"time"
@@ -16,11 +17,45 @@ type DownloadMonitorPoint struct {
 	AdaptiveConcurrency int       `json:"adaptive_concurrency"`
 	Queued              int       `json:"queued"`
 	Verifying           int       `json:"verifying"`
+	VerifyWait          int       `json:"verify_wait"`
+	Promoting           int       `json:"promoting"`
 }
 
 type DownloadMonitorLatest struct {
 	SourceID string `json:"source_id"`
 	DownloadMonitorPoint
+}
+
+func initDownloadMonitorSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(download_monitor_samples)`)
+	if err != nil {
+		return err
+	}
+	found := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, dataType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		found[name] = true
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, column := range []string{"verify_wait", "promoting"} {
+		if found[column] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE download_monitor_samples ADD COLUMN ` + column + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) RecordDownloadSamples(ctx context.Context, at time.Time, providers []downloader.ProviderStatus) error {
@@ -45,14 +80,18 @@ func (s *Store) RecordDownloadSamples(ctx context.Context, at time.Time, provide
 			rate, active, limit = 0, 0, 0
 		}
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO download_monitor_samples(provider_id,sampled_at_ns,bytes_per_second,active_transfers,adaptive_concurrency,queued,verifying)
-			VALUES(?,?,?,?,?,?,?)
+			INSERT INTO download_monitor_samples(
+			 provider_id,sampled_at_ns,bytes_per_second,active_transfers,adaptive_concurrency,
+			 queued,verifying,verify_wait,promoting)
+			VALUES(?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(provider_id,sampled_at_ns) DO UPDATE SET
 			 bytes_per_second=excluded.bytes_per_second,active_transfers=excluded.active_transfers,
-			 adaptive_concurrency=excluded.adaptive_concurrency,queued=excluded.queued,verifying=excluded.verifying`,
+			 adaptive_concurrency=excluded.adaptive_concurrency,queued=excluded.queued,
+			 verifying=excluded.verifying,verify_wait=excluded.verify_wait,promoting=excluded.promoting`,
 			provider.SourceID, at.UTC().UnixNano(), rate, active,
 			limit, max(0, provider.States["queued"]+provider.States["retry_wait"]),
-			max(0, provider.States["verifying"]))
+			max(0, provider.States["verifying"]), max(0, provider.States["verify_wait"]),
+			max(0, provider.States["promoting"]))
 		if err != nil {
 			return err
 		}
@@ -67,7 +106,8 @@ func (s *Store) DeleteDownloadSamplesBefore(ctx context.Context, cutoff time.Tim
 
 func (s *Store) LatestDownloadSamples(ctx context.Context) ([]DownloadMonitorLatest, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.provider_id,m.sampled_at_ns,m.bytes_per_second,m.active_transfers,m.adaptive_concurrency,m.queued,m.verifying
+		SELECT m.provider_id,m.sampled_at_ns,m.bytes_per_second,m.active_transfers,m.adaptive_concurrency,
+		       m.queued,m.verifying,m.verify_wait,m.promoting
 		FROM download_monitor_samples m
 		JOIN (SELECT provider_id,max(sampled_at_ns) sampled_at_ns FROM download_monitor_samples GROUP BY provider_id) latest
 		ON m.provider_id=latest.provider_id AND m.sampled_at_ns=latest.sampled_at_ns
@@ -80,7 +120,8 @@ func (s *Store) LatestDownloadSamples(ctx context.Context) ([]DownloadMonitorLat
 	for rows.Next() {
 		var item DownloadMonitorLatest
 		var ns int64
-		if err := rows.Scan(&item.SourceID, &ns, &item.BytesPerSecond, &item.ActiveTransfers, &item.AdaptiveConcurrency, &item.Queued, &item.Verifying); err != nil {
+		if err := rows.Scan(&item.SourceID, &ns, &item.BytesPerSecond, &item.ActiveTransfers,
+			&item.AdaptiveConcurrency, &item.Queued, &item.Verifying, &item.VerifyWait, &item.Promoting); err != nil {
 			return nil, err
 		}
 		item.SampledAt = time.Unix(0, ns).UTC()
@@ -96,7 +137,8 @@ func (s *Store) DownloadSeries(ctx context.Context, since time.Time, bucket time
 	width := bucket.Nanoseconds()
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT provider_id,(sampled_at_ns / ?) * ? bucket_ns,
-		       avg(bytes_per_second),max(active_transfers),max(adaptive_concurrency),max(queued),max(verifying)
+		       avg(bytes_per_second),max(active_transfers),max(adaptive_concurrency),max(queued),
+		       max(verifying),max(verify_wait),max(promoting)
 		FROM download_monitor_samples WHERE sampled_at_ns>=?
 		GROUP BY provider_id,bucket_ns ORDER BY provider_id,bucket_ns`,
 		width, width, since.UTC().UnixNano())
@@ -109,7 +151,8 @@ func (s *Store) DownloadSeries(ctx context.Context, since time.Time, bucket time
 		var point DownloadMonitorPoint
 		var source string
 		var ns int64
-		if err := rows.Scan(&source, &ns, &point.BytesPerSecond, &point.ActiveTransfers, &point.AdaptiveConcurrency, &point.Queued, &point.Verifying); err != nil {
+		if err := rows.Scan(&source, &ns, &point.BytesPerSecond, &point.ActiveTransfers,
+			&point.AdaptiveConcurrency, &point.Queued, &point.Verifying, &point.VerifyWait, &point.Promoting); err != nil {
 			return nil, err
 		}
 		point.SampledAt = time.Unix(0, ns).UTC()
