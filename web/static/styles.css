@@ -121,9 +121,9 @@ main{width:min(1180px,100%);min-width:0;margin:0 auto;padding:28px 24px 60px}
 .product-meta{font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .calendar-actions{display:flex;gap:6px;flex:0 0 auto}
 .calendar-axis{display:grid;grid-template-rows:repeat(7,var(--cell));gap:var(--gap);width:14px;float:left;margin:3px 5px 0 0;color:var(--muted);font-size:9px;line-height:var(--cell);text-align:center}
-.calendar-wrap{overflow-x:auto;padding:3px 2px 7px}
+.calendar-wrap{overflow-x:auto;padding:3px 2px 7px;min-height:144px}
 .year-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,var(--cell));grid-auto-columns:var(--cell);gap:var(--gap);width:max-content}
-.placeholder-grid{width:795px;height:102px;background:var(--soft);border-radius:4px}
+.placeholder-grid{width:795px;height:144px;background:var(--soft);border-radius:4px}
 .calendar-help{clear:both;color:var(--muted);font-size:11px;margin:3px 0 0 19px}
 .coverage-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0 12px;border-bottom:1px solid var(--line);margin-bottom:10px}
 .coverage-tools select{min-width:118px}
@@ -132,9 +132,9 @@ main{width:min(1180px,100%);min-width:0;margin:0 auto;padding:28px 24px 60px}
 .coverage-switch button+button{border-left:1px solid var(--line)}
 .coverage-switch button.active{background:var(--good-bg);color:var(--good-fg);font-weight:650}
 #coverage-status{font-size:11px;color:var(--muted);min-height:16px}
-.year-grid.coverage-year{grid-template-rows:repeat(7,24px);grid-auto-columns:24px;gap:4px}
-.calendar-axis.coverage-axis{grid-template-rows:repeat(7,24px);line-height:24px;gap:4px}
-.coverage-year .c{width:24px;height:24px;border-radius:2px;padding:0;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(4,1fr);gap:0;background:var(--soft);overflow:hidden}
+.year-grid.coverage-year{grid-template-rows:repeat(7,18px);grid-auto-columns:18px;gap:3px}
+.calendar-axis.coverage-axis{grid-template-rows:repeat(7,18px);line-height:18px;gap:3px}
+.coverage-year .c{width:18px;height:18px;border-radius:1px;padding:0;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(4,1fr);gap:0;background:var(--soft);overflow:hidden}
 .coverage-year .c i{display:block;min-width:0;min-height:0;background:#e4e8eb}
 .coverage-year .c i.muted{opacity:.28}
 .coverage-year .c:focus-visible,.month-day:focus-visible,.matrix-cell:focus-visible{outline:2px solid #106f59;outline-offset:2px}

@@ -123,7 +123,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 		_, _ = w.Write(data)
 	})
 	mux.Handle("GET /", http.FileServerFS(static))
-	return withHeaders(s.withPortalAuth(mux))
+	return withCompression(withHeaders(s.withPortalAuth(mux)))
 }
 
 func (s *Server) archiveIndexStatus(w http.ResponseWriter, r *http.Request) {
@@ -872,7 +872,19 @@ func withHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Cache-Control", "no-store")
+		if isVersionedStaticAsset(r) {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isVersionedStaticAsset(r *http.Request) bool {
+	if strings.TrimSpace(r.URL.Query().Get("v")) == "" {
+		return false
+	}
+	path := strings.ToLower(r.URL.Path)
+	return strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".css") || strings.HasSuffix(path, ".svg") || strings.HasSuffix(path, ".png") || strings.HasSuffix(path, ".webp")
 }
