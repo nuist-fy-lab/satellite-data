@@ -1135,9 +1135,7 @@ function hideTip() {
 function renderSources() {
   const node = $('#sources');
   node.replaceChildren();
-  const counts = {anonymous: 0, token: 0, special: 0};
   for (const source of state.sources) {
-    counts[source.tier] = (counts[source.tier] || 0) + 1;
     const row = document.createElement('article');
     row.className = 'source-row';
     row.innerHTML = `
@@ -1147,24 +1145,73 @@ function renderSources() {
       <small>${esc(source.method || '')}</small>`;
     node.append(row);
   }
+}
+
+function renderSourceCounts() {
+  const counts = {anonymous: 0, token: 0, special: 0};
+  for (const source of state.sources) counts[source.tier] = (counts[source.tier] || 0) + 1;
   for (const [tier, count] of Object.entries(counts)) {
     const target = document.querySelector(`#tier-${tier}`);
     if (target) target.textContent = count;
   }
 }
 
+function applyCatalog(payload, source, saved = readFilters()) {
+  state.collections = (payload || []).map(product => ({
+    id: product.product_key,
+    source_id: product.source_id,
+    satellite: product.satellite,
+    instrument: product.instrument,
+    level: product.level,
+    product: product.data_type,
+    cadence: product.cadence,
+    metadata: {
+      ...(product.metadata || {}),
+      official_id: product.official_id || '',
+      title: product.display_name || product.data_type,
+      spatial_resolution: product.resolution || '',
+      version: product.version || '',
+      area_type: product.area_type || '',
+      catalog_source: product.catalog_source || '',
+      product_count: product.product_count ? String(product.product_count) : '',
+      local_covered: Boolean(product.local_covered),
+    },
+  }));
+  rebuildFilters('source', false);
+  if (saved.source === source) {
+    restoreSelect(satelliteEl, saved.satellite);
+    rebuildFilters('satellite', false);
+    restoreSelect(instrumentEl, saved.instrument);
+    rebuildFilters('instrument', false);
+    restoreSelect(levelEl, saved.level);
+    rebuildFilters('level', false);
+    restoreSelect(productEl, saved.product);
+  }
+  updateSelectedProduct();
+}
+
 async function loadSources() {
-  const payload = await json('/api/v1/sources');
-  state.sources = payload.sources || [];
-  renderSources();
   const saved = readFilters();
+  const preferredSource = saved.source || 'goes18';
+  const catalogPromise = preferredSource
+    ? json('/api/products?source=' + encodeURIComponent(preferredSource)).catch(() => null)
+    : Promise.resolve(null);
+  const [payload, prefetchedCatalog] = await Promise.all([json('/api/v1/sources'), catalogPromise]);
+  state.sources = payload.sources || [];
+  renderSourceCounts();
+  if ($('#sources-view').classList.contains('active')) renderSources();
   const previous = sourceEl.value;
   sourceEl.replaceChildren();
   for (const source of state.sources) sourceEl.add(new Option(source.name, source.id));
   if (state.sources.some(item => item.id === previous)) sourceEl.value = previous;
   if (saved.source && state.sources.some(item => item.id === saved.source)) sourceEl.value = saved.source;
   else if (state.sources.some(item => item.id === 'goes18')) sourceEl.value = 'goes18';
-  await loadCatalog();
+  if (sourceEl.value === preferredSource && prefetchedCatalog) {
+    applyCatalog(prefetchedCatalog, sourceEl.value, saved);
+  } else {
+    await loadCatalog();
+  }
+  if ($('#downloads-view').classList.contains('active')) initializeDownloadSubmit();
 }
 
 async function loadCatalog() {
@@ -1178,38 +1225,7 @@ async function loadCatalog() {
   if (!source) return;
   try {
     const payload = await json('/api/products?source=' + encodeURIComponent(source));
-    state.collections = (payload || []).map(product => ({
-      id: product.product_key,
-      source_id: product.source_id,
-      satellite: product.satellite,
-      instrument: product.instrument,
-      level: product.level,
-      product: product.data_type,
-      cadence: product.cadence,
-      metadata: {
-        ...(product.metadata || {}),
-        official_id: product.official_id || '',
-        title: product.display_name || product.data_type,
-        spatial_resolution: product.resolution || '',
-        version: product.version || '',
-        area_type: product.area_type || '',
-        catalog_source: product.catalog_source || '',
-        product_count: product.product_count ? String(product.product_count) : '',
-        local_covered: Boolean(product.local_covered),
-      },
-    }));
-    const saved = readFilters();
-    rebuildFilters('source', false);
-    if (saved.source === source) {
-      restoreSelect(satelliteEl, saved.satellite);
-      rebuildFilters('satellite', false);
-      restoreSelect(instrumentEl, saved.instrument);
-      rebuildFilters('instrument', false);
-      restoreSelect(levelEl, saved.level);
-      rebuildFilters('level', false);
-      restoreSelect(productEl, saved.product);
-    }
-    updateSelectedProduct();
+    applyCatalog(payload, source);
   } catch (error) {
     gridEl.classList.remove('placeholder-grid');
     $('#product-title').textContent = '产品目录读取失败';
@@ -2289,10 +2305,11 @@ function bind() {
   $('.sidebar-toggle').addEventListener('click', () => setSidebar(document.body.classList.contains('sidebar-collapsed'), true));
   document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', () => {
     setView(node.dataset.view);
+    if (node.dataset.view === 'sources-view') renderSources();
     if (node.dataset.view === 'access-view') loadAccess();
     if (node.dataset.view === 'cli-view') loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; });
     if (node.dataset.view === 'monitor-view') loadMonitor(true);
-    if (node.dataset.view === 'downloads-view') loadDownloads(true);
+    if (node.dataset.view === 'downloads-view') { initializeDownloadSubmit(); loadDownloads(true); }
   }));
   sourceEl.addEventListener('change', () => { persistFilters(); loadCatalog(); });
   satelliteEl.addEventListener('change', () => { rebuildFilters('satellite'); persistFilters(); });
@@ -2476,18 +2493,22 @@ function bind() {
 }
 
 async function boot() {
-  const session = await json('/api/v1/auth/session');
-  state.access.user = session.user;
-  $('#portal-user').textContent = session.user.username;
-  document.querySelectorAll('[data-admin-only]').forEach(node => node.classList.toggle('hidden', session.user.role !== 'admin'));
+  const sessionPromise = json('/api/v1/auth/session');
   setSidebar(localStorage.getItem(SIDEBAR_KEY) === '1');
   timezoneEl.value = state.displayZone;
   fillYears();
   fillMonths();
   bind();
-  await health();
-  await loadSources();
-  initializeDownloadSubmit();
+  const healthPromise = health();
+  const sourcesPromise = loadSources().catch(error => {
+    $('#product-title').textContent = '产品目录读取失败';
+    $('#product-meta').textContent = error.message;
+  });
+  const session = await sessionPromise;
+  state.access.user = session.user;
+  $('#portal-user').textContent = session.user.username;
+  document.querySelectorAll('[data-admin-only]').forEach(node => node.classList.toggle('hidden', session.user.role !== 'admin'));
+  await Promise.allSettled([healthPromise, sourcesPromise]);
 }
 
 boot();
