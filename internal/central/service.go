@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"sort"
 	"sync"
@@ -161,6 +162,15 @@ func (s *Service) resolve(ctx context.Context, source string, binding *Binding) 
 				transport.Proxy = http.ProxyURL(proxyURL)
 			}
 			client = &http.Client{Transport: transport}
+		}
+		if source == "cloudsat" {
+			// THREDDS redirects through a session-backed authentication endpoint.
+			// Keep its cookies within this fetch, never across accounts or routes.
+			client.Jar, err = cookiejar.New(nil)
+			if err != nil {
+				client.CloseIdleConnections()
+				return route{}, errors.New("CloudSat session could not be initialized")
+			}
 		}
 		var authorizer Authorizer
 		if kind != "" {
