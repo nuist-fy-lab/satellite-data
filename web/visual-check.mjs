@@ -87,7 +87,9 @@ window.calendarSizingFixture = function(source, product, supported, year) {
   state.collections = [state.selected];
   state.coverage.supported = supported;
   state.coverage.bands = Array.from({length:16}, (_, i) => i+1);
+  state.coverage.view = 'year';
   yearEl.replaceChildren(new Option(String(year),String(year)));
+  renderCoverageShell();
   renderSatelliteTimelines();renderCalendar();
   const grid=$('#year-grid'),wrap=$('.calendar-wrap'),cell=grid.querySelector('[data-day]');
   const box=grid.getBoundingClientRect(),rect=cell.getBoundingClientRect();
@@ -214,7 +216,7 @@ try {
       for (const year of [2026,2000]) {
         const size=await driver.executeScript('return window.calendarSizingFixture(...arguments)',source,product,supported,year);
         assert.ok(Math.abs(size.cellWidth-size.cellHeight)<.1,product+' cells not square');
-        assert.ok(Math.abs(size.cellWidth-size.gap*4)<.1,product+' spacing not proportional');
+        assert.ok(Math.abs(size.cellWidth-size.gap*4)<.1,product+' spacing not proportional: '+JSON.stringify(size));
         assert.ok(size.scroll<=size.viewport+1,product+' year calendar overflows page');
         assert.ok(size.axisLeft>=size.sidebarRight-.5,product+' weekday labels overlap sidebar');
         if (size.available>=size.columns*12+(size.columns-1)*3) {
