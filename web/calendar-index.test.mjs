@@ -70,6 +70,8 @@ test('daily coverage defaults to the entire day and preserves a chosen hour duri
   await h.context.openCoverageDay('2025-06-09');
   assert.equal(h.element('#coverage-hour').value, '-1');
   assert.equal(h.element('#coverage-matrix').children[3].children.length, 288);
+  assert.equal(h.element('#coverage-matrix').children[3].style.gridTemplateColumns, 'repeat(288,minmax(3px,1fr))');
+  assert.equal(h.element('#coverage-matrix').style.minWidth, '1247px');
   assert.equal(h.element('#coverage-day-overview').children.length, 24);
   const grid = h.element('#year-grid'), replacements = grid.replacements;
   const selected = grid.querySelector('[data-day="2025-06-09"]');

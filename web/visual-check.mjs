@@ -10,8 +10,7 @@ const app = (await readFile(new URL('./static/app.js', import.meta.url), 'utf8')
 // Synthetic data exercises the real renderers without accounts or upstream APIs.
 const fixture = `
 window.styleFixture = function(view, mode, wide) {
-  document.querySelectorAll('.view').forEach(node => node.classList.toggle('active', node.id === view));
-  document.querySelectorAll('[data-view]').forEach(node => node.classList.toggle('active', node.dataset.view === view));
+  setView(view);
   setSidebar(wide);
   const bands = Array.from({length:16}, (_, i) => i + 1);
   const product = {id:'goes18:ABI-L1b-RadF',source_id:'goes18',product:'ABI-L1b-RadF',satellite:'GOES-18',cadence:'10m',metadata:{}};
@@ -116,9 +115,16 @@ window.calendarIndexFixture = function(mode, wide) {
   const track = document.querySelector('.band-track');
   const gap = track.querySelector('[data-minute="905"]');
   const trackBox = track.getBoundingClientRect();
+  const slotBox = track.firstElementChild.getBoundingClientRect();
+  const mainBox = document.querySelector('main').getBoundingClientRect();
+  const sidebarBox = document.querySelector('.sidebar').getBoundingClientRect();
+  const scroller = document.querySelector('.matrix-scroll');
   return {range:$('#coverage-hour').value,count:track.children.length,hours:$('#coverage-day-overview').children.length,
     gap:gap?.className,pattern:gap?getComputedStyle(gap).backgroundImage:'',
     positions:[...track.children].map(cell=>parseFloat(cell.style.left)),
+    slotWidth:slotBox.width,slotHeight:slotBox.height,mainWidth:mainBox.width,availableWidth:innerWidth-sidebarBox.right,
+    matrixScrolls:scroller.scrollWidth>scroller.clientWidth,scrollerWidth:scroller.clientWidth,
+    matrixWidth:document.querySelector('#coverage-matrix').getBoundingClientRect().width,
     trackWidth:trackBox.width,centres:[...track.children].map(cell=>{
       const box=cell.getBoundingClientRect();return box.left+box.width/2-trackBox.left;
     }),
@@ -151,6 +157,7 @@ window.coverageZoomFixture = function() {
   state.coverage.time='hourly';renderCoverageDay();
   before.hourlyRange=$('#coverage-hour').value;
   before.hourlyCount=document.querySelector('.band-track').children.length;
+  before.hourlySlotWidth=document.querySelector('.band-slot').getBoundingClientRect().width;
   state.coverage.time='all';renderCoverageDay();
   $('#coverage-hour').value='-1';$('#coverage-hour').dispatchEvent(new Event('change'));
   return {...before,restored:document.querySelector('.band-track').children.length};
@@ -178,7 +185,7 @@ try {
   driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
   await driver.manage().setTimeouts({pageLoad:15000,script:15000});
   const cases = [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['calendar-view','era5'],['sources-view','year'],['downloads-view','year'],['sync-view','year'],['monitor-view','year'],['cli-view','year'],['access-view','year'],['access-view','form']];
-  for (const width of [320,390,1440,1920]) {
+  for (const width of [320,390,1440,1920,2560]) {
     await driver.manage().window().setRect({width,height:900});
     await driver.get(base+'/login');
     const loginSize = await driver.executeScript('return document.querySelector(".login-card").getBoundingClientRect().width');
@@ -196,9 +203,15 @@ try {
     assert.match(fixed.gap,/official_missing/);
     assert.match(fixed.pattern,/repeating-linear-gradient/,'official gap has no hatch');
     assert.ok(fixed.scroll<=fixed.viewport+1,'all-day timeline overflows page');
+    assert.ok(fixed.slotWidth>=2.99,'fixed slot was compressed: '+JSON.stringify(fixed));
+    assert.ok(fixed.slotWidth<=5.01,'fixed slot exceeds 5px: '+JSON.stringify(fixed));
+    assert.equal(fixed.slotHeight,28);
+    assert.equal(fixed.matrixScrolls,fixed.matrixWidth>fixed.scrollerWidth+1,'matrix overflow was not isolated');
+    assert.ok(Math.abs(fixed.mainWidth-fixed.availableWidth)<1,'calendar does not use available width: '+JSON.stringify(fixed));
     const zoom=await driver.executeScript('return window.coverageZoomFixture()');
     assert.equal(zoom.range,'15');assert.equal(zoom.gaps,4);assert.equal(zoom.restored,288);
     assert.equal(zoom.hourlyRange,'-1');assert.equal(zoom.hourlyCount,24);
+    assert.ok(zoom.hourlySlotWidth>=2.99 && zoom.hourlySlotWidth<=5.01,'hourly slot is outside 3-5px: '+JSON.stringify(zoom));
     await writeFile('dist/visual/calendar-all-day-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     const incremental=await driver.executeScript('return window.incrementalIndexFixture()');
     assert.deepEqual(incremental,{sameDay:true,sameBand:true,untouched:true,status:'complete',replaced:0});
@@ -209,6 +222,8 @@ try {
     assert.ok(Math.abs(events.centres[0]-events.trackWidth*62.5/86400)<.1,JSON.stringify(events));
     assert.ok(Math.abs(events.centres[1]-events.trackWidth*81040/86400)<.1,JSON.stringify(events));
     assert.ok(events.scroll<=events.viewport+1,'event timeline overflows page');
+    assert.equal(events.slotWidth,3);
+    assert.equal(events.slotHeight,26);
     await writeFile('dist/visual/calendar-events-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     for (const [source,product,supported] of [['goes18','ABI-L1b-RadF',true],['goes18','GLM-L2-LCFA',false],
       ['himawari9','AHI-L1b-FLDK',true],['earthcare','ACM_CAP_2B',false],['cloudsat','2B-GEOPROF',false],

@@ -95,6 +95,16 @@ test('monitor surfaces are flat and do not use decorative gradients or lift on h
   }
 });
 
+test('calendar uses full width and timeline slots cannot collapse into hairlines', () => {
+  assert.equal(first('main.calendar-wide').get('width'), '100%');
+  assert.equal(first('.band-slot.matrix-cell').get('min-width'), '3px');
+  assert.equal(first('.band-slot.matrix-cell').get('max-width'), '5px');
+  assert.equal(first('.band-slot.matrix-cell').get('justify-self'), 'center');
+  assert.equal(first('.band-slot.matrix-cell').get('height'), '28px');
+  assert.equal(first('.coverage-matrix.full-day').get('grid-auto-rows'), '40px');
+  assert.equal(first('.matrix-scroll').get('max-height'), 'none');
+});
+
 test('login and portal load the same current stylesheet', () => {
   const href = tags => tags.find(item => item.tag === 'link' && item.attrs.rel === 'stylesheet').attrs.href;
   assert.equal(href(page.tags), href(signIn.tags));

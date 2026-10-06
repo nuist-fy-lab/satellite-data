@@ -105,6 +105,7 @@ function setSidebar(expanded, persist = false) {
 }
 
 function setView(id) {
+  $('main').classList.toggle('calendar-wide', id === 'calendar-view');
   if (id !== 'cli-view') clearCLIKey();
   if (id !== 'monitor-view') clearTimeout(state.monitor.poll);
   if (id !== 'calendar-view') stopIndexStream();
@@ -1223,7 +1224,8 @@ function renderCoverageDay() {
 
 function renderCoverageTimelines(day, columns) {
   const matrix = $('#coverage-matrix');
-  matrix.style.gridTemplateColumns = '70px minmax(744px,1fr)';
+  const labelWidth = 96, slotWidth = 3, slotGap = 1;
+  matrix.style.gridTemplateColumns = `${labelWidth}px minmax(744px,1fr)`;
   const fragment = document.createDocumentFragment();
   const heading = document.createElement('span');
   heading.className = 'matrix-label';
@@ -1238,7 +1240,7 @@ function renderCoverageTimelines(day, columns) {
   fragment.append(heading, axis);
   const bands = state.coverage.band ? [state.coverage.band] : state.coverage.bands;
   const fixed = day.mode === 'grid' && day.cadence > 0 && 1440 % day.cadence === 0;
-  matrix.style.minWidth = `${70 + Math.max(744, fixed ? columns.length * 3 - 1 : 0)}px`;
+  matrix.style.minWidth = `${labelWidth + Math.max(744, fixed ? columns.length * (slotWidth + slotGap) - slotGap : 0)}px`;
   for (const band of bands) {
     const label = document.createElement('span');
     label.className = 'matrix-label';
@@ -1246,7 +1248,7 @@ function renderCoverageTimelines(day, columns) {
     const track = document.createElement('div');
     track.className = `band-track ${fixed ? 'fixed' : 'events'}${day.official_state === 1 ? ' official_missing' : day.official_state !== 2 ? ' unknown' : ''}`;
     track.dataset.band = String(band);
-    if (fixed) track.style.gridTemplateColumns = `repeat(${Math.max(1, columns.length)},minmax(2px,1fr))`;
+    if (fixed) track.style.gridTemplateColumns = `repeat(${Math.max(1, columns.length)},minmax(${slotWidth}px,1fr))`;
     for (const column of columns) {
       const {status, official, ok, indices} = coverageCellState(day, column.indices, band);
       const cell = document.createElement('button');
