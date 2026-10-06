@@ -38,7 +38,7 @@ button[type="submit"]:hover{background:#1a7f37;border-color:#1a7f37}
 input[type="checkbox"]{accent-color:var(--primary)}
 a{color:var(--info-fg)}
 code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
-.with-sidebar{padding-left:172px;transition:padding-left .18s ease}
+.with-sidebar{--sidebar-width:172px;padding-left:172px;transition:padding-left .18s ease}
 .sidebar{position:fixed;z-index:30;inset:0 auto 0 0;width:172px;padding:18px 10px;background:var(--soft);border-right:1px solid var(--line);transition:width .18s ease;display:flex;flex-direction:column}
 .sidebar-top{height:32px;display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-shrink:0}
 .sidebar-toggle{width:32px;height:32px;padding:7px;border:0;background:transparent;display:grid;align-content:center;gap:4px;flex:0 0 32px}
@@ -54,7 +54,7 @@ code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .sidebar-status{display:flex;align-items:center;gap:8px;margin:14px 8px;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;flex-shrink:0}
 .sidebar-status i{width:7px;height:7px;border-radius:50%;background:#8c959f;box-shadow:0 0 0 3px #8c959f22;flex:0 0 7px}
 .sidebar-status i.ok{background:var(--green);box-shadow:0 0 0 3px #40c46322}
-.sidebar-collapsed.with-sidebar{padding-left:52px}
+.sidebar-collapsed.with-sidebar{--sidebar-width:52px;padding-left:52px}
 .sidebar-collapsed .sidebar{width:52px}
 .sidebar-collapsed .sidebar-title,.sidebar-collapsed .nav-label{display:none}
 .sidebar-collapsed .nav-item{padding:0 8px;justify-content:center}
@@ -90,7 +90,8 @@ main{width:min(1180px,100%);min-width:0;margin:0 auto;padding:28px 24px 60px}
 .c[data-day]:hover{outline:2px solid #57606a;outline-offset:1px}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.42}}
 .calendar-card{padding:11px 0 8px;border-top:1px solid #d8dee4}
-#calendar-view>.calendar-card{width:100%;max-width:1062px;margin-inline:auto}
+#calendar-view>.calendar-card{width:100%;max-width:none;margin-inline:auto}
+@media(min-width:1200px){#calendar-view>.calendar-card{position:relative;left:50%;width:min(1770px,calc(100vw - var(--sidebar-width) - 48px));margin-inline:0;transform:translateX(-50%)}}
 .satellite-timelines{padding:5px 0 12px;margin-bottom:11px;border-bottom:1px solid var(--line)}
 .cli-key-manager{margin-top:18px;padding-top:12px;border-top:1px solid var(--line)}
 .cli-key-form,.cli-key-new{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin:10px 0}

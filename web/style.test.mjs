@@ -79,8 +79,10 @@ test('all portal pages and independent scientific visualizations remain present'
   }
   const calendarCard = first('#calendar-view>.calendar-card');
   assert.equal(calendarCard.get('width'), '100%');
-  assert.equal(calendarCard.get('max-width'), '1062px');
+  assert.equal(calendarCard.get('max-width'), 'none');
   assert.equal(calendarCard.get('margin-inline'), 'auto');
+  assert.equal(first('.with-sidebar').get('--sidebar-width'), '172px');
+  assert.equal(first('.sidebar-collapsed.with-sidebar').get('--sidebar-width'), '52px');
   assert.equal(first('.coverage-year .c').get('grid-template-columns'), 'repeat(4,1fr)');
   assert.equal(first('.coverage-year .c').get('grid-template-rows'), 'repeat(4,1fr)');
   assert.equal(first('.month-ring').get('width'), '68px');
