@@ -33,6 +33,8 @@ window.styleFixture = function(view, mode, wide) {
   satelliteEl.replaceChildren(new Option('GOES-18','GOES-18'));
   instrumentEl.replaceChildren(new Option('ABI','ABI'));
   levelEl.replaceChildren(new Option('L1b','L1b'));
+  fillMetadataSelect(areaEl,state.collections,'area_type');
+  fillMetadataSelect(resolutionEl,state.collections,'resolution');
   productEl.replaceChildren(new Option('ABI-L1b-RadF','goes18:ABI-L1b-RadF'));
   const totals = bands.map(band => [band,144,band===6?24:0,24,band===6?24:0,0,0,0,0,0,0]);
   const hours = Array.from({length:24}, (_, hour) => [hour,16,1,0,0,0]);
@@ -207,6 +209,8 @@ window.satelliteCalendarsFixture = async function() {
   state.selected = state.collections[1]; state.coverage.supported = false;
   satelliteEl.replaceChildren(new Option('全部卫星',''),new Option('GOES-18','GOES-18'));
   instrumentEl.replaceChildren(new Option('全部传感器',''));levelEl.replaceChildren(new Option('全部级别',''));
+  fillMetadataSelect(areaEl,state.collections,'area_type');
+  fillMetadataSelect(resolutionEl,state.collections,'resolution');
   state.dayState = new Map([['2025-01-01',{day:'2025-01-01',status:'complete'}]]);
   yearEl.replaceChildren(new Option('2025','2025'));
   state.satelliteYears = new Map([state.collections[0],state.collections[2]].map((product,index)=>[product.id,
@@ -214,7 +218,7 @@ window.satelliteCalendarsFixture = async function() {
   renderCoverageShell();renderCalendar();renderSatelliteTimelines();
   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   const grids = [...document.querySelectorAll('#year-layout .year-grid')];
-  return {count:grids.length,statuses:grids.map(grid=>grid.querySelector('[data-day="2025-01-01"]').dataset.status),
+  return {count:grids.length,matchingProducts:filteredCollections(5).length,statuses:grids.map(grid=>grid.querySelector('[data-day="2025-01-01"]').dataset.status),
     widths:grids.map(grid=>grid.getBoundingClientRect().width),labels:[...document.querySelectorAll('.year-product-heading')].map(node=>node.textContent),
     scroll:document.documentElement.scrollWidth,viewport:innerWidth,
     headingFits:[...document.querySelectorAll('.year-product-heading')].every(node=>node.scrollWidth<=node.clientWidth)};
@@ -347,6 +351,7 @@ try {
       }
     }
     const satellites=await driver.executeScript('return window.satelliteCalendarsFixture()');
+    assert.equal(satellites.matchingProducts,3,'satellite fixture metadata filters exclude expected peers');
     assert.equal(satellites.count,3);
     assert.deepEqual(satellites.statuses,['complete','missing','partial']);
     assert.ok(satellites.labels[0].includes('GOES-18') && satellites.labels[1].includes('GOES-16') && satellites.labels[2].includes('GOES-19'));
