@@ -132,15 +132,27 @@ try {
     await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
     await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
     const calendarCardSizing = await driver.executeScript(`
-      const card=document.querySelector("#calendar-view>.calendar-card");
-      return {width:card.getBoundingClientRect().width,viewport:innerWidth,
+      const view=document.querySelector("#calendar-view");
+      const header=view.querySelector(".page-header");
+      const card=view.querySelector(".calendar-card");
+      const vb=view.getBoundingClientRect(),hb=header.getBoundingClientRect(),cb=card.getBoundingClientRect();
+      return {width:vb.width,headerWidth:hb.width,cardWidth:cb.width,
+        left:vb.left,headerLeft:hb.left,cardLeft:cb.left,
+        right:vb.right,headerRight:hb.right,cardRight:cb.right,
+        fontSize:parseFloat(getComputedStyle(view).fontSize),viewport:innerWidth,
         sidebar:parseFloat(getComputedStyle(document.body).getPropertyValue("--sidebar-width"))||0};
     `);
     if (calendarCardSizing.viewport >= 1200) {
-      const expected=Math.min(1770,calendarCardSizing.viewport-calendarCardSizing.sidebar-48);
+      const expected=Math.min(1600,calendarCardSizing.viewport-calendarCardSizing.sidebar-48);
       assert.ok(Math.abs(calendarCardSizing.width-expected)<1,
-        'calendar card wide layout mismatch: '+JSON.stringify({...calendarCardSizing,expected}));
+        'calendar view wide layout mismatch: '+JSON.stringify({...calendarCardSizing,expected}));
+      assert.ok(Math.abs(calendarCardSizing.headerWidth-calendarCardSizing.cardWidth)<1,
+        'calendar header/card widths differ: '+JSON.stringify(calendarCardSizing));
+      assert.ok(Math.abs(calendarCardSizing.headerLeft-calendarCardSizing.cardLeft)<1 &&
+        Math.abs(calendarCardSizing.headerRight-calendarCardSizing.cardRight)<1,
+        'calendar header/card edges differ: '+JSON.stringify(calendarCardSizing));
     }
+    assert.equal(calendarCardSizing.fontSize,14);
     const timelineStability = await driver.executeScript('return window.coverageTimelineStability()');
     assert.equal(timelineStability.limitedTop,timelineStability.supportedTop,'coverage capability changed timeline vertical position');
     for (const [source,product,supported] of [['goes18','ABI-L1b-RadF',true],['goes18','GLM-L2-LCFA',false],
@@ -219,12 +231,19 @@ try {
   await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
   await driver.executeScript('window.styleFixture("calendar-view","year",false)');
   const wideCalendar = await driver.executeScript(`
+    const view=document.querySelector("#calendar-view").getBoundingClientRect();
+    const header=document.querySelector("#calendar-view>.page-header").getBoundingClientRect();
     const card=document.querySelector("#calendar-view>.calendar-card").getBoundingClientRect();
     const grid=document.querySelector("#year-grid").getBoundingClientRect();
-    return {cardWidth:card.width,gridWidth:grid.width,viewport:innerWidth,
+    return {viewWidth:view.width,headerWidth:header.width,cardWidth:card.width,gridWidth:grid.width,viewport:innerWidth,
+      viewLeft:view.left,headerLeft:header.left,cardLeft:card.left,
+      viewRight:view.right,headerRight:header.right,cardRight:card.right,
       sidebar:parseFloat(getComputedStyle(document.body).getPropertyValue("--sidebar-width"))||0};
   `);
-  assert.ok(Math.abs(wideCalendar.cardWidth-1770)<1,'2K calendar card is not 1770px wide: '+JSON.stringify(wideCalendar));
+  assert.ok(Math.abs(wideCalendar.viewWidth-1600)<1,'2K calendar view is not 1600px wide: '+JSON.stringify(wideCalendar));
+  assert.ok(Math.abs(wideCalendar.headerWidth-wideCalendar.cardWidth)<1,'2K header/card widths differ: '+JSON.stringify(wideCalendar));
+  assert.ok(Math.abs(wideCalendar.headerLeft-wideCalendar.cardLeft)<1 &&
+    Math.abs(wideCalendar.headerRight-wideCalendar.cardRight)<1,'2K header/card edges differ: '+JSON.stringify(wideCalendar));
   assert.ok(Math.abs(wideCalendar.gridWidth-wideCalendar.cardWidth)<1,'2K year grid does not fill calendar card: '+JSON.stringify(wideCalendar));
   await writeFile('dist/visual/calendar-view-year-2560.png',Buffer.from(await driver.takeScreenshot(),'base64'));
 } finally {
