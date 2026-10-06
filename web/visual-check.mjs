@@ -131,6 +131,9 @@ try {
     await driver.get(base);
     await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
     await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
+    const calendarCardWidth = await driver.executeScript('return document.querySelector("#calendar-view>.calendar-card").getBoundingClientRect().width');
+    assert.ok(calendarCardWidth <= 1062.1, 'calendar card exceeds 90% desktop cap: '+calendarCardWidth);
+    if (width >= 1440) assert.ok(Math.abs(calendarCardWidth-1062) < 1, 'calendar card desktop cap not applied: '+calendarCardWidth);
     const timelineStability = await driver.executeScript('return window.coverageTimelineStability()');
     assert.equal(timelineStability.limitedTop,timelineStability.supportedTop,'coverage capability changed timeline vertical position');
     for (const [source,product,supported] of [['goes18','ABI-L1b-RadF',true],['goes18','GLM-L2-LCFA',false],
