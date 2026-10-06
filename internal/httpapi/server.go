@@ -139,6 +139,24 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 }
 
 func (s *Server) archiveIndexStatus(w http.ResponseWriter, r *http.Request) {
+	if product := strings.TrimSpace(r.URL.Query().Get("product")); product != "" {
+		year, err := strconv.Atoi(r.URL.Query().Get("year"))
+		if err != nil || year < 1970 || year > 2100 {
+			writeError(w, http.StatusBadRequest, errors.New("invalid year"))
+			return
+		}
+		if _, _, err := s.store.ProductSource(r.Context(), product); err != nil {
+			writeError(w, http.StatusNotFound, errors.New("unknown product"))
+			return
+		}
+		status, err := s.store.ProductArchiveIndexStatus(r.Context(), product, year)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+		return
+	}
 	status, err := s.store.ArchiveScanStatus(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

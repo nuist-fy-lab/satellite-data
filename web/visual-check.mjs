@@ -10,8 +10,9 @@ const app = (await readFile(new URL('./static/app.js', import.meta.url), 'utf8')
 // Synthetic data exercises the real renderers without accounts or upstream APIs.
 const fixture = `
 window.styleFixture = function(view, mode, wide) {
-  document.querySelectorAll('.view').forEach(node => node.classList.toggle('active', node.id === view));
-  document.querySelectorAll('[data-view]').forEach(node => node.classList.toggle('active', node.dataset.view === view));
+  stopIndexStream(); state.satelliteYears.clear();
+  $('#satellite-year-calendars').replaceChildren(); $('#year-product-heading').classList.add('hidden');
+  setView(view);
   setSidebar(wide);
   const bands = Array.from({length:16}, (_, i) => i + 1);
   const product = {id:'goes18:ABI-L1b-RadF',source_id:'goes18',product:'ABI-L1b-RadF',satellite:'GOES-18',cadence:'10m',metadata:{}};
@@ -24,7 +25,7 @@ window.styleFixture = function(view, mode, wide) {
   $('#service-label').textContent = '服务正常';
   $('#service-dot').classList.add('ok');
   for (const node of document.querySelectorAll('select')) {
-    if (!node.options.length) node.add(new Option('全部', 'all'));
+    if (!node.options.length && node.id !== 'coverage-hour') node.add(new Option('全部', 'all'));
   }
   yearEl.replaceChildren(new Option('2023','2023'));
   monthEl.replaceChildren(new Option('6 月','5'));
@@ -36,7 +37,7 @@ window.styleFixture = function(view, mode, wide) {
   const totals = bands.map(band => [band,144,band===6?24:0,24,band===6?24:0,0,0,0,0,0,0]);
   const hours = Array.from({length:24}, (_, hour) => [hour,16,1,0,0,0]);
   const coverage = state.coverage;
-  Object.assign(coverage,{supported:true,bands,view:mode,time:'all',band:0,day:'2023-06-14',hour:0});
+  Object.assign(coverage,{supported:true,bands,view:mode,time:'all',band:0,day:'2023-06-14',hour:-1});
   coverage.yearDays = new Map(Array.from({length:30}, (_, i) => ['2023-06-'+String(i+1).padStart(2,'0'),[151+i,'missing',2304,24,384,24,0,2280,0,0,false,'',totals,2,'grid']]));
   coverage.month = {days:Array.from({length:30}, (_, i) => [i+1,2,false,'grid',totals,hours])};
   const times = Array.from({length:144}, (_, i) => ['2023-06-14T'+String(Math.floor(i/6)).padStart(2,'0')+':'+String(i%6*10).padStart(2,'0')+':21Z',i*10]);
@@ -82,13 +83,18 @@ window.coverageTimelineStability = function() {
   const limitedTop = timeline.getBoundingClientRect().top;
   return {supportedTop, limitedTop};
 };
-window.calendarSizingFixture = function(source, product, supported, year) {
+window.calendarSizingFixture = async function(source, product, supported, year) {
+  state.satelliteYears.clear();
   state.selected = {id:source+':'+product,source_id:source,product,satellite:source,cadence:'10m',metadata:{}};
   state.collections = [state.selected];
   state.coverage.supported = supported;
   state.coverage.bands = Array.from({length:16}, (_, i) => i+1);
+  state.coverage.view = 'year';
   yearEl.replaceChildren(new Option(String(year),String(year)));
+  renderCoverageShell();
   renderSatelliteTimelines();renderCalendar();
+  // Resizing square year cells can change the scrollbar before ResizeObserver runs.
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   const grid=$('#year-grid'),wrap=$('.calendar-wrap'),cell=grid.querySelector('[data-day]');
   const box=grid.getBoundingClientRect(),rect=cell.getBoundingClientRect();
   const gap=parseFloat(getComputedStyle(grid).columnGap);
@@ -98,6 +104,101 @@ window.calendarSizingFixture = function(source, product, supported, year) {
     gridLeft:box.left,gridRight:box.right,
     axisLeft:$('.calendar-axis').getBoundingClientRect().left,sidebarRight:$('.sidebar').getBoundingClientRect().right,
     scroll:document.documentElement.scrollWidth,viewport:innerWidth};
+};
+window.calendarIndexFixture = async function(mode, wide) {
+  window.styleFixture('calendar-view','day',wide);
+  yearEl.replaceChildren(new Option('2025','2025'));
+  Object.assign(state.coverage,{bands:[2,6,7,14],day:'2025-06-09',hour:-1});
+  state.selected = {id:'goes18:ABI-L1b-RadC',source_id:'goes18',product:'ABI-L1b-RadC',cadence:'5m',metadata:{}};
+  const times = mode === 'grid' ? Array.from({length:288},(_,i)=>i*5).filter(minute=>minute!==905)
+    .map(minute=>['2025-06-09T'+String(Math.floor(minute/60)).padStart(2,'0')+':'+String(minute%60).padStart(2,'0')+':21Z',minute]) :
+    [['2025-06-09T00:01:02.500Z',-1],['2025-06-09T22:30:40Z',-1]];
+  const cells = times.flatMap((_,i)=>state.coverage.bands.map(band=>[i,band,1,1,0,0]));
+  state.coverage.dayData = {v:1,day:'2025-06-09',mode,cadence:mode==='grid'?5:0,official_state:2,times,cells};
+  state.coverage.cells = new Map(cells.map(cell=>[cell[0]+':'+cell[1],cell]));
+  renderCoverageDay();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  const track = document.querySelector('.band-track');
+  const gap = track.querySelector('[data-minute="905"]');
+  const trackBox = track.getBoundingClientRect();
+  const slotBox = track.firstElementChild.getBoundingClientRect();
+  const mainBox = document.querySelector('main').getBoundingClientRect();
+  const sidebarBox = document.querySelector('.sidebar').getBoundingClientRect();
+  const scroller = document.querySelector('.matrix-scroll');
+  return {range:$('#coverage-hour').value,count:track.children.length,hours:$('#coverage-day-overview').children.length,
+    gap:gap?.className,pattern:gap?getComputedStyle(gap).backgroundImage:'',
+    positions:[...track.children].map(cell=>parseFloat(cell.style.left)),
+    slotWidth:slotBox.width,slotHeight:slotBox.height,mainWidth:mainBox.width,availableWidth:document.documentElement.clientWidth-sidebarBox.right,
+    matrixScrollWidth:scroller.scrollWidth,scrollerWidth:scroller.clientWidth,
+    matrixWidth:document.querySelector('#coverage-matrix').getBoundingClientRect().width,
+    trackWidth:trackBox.width,centres:[...track.children].map(cell=>{
+      const box=cell.getBoundingClientRect();return box.left+box.width/2-trackBox.left;
+    }),
+    scroll:document.documentElement.scrollWidth,viewport:innerWidth};
+};
+window.incrementalIndexFixture = function() {
+  renderCoverageYear();
+  const grid=$('#year-grid'),first=grid.querySelector('[data-day="2025-01-01"]'),second=grid.querySelector('[data-day="2025-01-02"]');
+  const firstBand=first.children[0],secondBand=second.children[0];
+  let stream;
+  const previous=window.EventSource;
+  window.EventSource=class {
+    constructor(url) { this.url=url;this.listeners={};stream=this; }
+    addEventListener(name,callback) { this.listeners[name]=callback; }
+    close() {}
+  };
+  try { ensureIndexStream(state.selected.id,2025); } finally { window.EventSource=previous; }
+  const changes=[];
+  const observer=new MutationObserver(records=>changes.push(...records));
+  observer.observe(grid,{childList:true});
+  stream.listeners.index({data:JSON.stringify({coverage:true,bands:[2,6,7,14],active:false,
+    days:[[0,'complete',1,1,1,1,0,0,0,0,false,'',[[2,288,288,24,24,0,0,0,0,0,0]],2,'grid']]})});
+  const replaced=observer.takeRecords().length;observer.disconnect();stopIndexStream();
+  return {sameDay:first===grid.querySelector('[data-day="2025-01-01"]'),sameBand:firstBand===first.children[0],
+    untouched:secondBand===second.children[0],status:first.children[0].className,replaced};
+};
+window.coverageZoomFixture = function() {
+  document.querySelector('[data-hour="15"]').click();
+  const before={range:$('#coverage-hour').value,gaps:document.querySelectorAll('#coverage-matrix .official_missing').length};
+  state.coverage.time='hourly';renderCoverageDay();
+  before.hourlyRange=$('#coverage-hour').value;
+  before.hourlyCount=document.querySelector('.band-track').children.length;
+  before.hourlySlotWidth=document.querySelector('.band-slot').getBoundingClientRect().width;
+  state.coverage.time='all';renderCoverageDay();
+  $('#coverage-hour').value='-1';$('#coverage-hour').dispatchEvent(new Event('change'));
+  return {...before,restored:document.querySelector('.band-track').children.length};
+};
+window.satelliteCalendarsFixture = async function() {
+  state.collections = ['goes16','goes18','goes19'].map(source=>({id:source+':ABI-L1b-RadF',source_id:source,
+    satellite:source.replace('goes','GOES-'),instrument:'ABI',level:'L1b',product:'ABI-L1b-RadF',metadata:{}}));
+  state.selected = state.collections[1]; state.coverage.supported = false;
+  satelliteEl.replaceChildren(new Option('全部卫星',''),new Option('GOES-18','GOES-18'));
+  instrumentEl.replaceChildren(new Option('全部传感器',''));levelEl.replaceChildren(new Option('全部级别',''));
+  state.dayState = new Map([['2025-01-01',{day:'2025-01-01',status:'complete'}]]);
+  yearEl.replaceChildren(new Option('2025','2025'));
+  state.satelliteYears = new Map([state.collections[0],state.collections[2]].map((product,index)=>[product.id,
+    {product,days:new Map([['2025-01-01',{day:'2025-01-01',status:index?'partial':'missing'}]])}]));
+  renderCoverageShell();renderCalendar();renderSatelliteTimelines();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  const grids = [...document.querySelectorAll('#year-layout .year-grid')];
+  return {count:grids.length,statuses:grids.map(grid=>grid.querySelector('[data-day="2025-01-01"]').dataset.status),
+    widths:grids.map(grid=>grid.getBoundingClientRect().width),labels:[...document.querySelectorAll('.year-product-heading')].map(node=>node.textContent),
+    scroll:document.documentElement.scrollWidth,viewport:innerWidth,
+    headingFits:[...document.querySelectorAll('.year-product-heading')].every(node=>node.scrollWidth<=node.clientWidth)};
+};
+window.sidebarFooterFixture = async function(expanded) {
+  setSidebar(expanded);
+  await new Promise(resolve=>setTimeout(resolve,250));
+  const sidebar=$('.sidebar').getBoundingClientRect();
+  const button=$('#portal-logout'),box=button.getBoundingClientRect();
+  const toggle=$('.sidebar-toggle').getBoundingClientRect();
+  const range=document.createRange();range.selectNodeContents(button);
+  const text=range.getBoundingClientRect();
+  return {sidebarLeft:sidebar.left,sidebarRight:sidebar.right,sidebarBottom:sidebar.bottom,
+    buttonLeft:box.left,buttonRight:box.right,buttonBottom:box.bottom,width:box.width,height:box.height,
+    toggleLeft:toggle.left,toggleRight:toggle.right,textLeft:text.left,textRight:text.right,
+    textLines:range.getClientRects().length,whiteSpace:getComputedStyle(button).whiteSpace,
+    sidebarScroll:$('.sidebar').scrollWidth,sidebarClient:$('.sidebar').clientWidth,viewportHeight:innerHeight};
 };
 bind();
 window.styleFixtureReady = true;
@@ -122,7 +223,7 @@ try {
   driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
   await driver.manage().setTimeouts({pageLoad:15000,script:15000});
   const cases = [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['calendar-view','era5'],['sources-view','year'],['downloads-view','year'],['sync-view','year'],['monitor-view','year'],['cli-view','year'],['access-view','year'],['access-view','form']];
-  for (const width of [320,390,1440,1920]) {
+  for (const width of [320,390,1440,1920,2560]) {
     await driver.manage().window().setRect({width,height:900});
     await driver.get(base+'/login');
     const loginSize = await driver.executeScript('return document.querySelector(".login-card").getBoundingClientRect().width');
@@ -153,15 +254,55 @@ try {
         'calendar header/card edges differ: '+JSON.stringify(calendarCardSizing));
     }
     assert.equal(calendarCardSizing.fontSize,14);
+    for (const expanded of [false,true]) {
+      const footer=await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',expanded);
+      assert.equal(footer.width,32);assert.equal(footer.height,28);
+      assert.equal(footer.whiteSpace,'nowrap');assert.equal(footer.textLines,1,'logout wrapped: '+JSON.stringify(footer));
+      assert.ok(footer.buttonLeft>=footer.sidebarLeft && footer.buttonRight<=footer.sidebarRight,'logout escapes sidebar: '+JSON.stringify(footer));
+      assert.ok(footer.textLeft>=footer.buttonLeft && footer.textRight<=footer.buttonRight,'logout text escapes button: '+JSON.stringify(footer));
+      assert.ok(footer.toggleLeft>=footer.sidebarLeft && footer.toggleRight<=footer.sidebarRight,'toggle escapes sidebar');
+      assert.ok(footer.buttonBottom<=footer.sidebarBottom,'logout is below viewport');
+      assert.ok(footer.sidebarScroll<=footer.sidebarClient,'sidebar scrolls horizontally');
+    }
+    await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',width>820);
     const timelineStability = await driver.executeScript('return window.coverageTimelineStability()');
     assert.equal(timelineStability.limitedTop,timelineStability.supportedTop,'coverage capability changed timeline vertical position');
+    const fixed=await driver.executeScript('return window.calendarIndexFixture("grid",arguments[0])',width>820);
+    assert.equal(fixed.range,'-1','daily coverage is not all-day by default');
+    assert.equal(fixed.count,288,'fixed-period timeline omitted nominal slots');
+    assert.equal(fixed.hours,24,'hour overview missing');
+    assert.match(fixed.gap,/official_missing/);
+    assert.match(fixed.pattern,/repeating-linear-gradient/,'official gap has no hatch');
+    assert.ok(fixed.scroll<=fixed.viewport+1,'all-day timeline overflows page');
+    assert.ok(fixed.slotWidth>=2.99,'fixed slot was compressed: '+JSON.stringify(fixed));
+    assert.ok(fixed.slotWidth<=5.01,'fixed slot exceeds 5px: '+JSON.stringify(fixed));
+    assert.equal(fixed.slotHeight,28);
+    assert.ok(Math.abs(fixed.matrixScrollWidth-Math.max(fixed.matrixWidth,fixed.scrollerWidth))<=1,'matrix overflow was not isolated: '+JSON.stringify(fixed));
+    assert.ok(Math.abs(fixed.mainWidth-fixed.availableWidth)<1,'calendar does not use available width: '+JSON.stringify(fixed));
+    const zoom=await driver.executeScript('return window.coverageZoomFixture()');
+    assert.equal(zoom.range,'15');assert.equal(zoom.gaps,4);assert.equal(zoom.restored,288);
+    assert.equal(zoom.hourlyRange,'-1');assert.equal(zoom.hourlyCount,24);
+    assert.ok(zoom.hourlySlotWidth>=2.99 && zoom.hourlySlotWidth<=5.01,'hourly slot is outside 3-5px: '+JSON.stringify(zoom));
+    await writeFile('dist/visual/calendar-all-day-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+    const incremental=await driver.executeScript('return window.incrementalIndexFixture()');
+    assert.deepEqual(incremental,{sameDay:true,sameBand:true,untouched:true,status:'complete',replaced:0});
+    const events=await driver.executeScript('return window.calendarIndexFixture("events",arguments[0])',width>820);
+    assert.equal(events.count,2,'event timeline invented gaps');
+    assert.ok(Math.abs(events.positions[0]-62.5/864)<1e-4,JSON.stringify(events));
+    assert.ok(Math.abs(events.positions[1]-81040/864)<1e-4,JSON.stringify(events));
+    assert.ok(Math.abs(events.centres[0]-events.trackWidth*62.5/86400)<.1,JSON.stringify(events));
+    assert.ok(Math.abs(events.centres[1]-events.trackWidth*81040/86400)<.1,JSON.stringify(events));
+    assert.ok(events.scroll<=events.viewport+1,'event timeline overflows page');
+    assert.equal(events.slotWidth,3);
+    assert.equal(events.slotHeight,26);
+    await writeFile('dist/visual/calendar-events-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     for (const [source,product,supported] of [['goes18','ABI-L1b-RadF',true],['goes18','GLM-L2-LCFA',false],
       ['himawari9','AHI-L1b-FLDK',true],['earthcare','ACM_CAP_2B',false],['cloudsat','2B-GEOPROF',false],
       ['modis','MOD021KM',false],['viirs','VNP02MOD',false],['mtg','FCI-L1c',true]]) {
       for (const year of [2026,2000]) {
         const size=await driver.executeScript('return window.calendarSizingFixture(...arguments)',source,product,supported,year);
         assert.ok(Math.abs(size.cellWidth-size.cellHeight)<.1,product+' cells not square');
-        assert.ok(Math.abs(size.cellWidth-size.gap*4)<.1,product+' spacing not proportional');
+        assert.ok(Math.abs(size.cellWidth-size.gap*4)<.1,product+' spacing not proportional: '+JSON.stringify(size));
         assert.ok(size.scroll<=size.viewport+1,product+' year calendar overflows page');
         assert.ok(size.axisLeft>=size.sidebarRight-.5,product+' weekday labels overlap sidebar');
         if (size.available>=size.columns*12+(size.columns-1)*3) {
@@ -172,13 +313,21 @@ try {
         } else assert.ok(size.cellWidth>=11.9,product+' mobile cells became unreadable');
       }
     }
+    const satellites=await driver.executeScript('return window.satelliteCalendarsFixture()');
+    assert.equal(satellites.count,3);
+    assert.deepEqual(satellites.statuses,['complete','missing','partial']);
+    assert.ok(satellites.labels[0].includes('GOES-18') && satellites.labels[1].includes('GOES-16') && satellites.labels[2].includes('GOES-19'));
+    assert.ok(satellites.widths.every(value=>Math.abs(value-satellites.widths[0])<1),'satellite year widths differ');
+    assert.ok(satellites.scroll<=satellites.viewport+1,'all satellites overflow page');
+    assert.equal(satellites.headingFits,true,'satellite heading overflows');
+    await writeFile('dist/visual/calendar-all-satellites-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     for (const [view,mode] of cases) {
       await driver.executeScript('window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
       const metrics = await driver.executeScript(`
         const bad = [];
         for (const node of document.querySelectorAll('.view.active button,.view.active input,.view.active select')) {
           const box = node.getBoundingClientRect();
-          if (box.width && box.height && box.width < 8) bad.push(node.id||node.className);
+          if (box.width && box.height && box.width < 8 && !node.classList.contains('band-slot')) bad.push(node.id||node.className);
         }
         return {width:innerWidth,scroll:document.documentElement.scrollWidth,bad};
       `);
@@ -246,6 +395,23 @@ try {
     Math.abs(wideCalendar.headerRight-wideCalendar.cardRight)<1,'2K header/card edges differ: '+JSON.stringify(wideCalendar));
   assert.ok(Math.abs(wideCalendar.gridWidth-wideCalendar.cardWidth)<1,'2K year grid does not fill calendar card: '+JSON.stringify(wideCalendar));
   await writeFile('dist/visual/calendar-view-year-2560.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+  for (const height of [240,480]) {
+    await driver.manage().window().setRect({width:390,height});
+    const contentHeight=await driver.executeScript('return innerHeight');
+    if (contentHeight!==height) {
+      const frame=await driver.manage().window().getRect();
+      await driver.manage().window().setRect({width:390,height:frame.height+height-contentHeight});
+    }
+    assert.equal(await driver.executeScript('return innerHeight'),height,'short-window content height was not set');
+    await driver.executeScript('window.styleFixture("calendar-view","year",false)');
+    for (const expanded of [false,true]) {
+      const footer=await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',expanded);
+      assert.equal(footer.textLines,1,'short-window logout wrapped: '+JSON.stringify(footer));
+      assert.ok(footer.buttonRight<=footer.sidebarRight,'short-window logout escapes sidebar');
+      assert.ok(footer.buttonBottom<=Math.min(footer.sidebarBottom,footer.viewportHeight),'short-window logout is clipped: '+JSON.stringify(footer));
+      await writeFile('dist/visual/sidebar-footer-'+height+'-'+(expanded?'expanded':'collapsed')+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+    }
+  }
 } finally {
   try {if(driver) await driver.quit();}
   finally {await new Promise(resolve => server.close(resolve));}

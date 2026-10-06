@@ -218,6 +218,8 @@ type Store struct {
 	coverageMu    sync.Mutex
 	coverageCache map[coverageKey]*list.Element
 	coverageLRU   list.List
+	scanMu        sync.RWMutex
+	scanRuntime   archiveScanRuntime
 }
 
 type YearDay struct {
@@ -311,6 +313,10 @@ type VerifiedArchiveFile struct {
 }
 
 type ArchiveScanStatus struct {
+	State        string   `json:"state"`
+	StartedAt    string   `json:"started_at,omitempty"`
+	Observed     int      `json:"observed_files"`
+	LastError    string   `json:"last_error,omitempty"`
 	SkippedPaths []string `json:"skipped_paths"`
 	ScannedAt    string   `json:"scanned_at"`
 	Files        int      `json:"files"`
@@ -1223,13 +1229,24 @@ func (s *Store) ArchiveScanStatus(ctx context.Context) (ArchiveScanStatus, error
 	var skipped string
 	err := s.db.QueryRowContext(ctx, `SELECT skipped_paths_json,scanned_at FROM archive_scan_status WHERE id=1`).Scan(&skipped, &result.ScannedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ArchiveScanStatus{SkippedPaths: []string{}}, nil
-	}
-	if err != nil {
+		result.SkippedPaths = []string{}
+	} else if err != nil {
+		return result, err
+	} else if err := json.Unmarshal([]byte(skipped), &result.SkippedPaths); err != nil {
 		return result, err
 	}
-	if err := json.Unmarshal([]byte(skipped), &result.SkippedPaths); err != nil {
-		return result, err
+	s.scanMu.RLock()
+	runtime := s.scanRuntime
+	s.scanMu.RUnlock()
+	result.State, result.StartedAt, result.Observed, result.LastError = runtime.state, runtime.started, runtime.observed, runtime.lastError
+	if runtime.completed != "" {
+		result.ScannedAt = runtime.completed
+	}
+	if result.State == "" {
+		result.State = "pending"
+		if result.ScannedAt != "" {
+			result.State = "ready"
+		}
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*),
 		coalesce(sum(CASE WHEN state='unverified' THEN 1 ELSE 0 END),0),

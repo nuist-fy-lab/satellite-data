@@ -90,7 +90,7 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 			SourceID:   "calipso",
 			Satellite:  "CALIPSO",
 			Instrument: calipsoInstrument(item.ShortName),
-			Level:      item.ProcessingLevelID,
+			Level:      calipsoLevel(item.ProcessingLevelID),
 			Product:    item.ShortName,
 			Cadence:    "event",
 			Metadata: map[string]string{
@@ -102,6 +102,14 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Product < out[j].Product })
 	return out, nil
+}
+
+func calipsoLevel(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" || strings.HasPrefix(value, "L") {
+		return value
+	}
+	return "L" + value
 }
 
 type granuleFeed struct {

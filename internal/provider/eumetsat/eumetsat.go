@@ -108,6 +108,7 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 				"product_count":  strconv.FormatInt(int64(item.NumberOfProducts), 10),
 				"catalog_href":   item.Href,
 				"area_type":      mtgArea(title),
+				"product_type":   mtgProductType(title),
 			},
 		})
 	}
@@ -300,6 +301,22 @@ func mtgCadence(title string) string {
 		return "10m"
 	}
 	return "event"
+}
+
+func mtgProductType(title string) string {
+	upper := strings.ToUpper(title)
+	switch {
+	case strings.Contains(upper, "FCI LEVEL 1C") && strings.Contains(upper, "NORMAL RESOLUTION"):
+		return "FCI-1C-RRAD-FDHSI-FD (normal resolution)"
+	case strings.Contains(upper, "FCI LEVEL 1C") && strings.Contains(upper, "HIGH RESOLUTION"):
+		return "FCI-1C-RRAD-HRFI-FD (high resolution)"
+	case strings.Contains(upper, "IRS LEVEL 1") && strings.Contains(upper, "PRINCIPAL COMPONENTS"):
+		return "IRS L1 - 300 principal components"
+	case strings.Contains(upper, "IRS LEVEL 1") && strings.Contains(upper, "SPECTRAL SOUNDINGS"):
+		return "IRS L1 - spectral soundings"
+	default:
+		return ""
+	}
 }
 
 func mtgArea(title string) string {
