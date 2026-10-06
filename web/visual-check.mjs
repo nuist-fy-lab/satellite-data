@@ -122,7 +122,7 @@ window.calendarIndexFixture = function(mode, wide) {
   return {range:$('#coverage-hour').value,count:track.children.length,hours:$('#coverage-day-overview').children.length,
     gap:gap?.className,pattern:gap?getComputedStyle(gap).backgroundImage:'',
     positions:[...track.children].map(cell=>parseFloat(cell.style.left)),
-    slotWidth:slotBox.width,slotHeight:slotBox.height,mainWidth:mainBox.width,availableWidth:innerWidth-sidebarBox.right,
+    slotWidth:slotBox.width,slotHeight:slotBox.height,mainWidth:mainBox.width,availableWidth:document.documentElement.clientWidth-sidebarBox.right,
     matrixScrolls:scroller.scrollWidth>scroller.clientWidth,scrollerWidth:scroller.clientWidth,
     matrixWidth:document.querySelector('#coverage-matrix').getBoundingClientRect().width,
     trackWidth:trackBox.width,centres:[...track.children].map(cell=>{
