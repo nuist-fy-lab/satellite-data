@@ -82,6 +82,23 @@ window.coverageTimelineStability = function() {
   const limitedTop = timeline.getBoundingClientRect().top;
   return {supportedTop, limitedTop};
 };
+window.calendarSizingFixture = function(source, product, supported, year) {
+  state.selected = {id:source+':'+product,source_id:source,product,satellite:source,cadence:'10m',metadata:{}};
+  state.collections = [state.selected];
+  state.coverage.supported = supported;
+  state.coverage.bands = Array.from({length:16}, (_, i) => i+1);
+  yearEl.replaceChildren(new Option(String(year),String(year)));
+  renderSatelliteTimelines();renderCalendar();
+  const grid=$('#year-grid'),wrap=$('.calendar-wrap'),cell=grid.querySelector('[data-day]');
+  const box=grid.getBoundingClientRect(),rect=cell.getBoundingClientRect();
+  const gap=parseFloat(getComputedStyle(grid).columnGap);
+  const timeline=$('#satellite-timelines').getBoundingClientRect();
+  return {available:wrap.clientWidth,width:box.width,cellWidth:rect.width,cellHeight:rect.height,gap,
+    columns:yearGridColumns(year),timelineWidth:timeline.width,timelineLeft:timeline.left,timelineRight:timeline.right,
+    gridLeft:box.left,gridRight:box.right,
+    axisLeft:$('.calendar-axis').getBoundingClientRect().left,sidebarRight:$('.sidebar').getBoundingClientRect().right,
+    scroll:document.documentElement.scrollWidth,viewport:innerWidth};
+};
 bind();
 window.styleFixtureReady = true;
 `;
@@ -105,7 +122,7 @@ try {
   driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
   await driver.manage().setTimeouts({pageLoad:15000,script:15000});
   const cases = [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['calendar-view','era5'],['sources-view','year'],['downloads-view','year'],['sync-view','year'],['monitor-view','year'],['cli-view','year'],['access-view','year'],['access-view','form']];
-  for (const width of [390,1440]) {
+  for (const width of [320,390,1440,1920]) {
     await driver.manage().window().setRect({width,height:900});
     await driver.get(base+'/login');
     const loginSize = await driver.executeScript('return document.querySelector(".login-card").getBoundingClientRect().width');
@@ -116,6 +133,23 @@ try {
     await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
     const timelineStability = await driver.executeScript('return window.coverageTimelineStability()');
     assert.equal(timelineStability.limitedTop,timelineStability.supportedTop,'coverage capability changed timeline vertical position');
+    for (const [source,product,supported] of [['goes18','ABI-L1b-RadF',true],['goes18','GLM-L2-LCFA',false],
+      ['himawari9','AHI-L1b-FLDK',true],['earthcare','ACM_CAP_2B',false],['cloudsat','2B-GEOPROF',false],
+      ['modis','MOD021KM',false],['viirs','VNP02MOD',false],['mtg','FCI-L1c',true]]) {
+      for (const year of [2026,2000]) {
+        const size=await driver.executeScript('return window.calendarSizingFixture(...arguments)',source,product,supported,year);
+        assert.ok(Math.abs(size.cellWidth-size.cellHeight)<.1,product+' cells not square');
+        assert.ok(Math.abs(size.cellWidth-size.gap*4)<.1,product+' spacing not proportional');
+        assert.ok(size.scroll<=size.viewport+1,product+' year calendar overflows page');
+        assert.ok(size.axisLeft>=size.sidebarRight-.5,product+' weekday labels overlap sidebar');
+        if (size.available>=size.columns*12+(size.columns-1)*3) {
+          assert.ok(Math.abs(size.width-size.available)<1,product+' does not fill year width: '+JSON.stringify(size));
+          assert.ok(Math.abs(size.timelineWidth-size.width)<1,product+' year is not timeline section width');
+          assert.ok(Math.abs(size.timelineRight-size.gridRight)<1,product+' year/timeline right edges differ');
+          assert.ok(Math.abs(size.timelineLeft-size.gridLeft)<1,product+' year/timeline left edges differ');
+        } else assert.ok(size.cellWidth>=11.9,product+' mobile cells became unreadable');
+      }
+    }
     for (const [view,mode] of cases) {
       await driver.executeScript('window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
       const metrics = await driver.executeScript(`
@@ -158,7 +192,7 @@ try {
         assert.ok(monitorChanged.axis.every(value => value.endsWith(' UTC')));
         await driver.executeScript(`setDownloadTimezone('UTC');setDownloadMonitorTimezone('BJT');`);
       }
-      if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view') {
+      if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
       }
       console.log('Layout OK:',width,view,mode);

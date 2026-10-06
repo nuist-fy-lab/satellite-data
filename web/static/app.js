@@ -513,6 +513,23 @@ async function refreshERA5() {
   }
 }
 
+function yearGridColumns(year) {
+  const start = new Date(Date.UTC(year, 0, 1));
+  const days = (Date.UTC(year + 1, 0, 1) - start.getTime()) / 86400000;
+  return Math.ceil((start.getUTCDay() + days) / 7);
+}
+
+function fitYearCalendar() {
+  const width = $('.calendar-wrap').clientWidth;
+  if (!(width > 0)) return;
+  const columns = yearGridColumns(Number(yearEl.value || defaultYear()));
+  // Keep square cells and the original 4:1 cell/gap ratio. Narrow screens scroll.
+  const cell = Math.max(12, width / (columns + (columns - 1) / 4));
+  const layout = $('#year-layout');
+  layout.style.setProperty('--cell', cell.toFixed(4) + 'px');
+  layout.style.setProperty('--gap', (cell / 4).toFixed(4) + 'px');
+}
+
 function renderCalendar() {
   if (state.coverage.supported) {
     renderCoverageYear();
@@ -548,6 +565,7 @@ function renderCalendar() {
     });
     gridEl.append(cell);
   }
+  fitYearCalendar();
 }
 
 function bandCoverageSupported(product) {
@@ -757,6 +775,7 @@ function renderCoverageYear() {
     fragment.append(cell);
   }
   gridEl.replaceChildren(fragment);
+  fitYearCalendar();
 }
 
 function updateCell(day) {
@@ -2497,6 +2516,8 @@ async function health() {
 }
 
 function bind() {
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitYearCalendar).observe($('.calendar-wrap'));
+  else window.addEventListener('resize', fitYearCalendar);
   $('.sidebar-toggle').addEventListener('click', () => setSidebar(document.body.classList.contains('sidebar-collapsed'), true));
   document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', event => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

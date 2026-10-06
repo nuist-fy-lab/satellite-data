@@ -99,6 +99,9 @@ The download page has independent timezone preferences: task inputs and lists
 default to UTC; transfer charts and sample times default to BJT (UTC+8).
 Dates and selected times are converted to UTC before ordinary download requests
 are submitted. CDS orders retain explicitly labelled whole-UTC-date inputs.
+Both standard and band-aware year calendars fill the satellite timeline section
+width with square cells and proportional gaps, including 54-column leap years.
+Small screens keep readable cells and scroll inside the calendar viewport.
 
 ## Current milestone
 

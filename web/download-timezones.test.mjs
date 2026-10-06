@@ -11,8 +11,10 @@ function harness(saved = {}) {
   const elements = new Map();
   const requests = [];
   const element = selector => {
+    const properties = new Map();
     if (!elements.has(selector)) elements.set(selector, {
       value: '', textContent: '', innerHTML: '', options: [], listeners: {},
+      style: {setProperty: (name, value) => properties.set(name, value), getPropertyValue: name => properties.get(name)},
       add(option) { this.options.push(option); },
       replaceChildren(...options) { this.options = options; },
       addEventListener(name, callback) { this.listeners[name] = callback; },
@@ -161,4 +163,27 @@ test('invalid dates, inverted ranges and invalid times cannot enqueue a request'
   await h.context.submitDownload({preventDefault() {}});
   assert.equal(h.requests.length, 0);
   assert.match(h.element('#dl-submit-status').textContent, /日期/);
+});
+
+test('year grid uses all available width with proportional square-cell spacing including 54-week leap years', () => {
+  const h = harness();
+  assert.equal(h.context.yearGridColumns(2026), 53);
+  assert.equal(h.context.yearGridColumns(2000), 54);
+  for (const year of [2026, 2000]) {
+    h.element('#year').value = String(year);
+    h.element('.calendar-wrap').clientWidth = 1100;
+    h.context.fitYearCalendar();
+    const cell = Number.parseFloat(h.element('#year-layout').style.getPropertyValue('--cell'));
+    const gap = Number.parseFloat(h.element('#year-layout').style.getPropertyValue('--gap'));
+    const columns = h.context.yearGridColumns(year);
+    assert.ok(cell > 12);
+    assert.ok(Math.abs(cell - gap * 4) < .001);
+    assert.ok(Math.abs(columns * cell + (columns - 1) * gap - 1100) < .01);
+  }
+  h.element('.calendar-wrap').clientWidth = 300;
+  h.context.fitYearCalendar();
+  assert.equal(h.element('#year-layout').style.getPropertyValue('--cell'), '12.0000px');
+  h.element('.calendar-wrap').clientWidth = 0;
+  h.context.fitYearCalendar();
+  assert.equal(h.element('#year-layout').style.getPropertyValue('--cell'), '12.0000px');
 });
