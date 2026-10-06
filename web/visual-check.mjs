@@ -94,7 +94,7 @@ window.inventoryFixture = async function() {
     {dataset:'era5:reanalysis-era5-pressure-levels',name:'pressure.nc',bytes:65536,verified:true,state:'ok',start:'2024-02-01T00:00:00Z',end:'2024-03-01T00:00:00Z',variables:['temperature'],levels:['850','500'],times:['00:00'],area:[90,-180,-90,180]},
     {dataset:'era5:unclassified',name:'historical_unclassified.nc',bytes:128,verified:false,state:'ok',start:'',end:'',variables:[],levels:[],times:[],area:[]}];
   module.initialize({files,unverified_files:1,scanned_at:'2026-10-06T10:00:00Z'});
-  document.querySelector('.inventory-month.has-data').click();
+  document.querySelector('.inventory-month.has-data[data-dataset="era5:reanalysis-era5-single-levels"][data-month="0"]').click();
   await new Promise(resolve=>requestAnimationFrame(resolve));
   return {datasets:document.querySelectorAll('.inventory-dataset').length,months:document.querySelectorAll('.inventory-month.has-data').length,
     details:$('#era5-inventory-detail').textContent,status:$('#era5-inventory-status').textContent};
