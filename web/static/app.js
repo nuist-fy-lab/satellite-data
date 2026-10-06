@@ -1125,6 +1125,7 @@ function renderCoverageDayOverview(day) {
   const node = $('#coverage-day-overview');
   node.classList.toggle('hidden', !hours.length);
   const hourEl = $('#coverage-hour');
+  for (let hour = 0; hour < 24; hour++) hourEl.options[hour + 1].text = `${String(hour).padStart(2, '0')}:00`;
   const fragment = document.createDocumentFragment();
   for (const {hour, slots, gaps} of hours) {
     const label = String(hour).padStart(2, '0');

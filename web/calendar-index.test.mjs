@@ -105,11 +105,13 @@ test('fixed timelines distinguish official gaps, band-specific gaps, local absen
 });
 
 test('event timelines use actual timestamps including seconds and never invent fixed-period gaps', () => {
-  const h = harness();
+  const h = harness(); fixedDay(h); h.context.renderCoverageDay();
+  assert.match(h.element('#coverage-hour').options[16].text, /官方缺/);
   h.run(`state.coverage.bands = [1]; state.coverage.dayData = {mode:'events',official_state:2,
     times:[['2025-06-09T00:01:02.500Z',-1],['2025-06-09T22:30:40Z',-1]],cells:[[0,1,1,1,0,0],[1,1,1,0,0,0]]};
     state.coverage.cells = new Map(state.coverage.dayData.cells.map(cell=>[cell[0]+':'+cell[1],cell]));`);
   h.context.renderCoverageDay();
+  assert.equal(h.element('#coverage-hour').options[16].text, '15:00');
   const track = h.element('#coverage-matrix').children[3];
   assert.equal(track.className, 'band-track events');
   assert.equal(track.children.length, 2);
