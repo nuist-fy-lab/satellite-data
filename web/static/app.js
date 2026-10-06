@@ -1037,7 +1037,8 @@ async function openCoverageDay(day) {
   const parsed = new Date(`${day}T00:00:00Z`);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number(day.slice(0, 4)) !== year ||
       !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) return;
-  if (coverage.day !== day) coverage.hour = -1;
+  const refreshing = coverage.day === day && coverage.view === 'day';
+  if (!refreshing) coverage.hour = -1;
   coverage.day = day;
   coverage.dayData = null;
   coverage.view = 'day';
@@ -1046,7 +1047,7 @@ async function openCoverageDay(day) {
   monthEl.value = String(Number(day.slice(5, 7)) - 1);
   closeDetail();
   renderCoverageShell();
-  renderCalendar();
+  if (!refreshing) renderCalendar();
   $('#coverage-day-picker').value = day;
   $('#coverage-day-picker').min = `${year}-01-01`;
   $('#coverage-day-picker').max = `${year}-12-31`;
