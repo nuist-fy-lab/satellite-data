@@ -1017,6 +1017,8 @@ func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, erro
 				status = "complete"
 			case hasProcessing:
 				status = "processing"
+			case len(okNames) > 0:
+				status = "partial"
 			default:
 				status = "missing"
 			}
@@ -1314,10 +1316,13 @@ func (s *Store) recomputeDayTx(ctx context.Context, tx *sql.Tx, product, day, no
 	tolerance := axis.Tolerance(observed)
 	mode := axis.ClassifyWithin(observed, tolerance)
 	officialCount := len(slots)
-	localOK, missing, errorCount, processingCount := 0, 0, 0, 0
+	localOK, localPresent, missing, errorCount, processingCount := 0, 0, 0, 0, 0
 	hourly := make(map[time.Time]bool)
 	nominalSlots := make(map[time.Time]struct{})
 	for _, item := range slots {
+		if item.local > 0 {
+			localPresent++
+		}
 		complete := item.expected > 0 && item.local >= item.expected
 		if item.errors > 0 && !complete {
 			errorCount++
@@ -1378,6 +1383,8 @@ func (s *Store) recomputeDayTx(ctx context.Context, tx *sql.Tx, product, day, no
 		} else {
 			status = "hourly_complete"
 		}
+	case localPresent > 0:
+		status = "partial"
 	case missing > 0:
 		status = "missing"
 	}

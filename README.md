@@ -92,7 +92,8 @@ automatically queue missing official catalogue days. Per-day fingerprints
 survive restarts; local or official catalogue changes reconcile slots and
 recompute daily/band coverage, without resetting query retry backoff. An
 unmatched file triggers at most one background catalogue refresh per 24 hours.
-Downloading selected bands does not imply that all bands are complete.
+Downloading selected bands appears as partial coverage, not entirely missing;
+it does not imply that all bands are complete.
 
 The download page has independent timezone preferences: task inputs and lists
 default to UTC; transfer charts and sample times default to BJT (UTC+8).

@@ -48,8 +48,12 @@ func TestGOESArchiveAutomaticallyQueuesAndRecountsWithoutCalendarRequests(t *tes
 	}
 	i.scanLocal(t.Context())
 	day, err := s.Day(t.Context(), product.ProductKey, "2026-09-22")
-	if err != nil || len(day.Slots) != 1 || len(day.Slots[0].Local) != 1 || day.Slots[0].Status == "complete" {
+	if err != nil || len(day.Slots) != 1 || len(day.Slots[0].Local) != 1 || day.Slots[0].Status != "partial" {
 		t.Fatalf("partial bands must not imply all-band completion: %+v (%v)", day, err)
+	}
+	year, err := s.Year(t.Context(), product.ProductKey, 2026)
+	if err != nil || len(year.Days) != 1 || year.Days[0].Status != "partial" || year.Days[0].LocalOKCount != 0 {
+		t.Fatalf("partial band must appear in day summary without counting complete slots: %+v (%v)", year, err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
