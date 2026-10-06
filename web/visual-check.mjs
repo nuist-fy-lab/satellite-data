@@ -326,6 +326,12 @@ try {
   }
   for (const height of [240,480]) {
     await driver.manage().window().setRect({width:390,height});
+    const contentHeight=await driver.executeScript('return innerHeight');
+    if (contentHeight!==height) {
+      const frame=await driver.manage().window().getRect();
+      await driver.manage().window().setRect({width:390,height:frame.height+height-contentHeight});
+    }
+    assert.equal(await driver.executeScript('return innerHeight'),height,'short-window content height was not set');
     await driver.executeScript('window.styleFixture("calendar-view","year",false)');
     for (const expanded of [false,true]) {
       const footer=await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',expanded);
