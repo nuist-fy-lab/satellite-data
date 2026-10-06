@@ -164,6 +164,20 @@ window.coverageZoomFixture = function() {
   $('#coverage-hour').value='-1';$('#coverage-hour').dispatchEvent(new Event('change'));
   return {...before,restored:document.querySelector('.band-track').children.length};
 };
+window.sidebarFooterFixture = async function(expanded) {
+  setSidebar(expanded);
+  await new Promise(resolve=>setTimeout(resolve,250));
+  const sidebar=$('.sidebar').getBoundingClientRect();
+  const button=$('#portal-logout'),box=button.getBoundingClientRect();
+  const toggle=$('.sidebar-toggle').getBoundingClientRect();
+  const range=document.createRange();range.selectNodeContents(button);
+  const text=range.getBoundingClientRect();
+  return {sidebarLeft:sidebar.left,sidebarRight:sidebar.right,sidebarBottom:sidebar.bottom,
+    buttonLeft:box.left,buttonRight:box.right,buttonBottom:box.bottom,width:box.width,height:box.height,
+    toggleLeft:toggle.left,toggleRight:toggle.right,textLeft:text.left,textRight:text.right,
+    textLines:range.getClientRects().length,whiteSpace:getComputedStyle(button).whiteSpace,
+    sidebarScroll:$('.sidebar').scrollWidth,sidebarClient:$('.sidebar').clientWidth,viewportHeight:innerHeight};
+};
 bind();
 window.styleFixtureReady = true;
 `;
@@ -196,6 +210,17 @@ try {
     await driver.get(base);
     await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
     await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
+    for (const expanded of [false,true]) {
+      const footer=await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',expanded);
+      assert.equal(footer.width,32);assert.equal(footer.height,28);
+      assert.equal(footer.whiteSpace,'nowrap');assert.equal(footer.textLines,1,'logout wrapped: '+JSON.stringify(footer));
+      assert.ok(footer.buttonLeft>=footer.sidebarLeft && footer.buttonRight<=footer.sidebarRight,'logout escapes sidebar: '+JSON.stringify(footer));
+      assert.ok(footer.textLeft>=footer.buttonLeft && footer.textRight<=footer.buttonRight,'logout text escapes button: '+JSON.stringify(footer));
+      assert.ok(footer.toggleLeft>=footer.sidebarLeft && footer.toggleRight<=footer.sidebarRight,'toggle escapes sidebar');
+      assert.ok(footer.buttonBottom<=footer.sidebarBottom,'logout is below viewport');
+      assert.ok(footer.sidebarScroll<=footer.sidebarClient,'sidebar scrolls horizontally');
+    }
+    await driver.executeScript('setSidebar(arguments[0])',width>820);
     const timelineStability = await driver.executeScript('return window.coverageTimelineStability()');
     assert.equal(timelineStability.limitedTop,timelineStability.supportedTop,'coverage capability changed timeline vertical position');
     const fixed=await driver.executeScript('return window.calendarIndexFixture("grid",arguments[0])',width>820);
@@ -296,6 +321,17 @@ try {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
       }
       console.log('Layout OK:',width,view,mode);
+    }
+  }
+  for (const height of [240,480]) {
+    await driver.manage().window().setRect({width:390,height});
+    await driver.executeScript('window.styleFixture("calendar-view","year",false)');
+    for (const expanded of [false,true]) {
+      const footer=await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',expanded);
+      assert.equal(footer.textLines,1,'short-window logout wrapped: '+JSON.stringify(footer));
+      assert.ok(footer.buttonRight<=footer.sidebarRight,'short-window logout escapes sidebar');
+      assert.ok(footer.buttonBottom<=Math.min(footer.sidebarBottom,footer.viewportHeight),'short-window logout is clipped');
+      await writeFile('dist/visual/sidebar-footer-'+height+'-'+(expanded?'expanded':'collapsed')+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     }
   }
 } finally {

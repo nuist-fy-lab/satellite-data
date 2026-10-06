@@ -95,6 +95,17 @@ test('monitor surfaces are flat and do not use decorative gradients or lift on h
   }
 });
 
+test('sidebar footer keeps logout on one line in a 52px rail', () => {
+  const button = first('.portal-account button');
+  assert.equal(button.get('width'), '32px');
+  assert.equal(button.get('height'), '28px');
+  assert.equal(button.get('flex'), '0 0 32px');
+  assert.equal(button.get('white-space'), 'nowrap');
+  assert.equal(first('.sidebar-collapsed .sidebar').get('padding-left'), '8px');
+  assert.equal(first('.sidebar-collapsed .portal-account').get('padding'), '8px 0');
+  assert.ok(rules.get('.portal-account').some(style => style.get('padding') === '8px 0' && style.get('justify-content') === 'center'));
+});
+
 test('calendar uses full width and timeline slots cannot collapse into hairlines', () => {
   assert.equal(first('main.calendar-wide').get('width'), '100%');
   assert.equal(first('.band-slot.matrix-cell').get('min-width'), '3px');

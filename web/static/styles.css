@@ -55,7 +55,7 @@ code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .sidebar-status i{width:7px;height:7px;border-radius:50%;background:#8c959f;box-shadow:0 0 0 3px #8c959f22;flex:0 0 7px}
 .sidebar-status i.ok{background:var(--green);box-shadow:0 0 0 3px #40c46322}
 .sidebar-collapsed.with-sidebar{padding-left:52px}
-.sidebar-collapsed .sidebar{width:52px}
+.sidebar-collapsed .sidebar{width:52px;padding-left:8px;padding-right:8px}
 .sidebar-collapsed .sidebar-title,.sidebar-collapsed .nav-label{display:none}
 .sidebar-collapsed .nav-item{padding:0 8px;justify-content:center}
 .sidebar-collapsed .sidebar-status{justify-content:center;margin:14px 0}
@@ -105,7 +105,7 @@ main.calendar-wide{width:100%}
 .login-card button{background:var(--primary);color:#fff;border-color:var(--primary);padding:8px}
 .login-card .form-error:empty{display:none}
 .portal-account{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-top:1px solid var(--line);flex-shrink:0}
-.portal-account span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.sidebar-collapsed .portal-account{justify-content:center;padding:8px 2px}.portal-account button{font-size:10px;padding:5px 6px}
+.portal-account span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.sidebar-collapsed .portal-account{justify-content:center;padding:8px 0}.portal-account button{width:32px;height:28px;flex:0 0 32px;font-size:10px;padding:5px 4px;white-space:nowrap}
 .timeline-heading{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:10px;margin-bottom:4px}.timeline-heading strong{color:var(--fg);font-size:11px}
 .satellite-timeline-rows{display:grid}
 .satellite-timeline{width:100%;display:grid;grid-template-columns:minmax(88px,120px) minmax(0,1fr) minmax(92px,138px);grid-template-rows:18px 9px;align-items:center;gap:2px 12px;border:0;border-bottom:1px solid #eaeef2;border-radius:0;background:transparent;text-align:left;padding:7px 4px;min-height:43px}
@@ -387,9 +387,11 @@ main.calendar-wide{width:100%}
 .monitor-chart.loss .chart-line,.monitor-chart.loss .chart-dot{stroke:#d84a4a}.monitor-chart.loss .chart-area{fill:#d84a4a}.monitor-chart.loss .chart-dot{fill:#d84a4a}
 @media(max-width:820px){
   .with-sidebar,.sidebar-collapsed.with-sidebar{padding-left:52px}
-  .sidebar,.sidebar-collapsed .sidebar{width:52px;padding:12px 10px}
+  .sidebar,.sidebar-collapsed .sidebar{width:52px;padding:12px 8px}
   .sidebar-title,.nav-label{display:none!important}
   .nav-item,.sidebar-collapsed .nav-item{padding:0 8px;justify-content:center}
+  .sidebar-status,.sidebar-collapsed .sidebar-status{justify-content:center;margin:14px 0}
+  .portal-account,.sidebar-collapsed .portal-account{justify-content:center;padding:8px 0}
   main{width:min(100%,calc(100vw - 52px));padding:20px 14px 50px}
   .page-header,.simple-header{align-items:flex-start}
   .header-right{align-items:flex-end}
