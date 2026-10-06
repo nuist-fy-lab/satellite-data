@@ -331,7 +331,7 @@ try {
       const footer=await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',expanded);
       assert.equal(footer.textLines,1,'short-window logout wrapped: '+JSON.stringify(footer));
       assert.ok(footer.buttonRight<=footer.sidebarRight,'short-window logout escapes sidebar');
-      assert.ok(footer.buttonBottom<=Math.min(footer.sidebarBottom,footer.viewportHeight),'short-window logout is clipped');
+      assert.ok(footer.buttonBottom<=Math.min(footer.sidebarBottom,footer.viewportHeight),'short-window logout is clipped: '+JSON.stringify(footer));
       await writeFile('dist/visual/sidebar-footer-'+height+'-'+(expanded?'expanded':'collapsed')+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     }
   }

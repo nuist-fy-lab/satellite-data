@@ -402,6 +402,18 @@ main.calendar-wide{width:100%}
   .access-grid{grid-template-columns:1fr}.access-summary{grid-template-columns:repeat(3,minmax(0,1fr))}
   .monitor-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.monitor-link-grid{grid-template-columns:1fr}.monitor-chart-grid{grid-template-columns:1fr}.monitor-head-actions{flex-wrap:wrap;justify-content:flex-end}
 }
+@media(max-height:320px){
+  .sidebar,.sidebar-collapsed .sidebar{padding-top:6px;padding-bottom:6px}
+  .sidebar-top{height:28px;margin-bottom:4px}
+  .sidebar-toggle{height:28px}
+  .sidebar-status,.sidebar-collapsed .sidebar-status{margin:6px 0}
+  .portal-account,.sidebar-collapsed .portal-account{padding-top:4px;padding-bottom:4px}
+}
+@media(max-height:160px){
+  .sidebar-status{display:none}
+  .sidebar-top{height:24px;margin-bottom:2px}
+  .sidebar-toggle{height:24px}
+}
 /* Scroll dense scientific grids within their own viewport, not the page. */
 @media(max-width:1100px){.monitor-link-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.page-header{flex-direction:column}.header-right{width:100%;align-items:flex-start}.controls,.legend{justify-content:flex-start}.access-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:820px){.monitor-link-grid{grid-template-columns:minmax(0,1fr)}.monitor-chart-card+.monitor-chart-card{border-left:0;border-top:1px solid var(--line)}.monitor-metric:nth-child(2){border-right:0}.monitor-metric:nth-child(n+3){border-top:1px solid var(--line)}}

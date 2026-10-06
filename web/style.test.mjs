@@ -104,6 +104,8 @@ test('sidebar footer keeps logout on one line in a 52px rail', () => {
   assert.equal(first('.sidebar-collapsed .sidebar').get('padding-left'), '8px');
   assert.equal(first('.sidebar-collapsed .portal-account').get('padding'), '8px 0');
   assert.ok(rules.get('.portal-account').some(style => style.get('padding') === '8px 0' && style.get('justify-content') === 'center'));
+  assert.ok(rules.get('.sidebar').some(style => style.get('padding-top') === '6px' && style.get('padding-bottom') === '6px'));
+  assert.ok(rules.get('.sidebar-status').some(style => style.get('display') === 'none'));
 });
 
 test('calendar uses full width and timeline slots cannot collapse into hairlines', () => {
