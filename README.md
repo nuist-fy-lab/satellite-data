@@ -87,6 +87,22 @@ including inaccessible directories. Completed downloader tasks retain a
 durable archive-verification notification until the centre acknowledges it;
 an inaccessible official catalogue leaves the file unverified for later retry.
 
+GOES archive scans derive product/day identities from NOAA filenames and
+automatically queue missing official catalogue days. Per-day fingerprints
+survive restarts; local or official catalogue changes reconcile slots and
+recompute daily/band coverage, without resetting query retry backoff. An
+unmatched file triggers at most one background catalogue refresh per 24 hours.
+Downloading selected bands appears as partial coverage, not entirely missing;
+it does not imply that all bands are complete.
+
+The download page has independent timezone preferences: task inputs and lists
+default to UTC; transfer charts and sample times default to BJT (UTC+8).
+Dates and selected times are converted to UTC before ordinary download requests
+are submitted. CDS orders retain explicitly labelled whole-UTC-date inputs.
+Both standard and band-aware year calendars fill the satellite timeline section
+width with square cells and proportional gaps, including 54-column leap years.
+Small screens keep readable cells and scroll inside the calendar viewport.
+
 ## Current milestone
 
 The first working slice implements anonymous public-cloud discovery for:

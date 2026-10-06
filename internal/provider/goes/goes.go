@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,26 @@ type Provider struct {
 	sourceID  string
 	bucket    string
 	objects   *objectstore.Client
+}
+
+var archiveName = regexp.MustCompile(`^OR_([A-Za-z0-9-]+)_G(1[6-9])_s([0-9]{13,22})_e[0-9]{13,22}_c[0-9]{13,22}\.nc$`)
+var archiveScanMode = regexp.MustCompile(`-M[0-9](C[0-9]{2})?$`)
+
+// ArchiveIdentity uses NOAA's timestamp, not the local directory date.
+func ArchiveIdentity(name string) (string, time.Time, bool) {
+	match := archiveName.FindStringSubmatch(name)
+	if match == nil {
+		return "", time.Time{}, false
+	}
+	start, ok := parseGOESCode(match[3])
+	if !ok || start.Format("2006002150405") != match[3][:13] {
+		return "", time.Time{}, false
+	}
+	product := archiveScanMode.ReplaceAllString(match[1], "")
+	if strings.HasPrefix(product, "ABI-") && (strings.HasSuffix(product, "M1") || strings.HasSuffix(product, "M2")) {
+		product = product[:len(product)-1]
+	}
+	return "goes" + match[2] + ":" + product, start, true
 }
 
 func New(satellite int, objects *objectstore.Client) (*Provider, error) {

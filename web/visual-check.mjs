@@ -53,7 +53,18 @@ window.styleFixture = function(view, mode, wide) {
   const points = Array.from({length:24}, (_, i) => ({at:new Date(Date.now()-(23-i)*150000).toISOString(),latency_ms:170+i%5*10,jitter_ms:4+i%3,loss_pct:0}));
   state.monitor.payload = {origin:'c2ln1',links:['GOES-18','EarthCARE','ERA5','MTG'].map((name,i) => ({name,source_id:['goes18','earthcare','era5','mtg'][i],target:['noaa-goes18.s3.amazonaws.com','earthcare.example','cds.climate.copernicus.eu','api.eumetsat.int'][i],port:443,latest:points.at(-1),points}))};
   renderMonitor();
-  $('#download-requests').innerHTML = '<div class="download-request"><strong>#20 · goes18:ABI-L1b-RadF</strong><span>已完成 · 720/720</span><span>2023-06-01 → 2023-06-30 · C06 · 整点</span></div>';
+  state.downloads.displayZone = 'UTC';
+  state.downloads.history.displayZone = 'BJT';
+  state.downloads.history.chartKey = '';
+  state.downloads.requests = [{id:20,collection_id:'goes18:ABI-L1b-RadF',state:'done',files_done:720,assets_queued:720,
+    start:'2026-12-31T20:00:00Z',end:'2027-01-01T02:00:00Z',band:6,times_count:24}];
+  const transferPoints = Array.from({length:24}, (_, i) => ({sampled_at:new Date(Date.now()-(23-i)*150000).toISOString(),bytes_per_second:1048576,active_transfers:2,adaptive_concurrency:4}));
+  state.downloads.providers = [{source_id:'goes',enabled:true,bytes_per_second:1048576,active_transfers:2,adaptive_concurrency:4,states:{done:720}}];
+  state.downloads.history.payload = {window:'1h',generated_at:new Date().toISOString(),bucket_seconds:15,
+    providers:[{source_id:'goes',latest:transferPoints.at(-1),points:transferPoints}]};
+  syncDownloadTimezones();
+  renderDownloadRequests(state.downloads.requests);
+  renderDownloadProviders(state.downloads.providers, true);
   if (mode === 'form') openPoolForm('account', state.access.accounts[0]);
   if (mode === 'era5') {
     $('#era5-panel').classList.remove('hidden');
@@ -71,6 +82,24 @@ window.coverageTimelineStability = function() {
   const limitedTop = timeline.getBoundingClientRect().top;
   return {supportedTop, limitedTop};
 };
+window.calendarSizingFixture = function(source, product, supported, year) {
+  state.selected = {id:source+':'+product,source_id:source,product,satellite:source,cadence:'10m',metadata:{}};
+  state.collections = [state.selected];
+  state.coverage.supported = supported;
+  state.coverage.bands = Array.from({length:16}, (_, i) => i+1);
+  yearEl.replaceChildren(new Option(String(year),String(year)));
+  renderSatelliteTimelines();renderCalendar();
+  const grid=$('#year-grid'),wrap=$('.calendar-wrap'),cell=grid.querySelector('[data-day]');
+  const box=grid.getBoundingClientRect(),rect=cell.getBoundingClientRect();
+  const gap=parseFloat(getComputedStyle(grid).columnGap);
+  const timeline=$('#satellite-timelines').getBoundingClientRect();
+  return {available:wrap.clientWidth,width:box.width,cellWidth:rect.width,cellHeight:rect.height,gap,
+    columns:yearGridColumns(year),timelineWidth:timeline.width,timelineLeft:timeline.left,timelineRight:timeline.right,
+    gridLeft:box.left,gridRight:box.right,
+    axisLeft:$('.calendar-axis').getBoundingClientRect().left,sidebarRight:$('.sidebar').getBoundingClientRect().right,
+    scroll:document.documentElement.scrollWidth,viewport:innerWidth};
+};
+bind();
 window.styleFixtureReady = true;
 `;
 const assets = new Map();
@@ -93,7 +122,7 @@ try {
   driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
   await driver.manage().setTimeouts({pageLoad:15000,script:15000});
   const cases = [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['calendar-view','era5'],['sources-view','year'],['downloads-view','year'],['sync-view','year'],['monitor-view','year'],['cli-view','year'],['access-view','year'],['access-view','form']];
-  for (const width of [390,1440]) {
+  for (const width of [320,390,1440,1920]) {
     await driver.manage().window().setRect({width,height:900});
     await driver.get(base+'/login');
     const loginSize = await driver.executeScript('return document.querySelector(".login-card").getBoundingClientRect().width');
@@ -104,6 +133,23 @@ try {
     await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
     const timelineStability = await driver.executeScript('return window.coverageTimelineStability()');
     assert.equal(timelineStability.limitedTop,timelineStability.supportedTop,'coverage capability changed timeline vertical position');
+    for (const [source,product,supported] of [['goes18','ABI-L1b-RadF',true],['goes18','GLM-L2-LCFA',false],
+      ['himawari9','AHI-L1b-FLDK',true],['earthcare','ACM_CAP_2B',false],['cloudsat','2B-GEOPROF',false],
+      ['modis','MOD021KM',false],['viirs','VNP02MOD',false],['mtg','FCI-L1c',true]]) {
+      for (const year of [2026,2000]) {
+        const size=await driver.executeScript('return window.calendarSizingFixture(...arguments)',source,product,supported,year);
+        assert.ok(Math.abs(size.cellWidth-size.cellHeight)<.1,product+' cells not square');
+        assert.ok(Math.abs(size.cellWidth-size.gap*4)<.1,product+' spacing not proportional');
+        assert.ok(size.scroll<=size.viewport+1,product+' year calendar overflows page');
+        assert.ok(size.axisLeft>=size.sidebarRight-.5,product+' weekday labels overlap sidebar');
+        if (size.available>=size.columns*12+(size.columns-1)*3) {
+          assert.ok(Math.abs(size.width-size.available)<1,product+' does not fill year width: '+JSON.stringify(size));
+          assert.ok(Math.abs(size.timelineWidth-size.width)<1,product+' year is not timeline section width');
+          assert.ok(Math.abs(size.timelineRight-size.gridRight)<1,product+' year/timeline right edges differ');
+          assert.ok(Math.abs(size.timelineLeft-size.gridLeft)<1,product+' year/timeline left edges differ');
+        } else assert.ok(size.cellWidth>=11.9,product+' mobile cells became unreadable');
+      }
+    }
     for (const [view,mode] of cases) {
       await driver.executeScript('window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
       const metrics = await driver.executeScript(`
@@ -116,7 +162,43 @@ try {
       `);
       assert.ok(metrics.scroll<=metrics.width+1,view+' '+mode+' overflows: '+JSON.stringify(metrics));
       assert.deepEqual(metrics.bad,[],view+' has collapsed controls');
-      if (['month','era5','form'].includes(mode)||view==='monitor-view') {
+      if (view === 'downloads-view') {
+        const initial = await driver.executeScript(`const $=selector=>document.querySelector(selector);return {
+          task:$('#download-timezone').value,monitor:$('#download-monitor-timezone').value,
+          request:$('#download-requests').textContent,
+          axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)
+        }`);
+        assert.equal(initial.task, 'UTC');
+        assert.equal(initial.monitor, 'BJT');
+        assert.match(initial.request, /2026-12-31 20:00 UTC/);
+        assert.ok(initial.axis.length === 2 && initial.axis.every(value => value.endsWith(' BJT')));
+        const changed = await driver.executeScript(`
+          const $=selector=>document.querySelector(selector);
+          $('#download-timezone').value='BJT';
+          $('#download-timezone').dispatchEvent(new Event('change'));
+          return {request:$('#download-requests').textContent,
+            label:$('#dl-start-label').textContent,
+            axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)};
+        `);
+        assert.match(changed.request, /2027-01-01 04:00 BJT/);
+        assert.equal(changed.label, '开始日期（BJT）');
+        assert.deepEqual(changed.axis, initial.axis);
+        const monitorChanged = await driver.executeScript(`
+          const $=selector=>document.querySelector(selector);
+          $('#download-monitor-timezone').value='UTC';
+          $('#download-monitor-timezone').dispatchEvent(new Event('change'));
+          return {request:$('#download-requests').textContent,
+            axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)};
+        `);
+        assert.equal(monitorChanged.request, changed.request);
+        assert.ok(monitorChanged.axis.every(value => value.endsWith(' UTC')));
+        await driver.executeScript(`
+          for(const [id,value] of [['download-timezone','UTC'],['download-monitor-timezone','BJT']]) {
+            const node=document.getElementById(id);node.value=value;node.dispatchEvent(new Event('change'));
+          }
+        `);
+      }
+      if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
       }
       console.log('Layout OK:',width,view,mode);

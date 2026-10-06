@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=17">
+  <link rel="stylesheet" href="/styles.css?v=18">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -113,11 +113,13 @@
             <div class="timeline-heading"><strong>卫星任务时间轴</strong><span>历史归档 / 持续运行</span></div>
             <div id="satellite-timeline-rows" class="satellite-timeline-rows"></div>
           </section>
-          <div class="calendar-axis" aria-hidden="true">
-            <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
-          </div>
-          <div class="calendar-wrap">
-            <div id="year-grid" class="year-grid placeholder-grid" aria-label="年度数据日历"></div>
+          <div class="year-calendar">
+            <div class="calendar-axis" aria-hidden="true">
+              <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+            </div>
+            <div class="calendar-wrap">
+              <div id="year-grid" class="year-grid placeholder-grid" aria-label="年度数据日历"></div>
+            </div>
           </div>
         </div>
         <div id="calendar-help" class="calendar-help">年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。</div>
@@ -164,7 +166,7 @@
     </section>
 
     <section class="view" id="downloads-view">
-      <header class="simple-header"><div><div class="brand">下载任务</div><div class="subbrand">队列、速度、重试和归档状态</div></div><button id="refresh-downloads" type="button">刷新</button></header>
+      <header class="simple-header"><div><div class="brand">下载任务</div><div class="subbrand">队列、速度、重试和归档状态</div></div><div class="download-head-actions"><label>任务时区<select id="download-timezone" aria-label="下载任务时区"><option value="UTC">UTC</option><option value="BJT">BJT</option></select></label><button id="refresh-downloads" type="button">刷新</button></div></header>
       <section class="download-section">
         <h2>提交下载</h2>
         <form id="download-submit-form" class="download-submit-form">
@@ -176,10 +178,10 @@
           <label>产品<select id="dl-product" required></select></label>
           <label>分辨率<select id="dl-resolution"></select></label>
           <label>波段<select id="dl-band"></select></label>
-          <label>开始日期（UTC）<input id="dl-start" type="date" required></label>
-          <label>结束日期（UTC，含当天）<input id="dl-end" type="date" required></label>
-          <label>时次（UTC）<select id="dl-time-mode"><option value="all">全部时次</option><option value="hourly">每小时整点</option><option value="synoptic">00 / 06 / 12 / 18</option><option value="custom">自定义</option></select></label>
-          <label id="dl-custom-field" class="hidden">自定义时次（HH:MM）<input id="dl-custom" placeholder="00:00, 12:00"></label>
+          <label><span id="dl-start-label">开始日期（UTC）</span><input id="dl-start" type="date" required></label>
+          <label><span id="dl-end-label">结束日期（UTC，含当天）</span><input id="dl-end" type="date" required></label>
+          <label><span id="dl-time-label">时次（UTC）</span><select id="dl-time-mode"><option value="all">全部时次</option><option value="hourly">每小时整点</option><option value="synoptic">00 / 06 / 12 / 18</option><option value="custom">自定义</option></select></label>
+          <label id="dl-custom-field" class="hidden"><span id="dl-custom-label">自定义时次（UTC，HH:MM）</span><input id="dl-custom" placeholder="00:00, 12:00"></label>
           <div class="download-submit-actions"><button id="dl-submit" type="submit">提交下载</button><span id="dl-submit-status" role="status"></span></div>
         </form>
       </section>
@@ -188,6 +190,7 @@
         <div class="download-monitor-head">
           <h2>传输监控</h2>
           <div class="download-monitor-controls">
+            <label>时区 <select id="download-monitor-timezone" aria-label="传输监控时区"><option value="UTC">UTC</option><option value="BJT" selected>BJT</option></select></label>
             <label>Provider <select id="download-monitor-provider" aria-label="监控 Provider"><option value="all">全部 Provider</option></select></label>
             <div id="download-monitor-windows" class="download-monitor-windows" role="group" aria-label="下载监控时间窗口">
               <button type="button" data-download-window="realtime">实时</button>
@@ -343,6 +346,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=24"></script>
+  <script type="module" src="/app.js?v=25"></script>
 </body>
 </html>

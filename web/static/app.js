@@ -32,9 +32,11 @@ const state = {
     poll: 0,
   },
   downloads: {
+    displayZone: storedDisplayZone('satellite-data-download-zone', 'UTC'),
     poll: 0, pollSeq: 0, catalog: [], source: '', loading: 0,
     cursor: '', requests: [], providers: [], stream: null,
     history: {
+      displayZone: storedDisplayZone('satellite-data-download-monitor-zone', 'BJT'),
       window: localStorage.getItem('satellite-data-download-window') || '1h',
       selected: localStorage.getItem('satellite-data-download-provider') || 'all',
       payload: null, loadedAt: 0, chartKey: '',
@@ -46,6 +48,10 @@ const state = {
 
 const SIDEBAR_KEY = 'satellite-data-sidebar-expanded';
 const FILTER_KEY = 'satellite-data-filters-v1';
+function storedDisplayZone(key, fallback) {
+  const zone = localStorage.getItem(key);
+  return zone === 'UTC' || zone === 'BJT' ? zone : fallback;
+}
 const tierLabels = {anonymous: '匿名直连', token: '登录 / Token', special: '特殊访问'};
 const statusLabels = {
   complete: '全部时次完整',
@@ -507,6 +513,23 @@ async function refreshERA5() {
   }
 }
 
+function yearGridColumns(year) {
+  const start = new Date(Date.UTC(year, 0, 1));
+  const days = (Date.UTC(year + 1, 0, 1) - start.getTime()) / 86400000;
+  return Math.ceil((start.getUTCDay() + days) / 7);
+}
+
+function fitYearCalendar() {
+  const width = $('.calendar-wrap').clientWidth;
+  if (!(width > 0)) return;
+  const columns = yearGridColumns(Number(yearEl.value || defaultYear()));
+  // Keep square cells and the original 4:1 cell/gap ratio. Narrow screens scroll.
+  const cell = Math.max(12, width / (columns + (columns - 1) / 4));
+  const layout = $('#year-layout');
+  layout.style.setProperty('--cell', cell.toFixed(4) + 'px');
+  layout.style.setProperty('--gap', (cell / 4).toFixed(4) + 'px');
+}
+
 function renderCalendar() {
   if (state.coverage.supported) {
     renderCoverageYear();
@@ -542,6 +565,7 @@ function renderCalendar() {
     });
     gridEl.append(cell);
   }
+  fitYearCalendar();
 }
 
 function bandCoverageSupported(product) {
@@ -751,6 +775,7 @@ function renderCoverageYear() {
     fragment.append(cell);
   }
   gridEl.replaceChildren(fragment);
+  fitYearCalendar();
 }
 
 function updateCell(day) {
@@ -1666,6 +1691,7 @@ function refreshDownloadFilters(changed = 'source') {
 
 async function loadDownloadCatalog() {
   const source = $('#dl-source').value;
+  syncDownloadTimezones();
   const ticket = ++state.downloads.loading;
   state.downloads.catalog = [];
   $('#dl-submit-status').textContent = '';
@@ -1690,14 +1716,61 @@ function initializeDownloadSubmit() {
   if (node.value && node.value !== state.downloads.source) loadDownloadCatalog();
 }
 
+function downloadInputZone() {
+  // CDS orders require whole UTC dates, regardless of the list display zone.
+  return $('#dl-source').value === 'era5' ? 'UTC' : state.downloads.displayZone;
+}
+
 function downloadTimes() {
   const mode = $('#dl-time-mode').value;
   if (mode === 'all') return [];
-  if (mode === 'hourly') return Array.from({length: 24}, (_, hour) => `${String(hour).padStart(2, '0')}:00`);
-  if (mode === 'synoptic') return ['00:00', '06:00', '12:00', '18:00'];
-  const times = $('#dl-custom').value.split(/[\s,，;；]+/).filter(Boolean);
+  const times = mode === 'hourly' ? Array.from({length: 24}, (_, hour) => `${String(hour).padStart(2, '0')}:00`)
+    : mode === 'synoptic' ? ['00:00', '06:00', '12:00', '18:00']
+    : $('#dl-custom').value.split(/[\s,，;；]+/).filter(Boolean);
   if (!times.length || times.some(value => !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value))) throw new Error('自定义时次须为 HH:MM，至少填一个');
-  return [...new Set(times)].sort();
+  return [...new Set(times.map(value => {
+    if (downloadInputZone() !== 'BJT') return value;
+    const hour = (Number(value.slice(0, 2)) + 16) % 24;
+    return String(hour).padStart(2, '0') + value.slice(2);
+  }))].sort();
+}
+
+function downloadRange(start, end) {
+  const validDay = day => /^\d{4}-\d{2}-\d{2}$/.test(day) &&
+    Number.isFinite(Date.parse(day + 'T00:00:00Z')) && new Date(day + 'T00:00:00Z').toISOString().slice(0, 10) === day;
+  if (!validDay(start) || !validDay(end)) throw new Error('请选择有效的开始和结束日期');
+  if (end < start) throw new Error('结束日期不能早于开始日期');
+  const offset = downloadInputZone() === 'BJT' ? '+08:00' : 'Z';
+  const nextDay = new Date(end + 'T00:00:00' + offset);
+  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+  return {start: new Date(start + 'T00:00:00' + offset).toISOString(), end: nextDay.toISOString()};
+}
+
+function syncDownloadTimezones() {
+  const zone = downloadInputZone();
+  $('#download-timezone').value = state.downloads.displayZone;
+  $('#download-monitor-timezone').value = state.downloads.history.displayZone;
+  $('#dl-start-label').textContent = `开始日期（${zone}）`;
+  $('#dl-end-label').textContent = `结束日期（${zone}，含当天）`;
+  $('#dl-time-label').textContent = `时次（${zone}）`;
+  $('#dl-custom-label').textContent = `自定义时次（${zone}，HH:MM）`;
+}
+
+function setDownloadTimezone(zone) {
+  if (zone !== 'UTC' && zone !== 'BJT') return;
+  state.downloads.displayZone = zone;
+  localStorage.setItem('satellite-data-download-zone', zone);
+  syncDownloadTimezones();
+  renderDownloadRequests(state.downloads.requests);
+}
+
+function setDownloadMonitorTimezone(zone) {
+  if (zone !== 'UTC' && zone !== 'BJT') return;
+  state.downloads.history.displayZone = zone;
+  localStorage.setItem('satellite-data-download-monitor-zone', zone);
+  state.downloads.history.chartKey = '';
+  syncDownloadTimezones();
+  renderDownloadMonitor(state.downloads.providers, state.downloads.providers.length > 0 && !state.downloads.providerError);
 }
 
 async function submitDownload(event) {
@@ -1705,19 +1778,18 @@ async function submitDownload(event) {
   const status = $('#dl-submit-status'), button = $('#dl-submit');
   const product = state.downloads.catalog.find(item => item.product_key === $('#dl-product').value);
   if (!product || product.source_id !== $('#dl-source').value) { status.textContent = '请选择产品'; return; }
-  const start = $('#dl-start').value, end = $('#dl-end').value;
-  if (end < start) { status.textContent = '结束日期不能早于开始日期'; return; }
-  let times;
-  try { times = downloadTimes(); } catch (error) { status.textContent = error.message; return; }
-  const nextDay = new Date(end + 'T00:00:00Z');
-  nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+  let range, times;
+  try {
+    range = downloadRange($('#dl-start').value, $('#dl-end').value);
+    times = downloadTimes();
+  } catch (error) { status.textContent = error.message; return; }
   button.disabled = true;
   status.textContent = '正在提交…';
   try {
     const payload = await json('/api/v1/downloads', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({source: product.source_id, collection: product.product_key, start,
-        end: nextDay.toISOString().slice(0, 10), band: Number($('#dl-band').value) || 0, times}),
+      body: JSON.stringify({source: product.source_id, collection: product.product_key, ...range,
+        band: Number($('#dl-band').value) || 0, times}),
     });
     status.textContent = '已提交 #' + payload.download.id;
     loadDownloads(true);
@@ -1749,11 +1821,16 @@ function downloadHistoryPoints(payload, source) {
   return [...buckets.values()].sort((a, b) => a.sampled_at.localeCompare(b.sampled_at));
 }
 
-function downloadMonitorTime(timestamp) {
+function downloadTimestamp(timestamp, zone, includeYear = true) {
+  if (timestamp == null || timestamp === '') return '—';
   const date = new Date(timestamp);
   if (!Number.isFinite(date.getTime())) return '—';
-  if (state.displayZone === 'BJT') date.setUTCHours(date.getUTCHours() + 8);
-  return date.toISOString().slice(5, 16).replace('T', ' ') + ' ' + state.displayZone;
+  if (zone === 'BJT') date.setUTCHours(date.getUTCHours() + 8);
+  return date.toISOString().slice(includeYear ? 0 : 5, 16).replace('T', ' ') + ' ' + zone;
+}
+
+function downloadMonitorTime(timestamp) {
+  return downloadTimestamp(timestamp, state.downloads.history.displayZone, false);
 }
 
 function drawDownloadChart(id, points, metric, bucketSeconds, windowName) {
@@ -1835,7 +1912,7 @@ function renderDownloadMonitor(statuses, liveAvailable) {
   const last = Math.max(0, ...samples.map(item => new Date(item.latest?.sampled_at).getTime() || 0));
   const age = Date.now() - last;
   $('#download-kpi-sampled').textContent = !last ? '等待样本' : age > 45_000 ? '采样中断' : downloadMonitorTime(last);
-  const chartKey = `${history.window}|${history.selected}|${history.payload?.generated_at || ''}`;
+  const chartKey = `${history.window}|${history.selected}|${history.displayZone}|${history.payload?.generated_at || ''}`;
   if (history.chartKey !== chartKey) {
     const points = downloadHistoryPoints(history.payload, history.selected);
     drawDownloadChart('download-chart-rate', points, 'rate', Number(history.payload?.bucket_seconds) || 15, history.window);
@@ -1924,7 +2001,7 @@ function renderDownloadRequests(items) {
   $('#download-requests').innerHTML = items.map(item => '<div class="download-request">' +
     '<strong>#' + esc(item.id) + ' · ' + esc(item.collection_id) + '</strong>' +
     '<span>' + esc(downloadStates[item.state] || item.state) + ' · ' + esc(item.files_done) + '/' + esc(item.assets_queued) + ' 文件</span>' +
-    '<span>' + esc(String(item.start).slice(0, 16)) + ' - ' + esc(String(item.end).slice(0, 16)) + ' UTC · ' +
+    '<span>' + esc(downloadTimestamp(item.start, state.downloads.displayZone)) + ' - ' + esc(downloadTimestamp(item.end, state.downloads.displayZone)) + ' · ' +
     esc(item.band ? `C${String(item.band).padStart(2, '0')}` : '全波段') + ' · ' +
     esc(item.times_count ? item.times_count + ' 时次/天' : '全部时次') + '</span>' +
     (item.last_error ? '<small title="' + esc(item.last_error) + '">' + esc(item.last_error) + '</small>' : '') +
@@ -2439,6 +2516,8 @@ async function health() {
 }
 
 function bind() {
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitYearCalendar).observe($('.calendar-wrap'));
+  else window.addEventListener('resize', fitYearCalendar);
   $('.sidebar-toggle').addEventListener('click', () => setSidebar(document.body.classList.contains('sidebar-collapsed'), true));
   document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', event => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -2473,7 +2552,6 @@ function bind() {
     renderCalendar();
     if (state.coverage.supported && state.coverage.view === 'day') renderCoverageDay();
     if (state.monitor.payload) renderMonitor();
-    state.downloads.history.chartKey = '';
   });
   $('#reset-filters').addEventListener('click', resetFilters);
   $('#query-month').addEventListener('click', queryMonth);
@@ -2553,6 +2631,8 @@ function bind() {
   $('#era5-refresh').addEventListener('click', refreshERA5);
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
   $('#refresh-downloads').addEventListener('click', () => loadDownloads(true, true));
+  $('#download-timezone').addEventListener('change', event => setDownloadTimezone(event.target.value));
+  $('#download-monitor-timezone').addEventListener('change', event => setDownloadMonitorTimezone(event.target.value));
   $('#download-monitor-provider').addEventListener('change', event => {
     state.downloads.history.selected = event.target.value;
     localStorage.setItem('satellite-data-download-provider', event.target.value);
@@ -2635,6 +2715,7 @@ async function boot() {
   const saved = readFilters();
   if (saved.timezone === 'UTC' || saved.timezone === 'BJT') state.displayZone = saved.timezone;
   timezoneEl.value = state.displayZone;
+  syncDownloadTimezones();
   fillYears();
   fillMonths();
   bind();
