@@ -90,8 +90,15 @@ main{width:min(1180px,100%);min-width:0;margin:0 auto;padding:28px 24px 60px}
 .c[data-day]:hover{outline:2px solid #57606a;outline-offset:1px}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.42}}
 .calendar-card{padding:11px 0 8px;border-top:1px solid #d8dee4}
+#calendar-view{width:100%;max-width:none;font-size:14px}
 #calendar-view>.calendar-card{width:100%;max-width:none;margin-inline:auto}
-@media(min-width:1200px){#calendar-view>.calendar-card{position:relative;left:50%;width:min(1770px,calc(100vw - var(--sidebar-width) - 48px));margin-inline:0;transform:translateX(-50%)}}
+#calendar-view .subbrand,#calendar-view .legend,#calendar-view .product-meta,#calendar-view .calendar-help,#calendar-view #coverage-status{font-size:12px}
+#calendar-view .product-title{font-size:13px}
+#calendar-view .timeline-heading{font-size:11px}
+#calendar-view .timeline-heading strong,#calendar-view .timeline-name{font-size:12px}
+#calendar-view .timeline-dates,#calendar-view .timeline-status{font-size:11px}
+#calendar-view .calendar-axis{font-size:10px}
+@media(min-width:1200px){#calendar-view{position:relative;left:50%;width:min(1770px,calc(100vw - var(--sidebar-width) - 48px));transform:translateX(-50%)}}
 .satellite-timelines{padding:5px 0 12px;margin-bottom:11px;border-bottom:1px solid var(--line)}
 .cli-key-manager{margin-top:18px;padding-top:12px;border-top:1px solid var(--line)}
 .cli-key-form,.cli-key-new{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin:10px 0}
