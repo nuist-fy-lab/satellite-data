@@ -81,7 +81,7 @@ window.coverageTimelineStability = function() {
   const limitedTop = timeline.getBoundingClientRect().top;
   return {supportedTop, limitedTop};
 };
-window.calendarSizingFixture = function(source, product, supported, year) {
+window.calendarSizingFixture = async function(source, product, supported, year) {
   state.selected = {id:source+':'+product,source_id:source,product,satellite:source,cadence:'10m',metadata:{}};
   state.collections = [state.selected];
   state.coverage.supported = supported;
@@ -90,6 +90,8 @@ window.calendarSizingFixture = function(source, product, supported, year) {
   yearEl.replaceChildren(new Option(String(year),String(year)));
   renderCoverageShell();
   renderSatelliteTimelines();renderCalendar();
+  // Resizing square year cells can change the scrollbar before ResizeObserver runs.
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   const grid=$('#year-grid'),wrap=$('.calendar-wrap'),cell=grid.querySelector('[data-day]');
   const box=grid.getBoundingClientRect(),rect=cell.getBoundingClientRect();
   const gap=parseFloat(getComputedStyle(grid).columnGap);
