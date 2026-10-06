@@ -28,6 +28,7 @@ jobs:
         run: |
           node --check web/static/app.js
           node --check web/static/login.js
+          node --check web/pagespeed-audit.mjs
       - name: Test request controls and timezones without a browser
         run: node --test web/era5.test.mjs web/download-timezones.test.mjs
       - name: Test historical EarthCARE verification controls
@@ -123,3 +124,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash deploy/publish-ci-release.sh
+
+  public-lighthouse:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Audit public entry through Google cloud Lighthouse
+        id: pagespeed
+        continue-on-error: true
+        run: node web/pagespeed-audit.mjs
+      - name: Publish auditable results beside tested PR artifacts
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          tag="ci-pr-${PR_NUMBER}-${SOURCE_SHA:0:12}"
+          gh release upload "$tag" dist/audit/*.json --repo "$GITHUB_REPOSITORY"
