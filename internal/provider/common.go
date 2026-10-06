@@ -33,7 +33,7 @@ func ProductMetadata(product string) (instrument, level string) {
 	}
 	for _, part := range parts {
 		upper := strings.ToUpper(part)
-		if strings.HasPrefix(upper, "L1") || strings.HasPrefix(upper, "L2") || strings.HasPrefix(upper, "L3") {
+		if strings.HasPrefix(upper, "L") && processingLevel.MatchString(part) {
 			level = part
 			break
 		}

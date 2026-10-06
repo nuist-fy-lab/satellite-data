@@ -9,7 +9,7 @@ const firefox = require('selenium-webdriver/firefox');
 const app = (await readFile(new URL('./static/app.js', import.meta.url), 'utf8')).replace(/\nboot\(\);\s*$/, '\n');
 // Synthetic data exercises the real renderers without accounts or upstream APIs.
 const fixture = `
-window.styleFixture = function(view, mode, wide) {
+window.styleFixture = async function(view, mode, wide) {
   stopIndexStream(); state.satelliteYears.clear();
   $('#satellite-year-calendars').replaceChildren(); $('#year-product-heading').classList.add('hidden');
   setView(view);
@@ -33,6 +33,8 @@ window.styleFixture = function(view, mode, wide) {
   satelliteEl.replaceChildren(new Option('GOES-18','GOES-18'));
   instrumentEl.replaceChildren(new Option('ABI','ABI'));
   levelEl.replaceChildren(new Option('L1b','L1b'));
+  fillMetadataSelect(areaEl,state.collections,'area_type');
+  fillMetadataSelect(resolutionEl,state.collections,'resolution');
   productEl.replaceChildren(new Option('ABI-L1b-RadF','goes18:ABI-L1b-RadF'));
   const totals = bands.map(band => [band,144,band===6?24:0,24,band===6?24:0,0,0,0,0,0,0]);
   const hours = Array.from({length:24}, (_, hour) => [hour,16,1,0,0,0]);
@@ -67,13 +69,48 @@ window.styleFixture = function(view, mode, wide) {
   renderDownloadRequests(state.downloads.requests);
   renderDownloadProviders(state.downloads.providers, true);
   if (mode === 'form') openPoolForm('account', state.access.accounts[0]);
-  if (mode === 'era5') {
-    $('#era5-panel').classList.remove('hidden');
-    $('#coverage-tools').classList.add('hidden');
-    $('#year-layout').classList.add('hidden');
-    $('#day-coverage').classList.add('hidden');
+  if (view === 'era5-view') {
+    const download=mode==='download';
+    document.querySelectorAll('[data-era5-tab]').forEach(node=>{node.classList.toggle('active',node.dataset.era5Tab===(download?'download':'inventory'));node.setAttribute('aria-selected',String(node.classList.contains('active')));});
+    $('#era5-panel').classList.toggle('hidden',!download);
+    $('#era5-inventory-panel').classList.toggle('hidden',download);
+    $('#era5-dataset').replaceChildren(new Option('ERA5 hourly pressure levels','era5:pressure'));
+    $('#era5-pressure').replaceChildren(new Option('850','850'),new Option('500','500'));
+    $('#era5-pressure-field').classList.remove('hidden');
+    $('#era5-status').textContent='';
+    $('#era5-date').value='2024-01-01';
     $('#era5-variables').replaceChildren(new Option('2m_temperature','2m_temperature'),new Option('total_precipitation','total_precipitation'));
   }
+  if (view === 'catalog-view') {
+    const sources=mode==='sources';
+    $('#catalog-products-panel').classList.toggle('hidden',sources);
+    $('#catalog-sources-panel').classList.toggle('hidden',!sources);
+    $('.catalog-search').classList.toggle('hidden',sources);
+  }
+  // The sidebar animates for 180ms; measure only after its layout settles.
+  await new Promise(resolve=>setTimeout(resolve,250));
+};
+window.inventoryFixture = async function() {
+  const module=await import('/era5-inventory.js');
+  const files=[{dataset:'era5:reanalysis-era5-single-levels',name:'temperature_january.nc',bytes:25171,verified:true,state:'ok',start:'2024-01-01T00:00:00Z',end:'2024-02-01T00:00:00Z',variables:['2m_temperature','total_precipitation'],levels:[],times:['00:00','12:00'],area:[32.25,118.5,32,118.75]},
+    {dataset:'era5:reanalysis-era5-pressure-levels',name:'pressure.nc',bytes:65536,verified:true,state:'ok',start:'2024-02-01T00:00:00Z',end:'2024-03-01T00:00:00Z',variables:['temperature'],levels:['850','500'],times:['00:00'],area:[90,-180,-90,180]},
+    {dataset:'era5:unclassified',name:'historical_unclassified.nc',bytes:128,verified:false,state:'ok',start:'',end:'',variables:[],levels:[],times:[],area:[]}];
+  module.initialize({files,unverified_files:1,scanned_at:'2026-10-06T10:00:00Z'});
+  document.querySelector('.inventory-month.has-data[data-dataset="era5:reanalysis-era5-single-levels"][data-month="0"]').click();
+  await new Promise(resolve=>requestAnimationFrame(resolve));
+  return {datasets:document.querySelectorAll('.inventory-dataset').length,months:document.querySelectorAll('.inventory-month.has-data').length,
+    details:$('#era5-inventory-detail').textContent,status:$('#era5-inventory-status').textContent};
+};
+window.catalogFixture = async function() {
+  const module=await import('/catalog.js');
+  $('#catalog-search').value='';
+  const products=[{product_key:'goes18:ABI-L1b-RadF',source_id:'goes18',satellite:'GOES-18',instrument:'ABI',level:'L1B',data_type:'ABI-L1b-RadF',display_name:'ABI Full Disk Radiance',resolution:'0.5 / 1 / 2 km',version:'',official_id:'ABI-L1b-RadF',area_type:'DISK',cadence:'10m',metadata:{official_product_url:'https://storage.googleapis.com/storage/v1/b/gcp-public-data-goes-18/o?prefix=ABI-L1b-RadF',version_status:'per_file'}},
+    {product_key:'earthcare:validated:ACM_CAP_2B',source_id:'earthcare',satellite:'EarthCARE',instrument:'Synergy',level:'L2B',data_type:'ACM_CAP_2B',display_name:'Cloud aerosol precipitation synergy product',version:'4.0',official_id:'ACM_CAP_2B',metadata:{official_product_url:'https://catalog.maap.eo.esa.int/catalogue/collections?identifier=EarthCAREL2Validated_MAAP',access_class:'open'}}];
+  module.initialize(products);
+  document.querySelector('.catalog-product').open=true;
+  await new Promise(resolve=>requestAnimationFrame(resolve));
+  return {satellites:document.querySelectorAll('.catalog-satellite').length,products:document.querySelectorAll('.catalog-product').length,
+    link:document.querySelector('.catalog-product-links a').href};
 };
 window.coverageTimelineStability = function() {
   const timeline = document.querySelector('#satellite-timelines');
@@ -106,7 +143,7 @@ window.calendarSizingFixture = async function(source, product, supported, year) 
     scroll:document.documentElement.scrollWidth,viewport:innerWidth};
 };
 window.calendarIndexFixture = async function(mode, wide) {
-  window.styleFixture('calendar-view','day',wide);
+  await window.styleFixture('calendar-view','day',wide);
   yearEl.replaceChildren(new Option('2025','2025'));
   Object.assign(state.coverage,{bands:[2,6,7,14],day:'2025-06-09',hour:-1});
   state.selected = {id:'goes18:ABI-L1b-RadC',source_id:'goes18',product:'ABI-L1b-RadC',cadence:'5m',metadata:{}};
@@ -174,6 +211,8 @@ window.satelliteCalendarsFixture = async function() {
   state.selected = state.collections[1]; state.coverage.supported = false;
   satelliteEl.replaceChildren(new Option('全部卫星',''),new Option('GOES-18','GOES-18'));
   instrumentEl.replaceChildren(new Option('全部传感器',''));levelEl.replaceChildren(new Option('全部级别',''));
+  fillMetadataSelect(areaEl,state.collections,'area_type');
+  fillMetadataSelect(resolutionEl,state.collections,'resolution');
   state.dayState = new Map([['2025-01-01',{day:'2025-01-01',status:'complete'}]]);
   yearEl.replaceChildren(new Option('2025','2025'));
   state.satelliteYears = new Map([state.collections[0],state.collections[2]].map((product,index)=>[product.id,
@@ -181,7 +220,7 @@ window.satelliteCalendarsFixture = async function() {
   renderCoverageShell();renderCalendar();renderSatelliteTimelines();
   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   const grids = [...document.querySelectorAll('#year-layout .year-grid')];
-  return {count:grids.length,statuses:grids.map(grid=>grid.querySelector('[data-day="2025-01-01"]').dataset.status),
+  return {count:grids.length,matchingProducts:filteredCollections(5).length,statuses:grids.map(grid=>grid.querySelector('[data-day="2025-01-01"]').dataset.status),
     widths:grids.map(grid=>grid.getBoundingClientRect().width),labels:[...document.querySelectorAll('.year-product-heading')].map(node=>node.textContent),
     scroll:document.documentElement.scrollWidth,viewport:innerWidth,
     headingFits:[...document.querySelectorAll('.year-product-heading')].every(node=>node.scrollWidth<=node.clientWidth)};
@@ -204,13 +243,13 @@ bind();
 window.styleFixtureReady = true;
 `;
 const assets = new Map();
-for (const file of ['index.html','login.html','styles.css','login.js']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
+for (const file of ['index.html','login.html','styles.css','login.js','catalog.js','era5-inventory.js','icons.svg']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
 assets.set('app.js', Buffer.from(app+fixture));
 const server = createServer((req, res) => {
   const path = new URL(req.url,'http://localhost').pathname;
   const file = path==='/'?'index.html':path==='/login'?'login.html':path.slice(1);
   if (!assets.has(file)) {res.writeHead(404);res.end();return;}
-  res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html');
+  res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':file.endsWith('.svg')?'image/svg+xml':'text/html');
   res.end(assets.get(file));
 });
 await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
@@ -222,7 +261,7 @@ try {
   if (process.env.FIREFOX_BIN) options.setBinary(process.env.FIREFOX_BIN);
   driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
   await driver.manage().setTimeouts({pageLoad:15000,script:15000});
-  const cases = [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['calendar-view','era5'],['sources-view','year'],['downloads-view','year'],['sync-view','year'],['monitor-view','year'],['cli-view','year'],['access-view','year'],['access-view','form']];
+  const cases = [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['era5-view','inventory'],['era5-view','download'],['catalog-view','products'],['catalog-view','sources'],['downloads-view','year'],['monitor-view','year'],['access-view','year'],['access-view','form']];
   for (const width of [320,390,1440,1920,2560]) {
     await driver.manage().window().setRect({width,height:900});
     await driver.get(base+'/login');
@@ -231,7 +270,7 @@ try {
     await writeFile('dist/visual/login-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     await driver.get(base);
     await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
-    await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
+    await driver.executeScript('return window.styleFixture("calendar-view","year",arguments[0])',width>820);
     const calendarCardSizing = await driver.executeScript(`
       const view=document.querySelector("#calendar-view");
       const header=view.querySelector(".page-header");
@@ -240,11 +279,11 @@ try {
       return {width:vb.width,headerWidth:hb.width,cardWidth:cb.width,
         left:vb.left,headerLeft:hb.left,cardLeft:cb.left,
         right:vb.right,headerRight:hb.right,cardRight:cb.right,
-        fontSize:parseFloat(getComputedStyle(view).fontSize),viewport:innerWidth,
+        fontSize:parseFloat(getComputedStyle(view).fontSize),viewport:innerWidth,contentWidth:document.documentElement.clientWidth,
         sidebar:parseFloat(getComputedStyle(document.body).getPropertyValue("--sidebar-width"))||0};
     `);
     if (calendarCardSizing.viewport >= 1200) {
-      const expected=Math.min(1600,calendarCardSizing.viewport-calendarCardSizing.sidebar-48);
+      const expected=Math.min(1600,calendarCardSizing.contentWidth-calendarCardSizing.sidebar-48);
       assert.ok(Math.abs(calendarCardSizing.width-expected)<1,
         'calendar view wide layout mismatch: '+JSON.stringify({...calendarCardSizing,expected}));
       assert.ok(Math.abs(calendarCardSizing.headerWidth-calendarCardSizing.cardWidth)<1,
@@ -314,6 +353,7 @@ try {
       }
     }
     const satellites=await driver.executeScript('return window.satelliteCalendarsFixture()');
+    assert.equal(satellites.matchingProducts,3,'satellite fixture metadata filters exclude expected peers');
     assert.equal(satellites.count,3);
     assert.deepEqual(satellites.statuses,['complete','missing','partial']);
     assert.ok(satellites.labels[0].includes('GOES-18') && satellites.labels[1].includes('GOES-16') && satellites.labels[2].includes('GOES-19'));
@@ -322,7 +362,17 @@ try {
     assert.equal(satellites.headingFits,true,'satellite heading overflows');
     await writeFile('dist/visual/calendar-all-satellites-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     for (const [view,mode] of cases) {
-      await driver.executeScript('window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
+      await driver.executeScript('return window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
+      if(view==='era5-view') {
+        const inventory=await driver.executeScript('return window.inventoryFixture()');
+        assert.equal(inventory.datasets,3);assert.equal(inventory.months,2);
+        assert.match(inventory.details,/2m_temperature/);assert.match(inventory.status,/待核验/);
+      }
+      if(view==='catalog-view') {
+        const catalog=await driver.executeScript('return window.catalogFixture()');
+        assert.equal(catalog.satellites,2);assert.equal(catalog.products,1);
+        assert.ok(catalog.link.startsWith('https://storage.googleapis.com/'));
+      }
       const metrics = await driver.executeScript(`
         const bad = [];
         for (const node of document.querySelectorAll('.view.active button,.view.active input,.view.active select')) {
@@ -378,7 +428,7 @@ try {
   await driver.manage().window().setRect({width:2560,height:900});
   await driver.get(base);
   await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
-  await driver.executeScript('window.styleFixture("calendar-view","year",false)');
+  await driver.executeScript('return window.styleFixture("calendar-view","year",false)');
   const wideCalendar = await driver.executeScript(`
     const view=document.querySelector("#calendar-view").getBoundingClientRect();
     const header=document.querySelector("#calendar-view>.page-header").getBoundingClientRect();
@@ -403,7 +453,7 @@ try {
       await driver.manage().window().setRect({width:390,height:frame.height+height-contentHeight});
     }
     assert.equal(await driver.executeScript('return innerHeight'),height,'short-window content height was not set');
-    await driver.executeScript('window.styleFixture("calendar-view","year",false)');
+    await driver.executeScript('return window.styleFixture("calendar-view","year",false)');
     for (const expanded of [false,true]) {
       const footer=await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',expanded);
       assert.equal(footer.textLines,1,'short-window logout wrapped: '+JSON.stringify(footer));

@@ -107,6 +107,10 @@ CREATE TABLE IF NOT EXISTS local_files (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS local_files_filename_idx ON local_files(filename);
+CREATE TABLE IF NOT EXISTS local_file_origins (
+ path TEXT PRIMARY KEY,
+ source_id TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS local_slots (
   product_key TEXT NOT NULL,
@@ -298,6 +302,7 @@ type WorkBatch struct {
 }
 
 type LocalFile struct {
+	SourceID string
 	Path     string
 	Filename string
 	Size     int64
@@ -1124,6 +1129,13 @@ func (s *Store) ReplaceLocalFilesWithWarnings(ctx context.Context, files []Local
 		fingerprint, now); err != nil {
 		return false, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM local_file_origins WHERE NOT EXISTS(SELECT 1 FROM scanned_local_files n WHERE n.path=local_file_origins.path AND n.source_id<>'')`); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO local_file_origins(path,source_id) SELECT path,source_id FROM scanned_local_files WHERE source_id<>''
+ ON CONFLICT(path) DO UPDATE SET source_id=excluded.source_id`); err != nil {
+		return false, err
+	}
 	encodedSkipped, err := json.Marshal(skipped)
 	if err != nil {
 		return false, err
@@ -1149,7 +1161,7 @@ func stageLocalFiles(ctx context.Context, conn *sql.Conn, files []LocalFile) err
 	// the main writer lock while inserting tens of thousands of scan results.
 	if _, err := conn.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS scanned_local_files (
 		path TEXT PRIMARY KEY, filename TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
-		state TEXT NOT NULL, detail TEXT NOT NULL
+		state TEXT NOT NULL, detail TEXT NOT NULL, source_id TEXT NOT NULL
 	)`); err != nil {
 		return err
 	}
@@ -1160,7 +1172,7 @@ func stageLocalFiles(ctx context.Context, conn *sql.Conn, files []LocalFile) err
 	if _, err := conn.ExecContext(ctx, "DELETE FROM scanned_local_files"); err != nil {
 		return err
 	}
-	stmt, err := conn.PrepareContext(ctx, `INSERT INTO scanned_local_files(path,filename,size,mtime_ns,state,detail) VALUES(?,?,?,?,?,?)`)
+	stmt, err := conn.PrepareContext(ctx, `INSERT INTO scanned_local_files(path,filename,size,mtime_ns,state,detail,source_id) VALUES(?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -1169,7 +1181,7 @@ func stageLocalFiles(ctx context.Context, conn *sql.Conn, files []LocalFile) err
 		if file.State == "" {
 			file.State = "ok"
 		}
-		if _, err := stmt.ExecContext(ctx, file.Path, file.Filename, file.Size, file.MtimeNS, file.State, file.Detail); err != nil {
+		if _, err := stmt.ExecContext(ctx, file.Path, file.Filename, file.Size, file.MtimeNS, file.State, file.Detail, file.SourceID); err != nil {
 			return err
 		}
 	}

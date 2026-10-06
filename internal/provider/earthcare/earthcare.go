@@ -44,7 +44,6 @@ func (p *Provider) Source() model.Source {
 			model.CapabilityCatalog,
 			model.CapabilitySearch,
 			model.CapabilityDownload,
-			model.CapabilitySubscription,
 		},
 		Description: "STAC discovery is public. Data assets use the ESA MAAP authentication scheme; validated, Cal/Val and commissioning collections retain their source access class.",
 	}
@@ -122,13 +121,14 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 				Product:    productType,
 				Cadence:    "event",
 				Metadata: map[string]string{
-					"official_id":     productType,
-					"stac_collection": seriesID,
-					"product_type":    productType,
-					"title":           title + " · " + productType,
-					"series_title":    title,
-					"version_info":    propertyString(feature.Properties, "versionInfo"),
-					"access_class":    earthcareAccessClass(seriesID, title),
+					"official_id":                productType,
+					"stac_collection":            seriesID,
+					"product_type":               productType,
+					"official_documentation_url": earthcareDocumentation(feature.Properties, productType),
+					"title":                      title + " · " + productType,
+					"series_title":               title,
+					"version_info":               propertyString(feature.Properties, "versionInfo"),
+					"access_class":               earthcareAccessClass(seriesID, title),
 				},
 			})
 		}
@@ -142,6 +142,49 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 	p.catalog = out
 	p.catalogTime = time.Now()
 	return append([]model.Collection(nil), out...), nil
+}
+
+func earthcareDocumentation(properties map[string]any, productType string) string {
+	links, _ := properties["links"].(map[string]any)
+	described, _ := links["describedby"].([]any)
+	parts := strings.FieldsFunc(productType, func(c rune) bool { return c == '_' })
+	if len(parts) < 3 {
+		return ""
+	}
+	instrument := map[string]string{"ATL": "ATLID", "CPR": "CPR", "MSI": "MSI", "BBR": "BBR"}[parts[0]]
+	required := []string{}
+	if instrument != "" {
+		required = append(required, instrument)
+	} else {
+		for _, code := range parts[0] {
+			if name := map[rune]string{'A': "ATLID", 'C': "CPR", 'M': "MSI", 'B': "BBR"}[code]; name != "" {
+				required = append(required, name)
+			}
+		}
+	}
+	for _, entry := range described {
+		item, _ := entry.(map[string]any)
+		title := strings.ToUpper(propertyString(item, "title"))
+		if !strings.Contains(title, "PRODUCT DEFINITION") {
+			continue
+		}
+		if strings.HasPrefix(parts[len(parts)-1], "1") {
+			if instrument != "" && strings.Contains(title, instrument) && strings.Contains(title, "LEVEL 1") {
+				return propertyString(item, "href")
+			}
+		} else if strings.Contains(title, " "+parts[1]+" ") && strings.Contains(title, "LEVEL "+parts[len(parts)-1]) {
+			matched := len(required) > 0
+			for _, name := range required {
+				if !strings.Contains(title, name) {
+					matched = false
+				}
+			}
+			if matched {
+				return propertyString(item, "href")
+			}
+		}
+	}
+	return ""
 }
 
 type stacPage struct {
@@ -334,6 +377,10 @@ func earthcareProductTypes(properties map[string]any) []string {
 func earthcareInstrument(productType string) string {
 	upper := strings.ToUpper(productType)
 	switch {
+	case strings.HasPrefix(upper, "AUX_"):
+		return "Auxiliary"
+	case upper == "MPL_ORBSCT":
+		return "Orbit"
 	case strings.HasPrefix(upper, "ATL"):
 		return "ATLID"
 	case strings.HasPrefix(upper, "CPR"):

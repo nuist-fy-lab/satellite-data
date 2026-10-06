@@ -3,6 +3,8 @@ const sourceEl = $('#source');
 const satelliteEl = $('#satellite');
 const instrumentEl = $('#instrument');
 const levelEl = $('#level');
+const areaEl = $('#area');
+const resolutionEl = $('#resolution');
 const productEl = $('#product');
 const yearEl = $('#year');
 const monthEl = $('#month');
@@ -13,6 +15,8 @@ const detailEl = $('#day-detail');
 const state = {
   sources: [],
   collections: [],
+  catalogFamily: '',
+  catalogSeq: 0,
   selected: null,
   dayState: new Map(),
   coverage: {
@@ -28,7 +32,8 @@ const state = {
   indexConnection: 'connecting',
   yearPoll: 0,
   dayPoll: 0,
-  era5: {schema: null, seq: 0, submitting: false, checking: false},
+  era5: {catalog: [], selected: null, schema: null, seq: 0, catalogSeq: 0, submitting: false, checking: false, inventory: null, inventorySeq: 0},
+  encyclopedia: {catalog: [], loading: 0, module: null},
   monitor: {
     window: localStorage.getItem('satellite-data-monitor-window') || '1h',
     selected: localStorage.getItem('satellite-data-monitor-source') || 'earthcare',
@@ -52,6 +57,7 @@ const state = {
 
 const SIDEBAR_KEY = 'satellite-data-sidebar-expanded';
 const FILTER_KEY = 'satellite-data-filters-v1';
+const FAMILY_FILTER_KEY = 'satellite-data-family-filters-v1';
 const CALENDAR_YEARS_KEY = 'satellite-data-calendar-years-v1';
 function storedDisplayZone(key, fallback) {
   const zone = localStorage.getItem(key);
@@ -108,7 +114,7 @@ function setSidebar(expanded, persist = false) {
 
 function setView(id) {
   $('main').classList.toggle('calendar-wide', id === 'calendar-view');
-  if (id !== 'cli-view') clearCLIKey();
+  if (id !== 'access-view') clearCLIKey();
   if (id !== 'monitor-view') clearTimeout(state.monitor.poll);
   if (id !== 'calendar-view') stopIndexStream();
   if (id !== 'downloads-view') {
@@ -121,11 +127,10 @@ function setView(id) {
 
 const viewPaths = Object.freeze({
   'calendar-view': '/calendar',
-  'sources-view': '/sources',
   'downloads-view': '/downloads',
-  'sync-view': '/sync',
+  'era5-view': '/era5',
+  'catalog-view': '/catalog',
   'monitor-view': '/monitor',
-  'cli-view': '/cli',
   'access-view': '/access',
 });
 const pathViews = new Map(Object.entries(viewPaths).map(([view, path]) => [path, view]));
@@ -134,24 +139,23 @@ function viewFromPath(pathname = location.pathname) {
   let normalized = pathname || '/';
   while (normalized.length > 1 && normalized.endsWith('/')) normalized = normalized.slice(0, -1);
   if (normalized === '/' || normalized === '/index.html') return 'calendar-view';
+  if (normalized === '/sources') return 'catalog-view';
+  if (normalized === '/sync') return 'downloads-view';
+  if (normalized === '/cli') return 'access-view';
   return pathViews.get(normalized) || 'calendar-view';
 }
 
 function loadViewContent(id) {
   if (id === 'calendar-view' && state.selected) loadYear(true);
-  if (id === 'sources-view') renderSources();
-  if (id === 'access-view') loadAccess();
-  if (id === 'cli-view') loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; });
+  if (id === 'access-view') { if (state.access.user?.role === 'admin') loadAccess(); loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; }); }
   if (id === 'monitor-view') loadMonitor(true);
   if (id === 'downloads-view') { initializeDownloadSubmit(); loadDownloads(true); }
+  if (id === 'era5-view') { loadERA5Inventory(); if ($('[data-era5-tab="download"]').classList.contains('active')) loadERA5Catalog(); }
+  if (id === 'catalog-view') { renderSources(); loadEncyclopedia(); }
 }
 
 function navigateView(id, historyMode = 'none') {
   if (!viewPaths[id]) id = 'calendar-view';
-  if (id === 'access-view' && state.access.user?.role !== 'admin') {
-    id = 'calendar-view';
-    historyMode = historyMode === 'none' ? 'replace' : historyMode;
-  }
   setView(id);
   const path = viewPaths[id];
   if (historyMode === 'push' && location.pathname !== path) history.pushState({view: id}, '', path);
@@ -178,9 +182,68 @@ function collectionSatellites(product) {
 }
 
 function catalogLevel(source, value) {
-  if (source !== 'calipso') return value;
-  const level = String(value || '').trim().toUpperCase();
-  return !level || level.startsWith('L') ? level : 'L' + level;
+  const level = String(value || '').trim();
+  const parts = level.split('/').map(part => part.trim().match(/^(?:L|LEVEL\s*)?([0-4](?:\.[0-9]+)?[A-Z]*)$/i));
+  if (parts.every(Boolean)) return parts.map(part => 'L' + part[1].toUpperCase()).join('/');
+  return /^(aux|orbit)$/i.test(level) ? level.toUpperCase() : level;
+}
+
+function normalizeCatalogProduct(product) {
+  const metadata = {...(product.metadata || {})};
+  let instrument = String(product.instrument || '').trim();
+  let level = catalogLevel(product.source_id, product.level);
+  if (/^goes\d+$/.test(product.source_id) && instrument === 'SEIS') instrument = 'SEISS';
+  if (product.source_id === 'calipso' && /^CAL_LID_L15[-_]/.test(product.data_type)) level = 'L1.5';
+  if (product.source_id === 'earthcare') {
+    if (product.data_type?.startsWith('AUX_')) { instrument = 'Auxiliary'; level ||= 'AUX'; }
+    if (product.data_type === 'MPL_ORBSCT') { instrument = 'Orbit'; level ||= 'ORBIT'; }
+  }
+  return {...product, satellite: String(product.satellite || '').trim(), instrument, level, metadata};
+}
+
+function productOptionLabel(product) {
+  const type = product.metadata?.product_type;
+  const parts = [product.level, type, product.product];
+  const version = product.metadata?.version;
+  if (version && !product.product.endsWith(version)) parts.push(version);
+  if (product.metadata?.spatial_resolution) parts.push(product.metadata.spatial_resolution);
+  const satellites = collectionSatellites(product);
+  if (satellites.length > 1) parts.push(satellites.join(' + ') + ' 联合产品');
+  else if (!satelliteEl.value) parts.push(product.satellite);
+  return [...new Set(parts.filter(Boolean))].join(' · ');
+}
+
+const areaLabels = {DISK:'全圆盘', CONUS:'CONUS', MESO:'中尺度', SWATH:'条带', GLOBAL:'全球', SUBSET:'子集', JAPAN:'日本', TARGET:'目标区', SOLAR_DISK:'太阳圆盘'};
+function resolutionValues(value) {
+  const parts = String(value || '').split(/\s*[/,;]\s*/).filter(Boolean);
+  const unit = parts.at(-1)?.match(/(?:km|m|degrees?|deg\.?|arc[- ]seconds?)$/i)?.[0];
+  return uniqueSorted(parts.map(part => {
+    if (/^\d+(?:\.\d+)?$/.test(part) && unit) part += unit;
+    const match = part.match(/^(\d+(?:\.\d+)?(?:\s*[x×]\s*\d+(?:\.\d+)?)?)\s*(km|m|degrees?|deg\.?|arc[- ]seconds?)$/i);
+    if (!match) return part;
+    return match[1].replace(/\s+/g, '') + ' ' + match[2].toLowerCase().replace(/^degrees?$|^deg\.?$/, 'deg').replace(/^arc[- ]seconds?$/, 'arcsec');
+  }));
+}
+
+function metadataFilterValues(product, field) {
+  const value = field === 'level' ? product.level : field === 'area_type' ? product.metadata?.area_type : product.metadata?.spatial_resolution;
+  if (value) return field === 'resolution' ? resolutionValues(value) : [value];
+  return ['__' + (product.metadata?.[field + '_status'] || 'catalog_not_provided')];
+}
+
+function fillMetadataSelect(node, products, field) {
+  const values = uniqueSorted(products.flatMap(product => metadataFilterValues(product, field)));
+  const previous = node.value;
+  node.replaceChildren();
+  if (values.length > 1) node.add(new Option('全部', ''));
+  for (const value of values) {
+    const label = value.startsWith('__') ? metadataStatusLabels[value.slice(2)] || '目录未提供' : areaLabels[value] || value;
+    const option = new Option(label, value);
+    option.title = value.startsWith('__') ? label : value;
+    node.add(option);
+  }
+  if ([...node.options].some(option => option.value === previous)) node.value = previous;
+  node.disabled = values.length === 1 && values[0] === '__not_applicable';
 }
 
 function calendarProductLabel(product) {
@@ -193,7 +256,9 @@ function calendarProductType(product) {
   let type = product.product;
   if (product.source_id === 'modis') type = type.replace(/^(MOD|MYD)/, 'MODIS');
   if (product.source_id === 'viirs') type = type.replace(/^(VNP|VJ1|VJ2)/, 'VIIRS');
-  return JSON.stringify([type, product.instrument, product.level, product.metadata?.version || '']);
+  if (product.source_id === 'modis') type = type.replace(/_MODIS_(Terra|Aqua)$/, '_MODIS');
+  if (product.source_id === 'viirs') type = type.replace(/_VIIRS_(NOAA20|NOAA21|SNPP)$/, '_VIIRS');
+  return JSON.stringify([type, product.instrument, catalogLevel(product.source_id, product.level), product.metadata?.version || '', product.metadata?.area_type || '', resolutionValues(product.metadata?.spatial_resolution).join('|')]);
 }
 
 function selectedCalendarProducts() {
@@ -201,7 +266,7 @@ function selectedCalendarProducts() {
   if (!selected || satelliteEl.value || collectionSatellites(selected).length > 1) return selected ? [selected] : [];
   const type = calendarProductType(selected);
   const bySatellite = new Map();
-  for (const product of filteredCollections(3)) {
+  for (const product of filteredCollections(5)) {
     if (collectionSatellites(product).length !== 1 || calendarProductType(product) !== type) continue;
     if (!bySatellite.has(product.satellite)) bySatellite.set(product.satellite, product);
   }
@@ -240,6 +305,7 @@ function familySources(familyID) {
 function sourceFamilies() {
   const grouped = new Map();
   for (const source of state.sources) {
+    if (source.id === 'era5') continue;
     const id = sourceFamilyID(source.id);
     if (!grouped.has(id)) grouped.set(id, []);
     grouped.get(id).push(source);
@@ -279,7 +345,7 @@ const missionPeriods = {
   'CALIPSO': {start: 2006, end: '2023-08-01'},
   'Terra': {start: 2000}, 'Aqua': {start: 2002},
   'Suomi-NPP': {start: 2011}, 'NOAA-20': {start: 2017}, 'NOAA-21': {start: 2022},
-  'GOES-16': {start: 2017}, 'GOES-17': {start: 2018, status: '在轨存储'},
+  'GOES-16': {start: 2017, status: '备用'}, 'GOES-17': {start: 2018, status: '在轨存储'},
   'GOES-18': {start: 2022}, 'GOES-19': {start: 2024},
   'Himawari-8': {start: 2015, status: '备用'}, 'Himawari-9': {start: 2022},
   'EarthCARE': {start: 2024}, 'MTG': {start: 2022},
@@ -341,45 +407,50 @@ function fillSelect(node, values, allLabel = '') {
   if ([...node.options].some(option => option.value === previous)) node.value = previous;
 }
 
-function filteredCollections(stage = 4) {
+function filteredCollections(stage = 6) {
   return state.collections.filter(item => {
     if (stage > 0 && satelliteEl.value && !collectionSatellites(item).includes(satelliteEl.value)) return false;
     if (stage > 1 && instrumentEl.value && item.instrument !== instrumentEl.value) return false;
-    if (stage > 2 && levelEl.value && item.level !== levelEl.value) return false;
+    if (stage > 2 && levelEl.value && !metadataFilterValues(item, 'level').includes(levelEl.value)) return false;
+    if (stage > 3 && areaEl.value && !metadataFilterValues(item, 'area_type').includes(areaEl.value)) return false;
+    if (stage > 4 && resolutionEl.value && !metadataFilterValues(item, 'resolution').includes(resolutionEl.value)) return false;
     return true;
   });
 }
 
 function rebuildFilters(changed = 'source', update = true) {
+  const counterpart = state.selected && calendarProductType(state.selected);
   if (changed === 'source') {
     const satellites = uniqueSorted(state.collections.flatMap(collectionSatellites));
     fillSelect(satelliteEl, satellites, satellites.length > 1 ? '全部卫星' : '');
     if (satellites.length === 1) satelliteEl.value = satellites[0];
   }
   if (changed === 'source' || changed === 'satellite') {
-    fillSelect(instrumentEl, uniqueSorted(filteredCollections(1).map(item => item.instrument)), '全部传感器');
+    fillSelect(instrumentEl, uniqueSorted(filteredCollections(1).map(item => item.instrument)), '全部');
   }
   if (changed === 'source' || changed === 'satellite' || changed === 'instrument') {
-    fillSelect(levelEl, uniqueSorted(filteredCollections(2).map(item => item.level)), '全部级别');
+    fillMetadataSelect(levelEl, filteredCollections(2), 'level');
   }
-  const products = filteredCollections(3).sort((a, b) => {
+  if (['source','satellite','instrument','level'].includes(changed)) fillMetadataSelect(areaEl, filteredCollections(3), 'area_type');
+  if (['source','satellite','instrument','level','area'].includes(changed)) fillMetadataSelect(resolutionEl, filteredCollections(4), 'resolution');
+  const products = filteredCollections(5).sort((a, b) => {
     if (sourceEl.value !== 'mtg') return 0;
     return Number(!/^L1/i.test(a.level)) - Number(!/^L1/i.test(b.level));
   });
   const previous = productEl.value;
   productEl.replaceChildren();
   for (const item of products) {
-    const title = item.metadata?.title && item.metadata.title !== item.product
-      ? `${item.product} · ${item.metadata.title}`
-      : item.product;
-    const type = item.metadata?.product_type;
-    const label = type ? `${item.level} · ${type} · ${title}` : `${item.level ? item.level + ' · ' : ''}${title}`;
-    const names = collectionSatellites(item);
-    const joint = names.length > 1 ? ` · ${names.join(' + ')} 联合产品` : '';
-    productEl.add(new Option(label + joint, item.id));
+    const option = new Option(productOptionLabel(item), item.id);
+    option.title = item.metadata?.title || item.product;
+    productEl.add(option);
   }
   if ([...productEl.options].some(option => option.value === previous)) productEl.value = previous;
+  else if (counterpart && products.some(item => calendarProductType(item) === counterpart)) productEl.value = products.find(item => calendarProductType(item) === counterpart).id;
   else if (productEl.options.length) productEl.selectedIndex = 0;
+  const reanalysis = sourceEl.value === 'era5';
+  $('#satellite-filter-label').textContent = reanalysis ? '机构' : '卫星';
+  $('#instrument-filter-label').textContent = reanalysis ? '数据集' : '仪器';
+  $('#level-filter-label').textContent = reanalysis ? '类型' : '级别';
   if (update) updateSelectedProduct();
 }
 
@@ -431,18 +502,15 @@ function updateSelectedProduct() {
   selectCalendarYear(product);
   renderArchiveIndex();
   const onDemand = product?.metadata?.availability_mode === 'on-demand';
-  state.era5.seq++;
-  state.era5.schema = null;
-  $('#era5-panel').classList.toggle('hidden', !onDemand);
-  $('#era5-submit').disabled = true;
   $('#query-month').disabled = onDemand;
   $('#clear-calendar').disabled = onDemand;
   for (const node of [yearEl, monthEl, timezoneEl]) node.disabled = onDemand;
-  $('#calendar-help').classList.toggle('hidden', onDemand);
+  $('#calendar-help').classList.add('hidden');
   $('#year-layout').classList.toggle('hidden', onDemand);
   if (!product) {
     $('#product-title').textContent = state.collections.length ? '当前筛选无产品' : '读取产品目录…';
     $('#product-meta').textContent = '';
+    $('#product-details').classList.add('hidden');
     return;
   }
   const products = selectedCalendarProducts();
@@ -457,16 +525,36 @@ function updateSelectedProduct() {
   if (source) metadata.push(tierLabels[source.tier] || source.tier);
   metadata.push(product.metadata?.local_covered ? '本地已覆盖' : '本地未覆盖');
   $('#product-meta').textContent = metadata.join(' · ');
+  renderProductDetails(product);
   persistFilters();
   if (onDemand) {
     clearTimeout(state.yearPoll);
     clearTimeout(state.dayPoll);
     $('#product-title').textContent = product.metadata.title || product.product;
     $('#product-meta').textContent = [product.metadata.temporal_start?.slice(0, 10), product.metadata.temporal_end?.slice(0, 10)].filter(Boolean).join(' 至 ') + ' · CDS 按需生成 · 本地未归档';
-    prepareERA5(product, state.era5.seq);
     return;
   }
   loadYear();
+}
+
+const metadataStatusLabels = {catalog_not_provided: '目录未提供', not_applicable: '不适用', per_file: '逐文件', variable: '依变量 / 波段', subsetting: '依子集'};
+function metadataField(product, field, value) {
+  return value || metadataStatusLabels[product.metadata?.[field + '_status']] || '目录未提供';
+}
+
+function renderProductDetails(product) {
+  const metadata = product.metadata || {};
+  const rows = [
+    ['名称', metadata.title || product.product], ['标识', metadata.official_id || product.id],
+    ['级别', metadataField(product, 'level', product.level)],
+    ['名义分辨率', metadataField(product, 'resolution', metadata.spatial_resolution)],
+    ['目录版本', metadataField(product, 'version', metadata.version)],
+    ['范围', metadataField(product, 'area_type', metadata.area_type)],
+    ['目录', metadata.catalog_source || sourceFamilyLabels[sourceFamilyID(product.source_id)] || product.source_id],
+  ];
+  $('#product-details').classList.remove('hidden');
+  $('#product-official-title').innerHTML = rows.map(([label, value]) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('');
+  productEl.title = rows.map(([label, value]) => `${label}: ${value}`).join('\n');
 }
 
 async function prepareERA5(product, seq) {
@@ -511,7 +599,8 @@ async function submitERA5(event) {
   event.preventDefault();
   if (!state.era5.schema || state.era5.submitting) return;
   const schema = state.era5.schema;
-  const collection = state.selected.id;
+  const collection = state.era5.selected?.id;
+  if (!collection) return;
   const seq = state.era5.seq;
   const date = $('#era5-date').value.split('-');
   const inputs = {variable: selectedValues($('#era5-variables')), year: [date[0]], month: [date[1]]};
@@ -572,6 +661,69 @@ async function refreshERA5() {
     state.era5.checking = false;
     $('#era5-refresh').disabled = false;
   }
+}
+
+async function loadERA5Catalog() {
+  const ticket = ++state.era5.catalogSeq;
+  $('#era5-status').textContent = '读取目录…';
+  try {
+    const catalog = await json('/api/products?source=era5');
+    if (ticket !== state.era5.catalogSeq) return;
+    state.era5.catalog = (catalog || []).map(normalizeCatalogProduct);
+    const node = $('#era5-dataset');
+    const previous = node.value || localStorage.getItem('satellite-data-era5-dataset');
+    node.replaceChildren();
+    for (const product of state.era5.catalog) {
+      const option = new Option(product.display_name || product.data_type, product.product_key);
+      option.title = product.data_type;
+      node.add(option);
+    }
+    restoreSelect(node, previous);
+    await selectERA5Dataset();
+  } catch (error) { if (ticket === state.era5.catalogSeq) $('#era5-status').textContent = error.message; }
+}
+
+async function selectERA5Dataset() {
+  const product = state.era5.catalog.find(item => item.product_key === $('#era5-dataset').value);
+  const seq = ++state.era5.seq;
+  state.era5.schema = null;
+  state.era5.selected = product ? {id: product.product_key, cadence: product.cadence, metadata: product.metadata} : null;
+  $('#era5-submit').disabled = true;
+  if (!product) { $('#era5-status').textContent = '目录无数据集'; return; }
+  localStorage.setItem('satellite-data-era5-dataset', product.product_key);
+  $('#era5-dataset-meta').textContent = [product.resolution, product.cadence, product.metadata?.temporal_start?.slice(0,10), product.metadata?.temporal_end?.slice(0,10)].filter(Boolean).join(' · ');
+  await prepareERA5(state.era5.selected, seq);
+}
+
+async function loadERA5Inventory() {
+  const ticket = ++state.era5.inventorySeq;
+  $('#era5-inventory-status').textContent = '读取库存…';
+  try {
+    const [payload, module] = await Promise.all([json('/api/v1/era5/inventory'), import('/era5-inventory.js')]);
+    if (ticket !== state.era5.inventorySeq) return;
+    state.era5.inventory = payload;
+    module.initialize(payload);
+  } catch (error) { if (ticket === state.era5.inventorySeq) $('#era5-inventory-status').textContent = error.message; }
+}
+
+function selectERA5Tab(tab) {
+  document.querySelectorAll('[data-era5-tab]').forEach(node => { node.classList.toggle('active', node.dataset.era5Tab === tab); node.setAttribute('aria-selected', String(node.dataset.era5Tab === tab)); });
+  $('#era5-panel').classList.toggle('hidden', tab !== 'download');
+  $('#era5-inventory-panel').classList.toggle('hidden', tab !== 'inventory');
+  if (tab === 'inventory') loadERA5Inventory();
+  if (tab === 'download') loadERA5Catalog();
+}
+
+async function loadEncyclopedia() {
+  const ticket = ++state.encyclopedia.loading;
+  $('#catalog-status').textContent = '读取目录…';
+  try {
+    const [products, module] = await Promise.all([json('/api/products'), state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js'))]);
+    if (ticket !== state.encyclopedia.loading) return;
+    state.encyclopedia.catalog = (products || []).filter(product => product.source_id !== 'era5').map(normalizeCatalogProduct);
+    module.initialize(state.encyclopedia.catalog);
+    $('#catalog-status').textContent = '';
+  } catch (error) { if (ticket === state.encyclopedia.loading) $('#catalog-status').textContent = error.message; }
 }
 
 function yearGridColumns(year) {
@@ -1649,6 +1801,7 @@ function renderSources() {
   const node = $('#sources');
   node.replaceChildren();
   for (const source of state.sources) {
+    if (source.id === 'era5') continue;
     const row = document.createElement('article');
     row.className = 'source-row';
     row.innerHTML = `
@@ -1662,15 +1815,16 @@ function renderSources() {
 
 function renderSourceCounts() {
   const counts = {anonymous: 0, token: 0, special: 0};
-  for (const source of state.sources) counts[source.tier] = (counts[source.tier] || 0) + 1;
+  for (const source of state.sources.filter(source => source.id !== 'era5')) counts[source.tier] = (counts[source.tier] || 0) + 1;
   for (const [tier, count] of Object.entries(counts)) {
     const target = document.querySelector(`#tier-${tier}`);
     if (target) target.textContent = count;
   }
 }
 
-function applyCatalog(payload, family, saved = readFilters()) {
-  state.collections = (payload || []).map(product => ({
+function applyCatalog(payload, family, saved = readFamilyFilters(family)) {
+  state.catalogFamily = family;
+  state.collections = (payload || []).map(normalizeCatalogProduct).map(product => ({
     id: product.product_key,
     source_id: product.source_id,
     satellite: product.satellite,
@@ -1692,18 +1846,23 @@ function applyCatalog(payload, family, saved = readFilters()) {
       last_day: product.last_day || '',
     },
   }));
+  setCatalogLoading(false);
   rebuildFilters('source', false);
   if (savedFamily(saved) === family) {
     let rememberedSatellite = saved.satellite;
-    if (!rememberedSatellite && saved.source) {
+    if (!Object.hasOwn(saved, 'satellite') && saved.source) {
       rememberedSatellite = state.sources.find(item => item.id === saved.source)?.name || '';
     }
     restoreSelect(satelliteEl, rememberedSatellite);
     rebuildFilters('satellite', false);
     restoreSelect(instrumentEl, saved.instrument);
     rebuildFilters('instrument', false);
-    restoreSelect(levelEl, saved.level);
+    restoreSelect(levelEl, catalogLevel(family, saved.level));
     rebuildFilters('level', false);
+    restoreSelect(areaEl, saved.area);
+    rebuildFilters('area', false);
+    restoreSelect(resolutionEl, saved.resolution);
+    rebuildFilters('resolution', false);
     restoreSelect(productEl, saved.product);
   }
   updateSelectedProduct();
@@ -1711,7 +1870,7 @@ function applyCatalog(payload, family, saved = readFilters()) {
 
 async function loadSources() {
   const saved = readFilters();
-  const preferredFamily = savedFamily(saved) || 'goes';
+  const preferredFamily = savedFamily(saved) === 'era5' ? 'goes' : savedFamily(saved) || 'goes';
   const hintedSources = hintedFamilySourceIDs(preferredFamily);
   const catalogPromise = preferredFamily
     ? json(familyProductsURL(hintedSources)).catch(() => null)
@@ -1719,7 +1878,7 @@ async function loadSources() {
   const [payload, prefetchedCatalog] = await Promise.all([json('/api/v1/sources'), catalogPromise]);
   state.sources = payload.sources || [];
   renderSourceCounts();
-  if ($('#sources-view').classList.contains('active')) renderSources();
+  if ($('#catalog-view').classList.contains('active')) renderSources();
   const families = sourceFamilies();
   const previous = sourceEl.value;
   sourceEl.replaceChildren();
@@ -1738,32 +1897,64 @@ async function loadSources() {
 }
 
 async function loadCatalog() {
+  const family = sourceEl.value;
+  const saved = readFamilyFilters(family);
+  const ticket = ++state.catalogSeq;
+  stopIndexStream();
+  state.calendarSeq++;
+  state.coverage.requestSeq++;
+  state.coverage.fileSeq++;
+  clearTimeout(state.yearPoll);
+  clearTimeout(state.dayPoll);
+  clearTimeout(state.coverage.poll);
+  state.satelliteYears.clear();
+  $('#satellite-year-calendars').replaceChildren();
+  closeDetail();
+  setCatalogLoading(true);
   $('#product-title').textContent = '读取产品目录…';
   $('#product-meta').textContent = '';
+  $('#product-details').classList.add('hidden');
   state.collections = [];
   state.selected = null;
   gridEl.classList.add('placeholder-grid');
   gridEl.replaceChildren();
-  const family = sourceEl.value;
-  if (!family) return;
   const sourceIDs = familySources(family).map(item => item.id);
-  if (!sourceIDs.length) return;
+  if (!sourceIDs.length) { setCatalogLoading(false); return; }
   try {
     const payload = await json(familyProductsURL(sourceIDs));
-    applyCatalog(payload, family);
+    if (ticket !== state.catalogSeq || family !== sourceEl.value) return;
+    applyCatalog(payload, family, saved);
   } catch (error) {
+    if (ticket !== state.catalogSeq || family !== sourceEl.value) return;
+    setCatalogLoading(false);
     gridEl.classList.remove('placeholder-grid');
     $('#product-title').textContent = '产品目录读取失败';
     $('#product-meta').textContent = error.message;
   }
 }
 
+function setCatalogLoading(loading) {
+  $('.controls').setAttribute('aria-busy', String(loading));
+  for (const node of [satelliteEl, instrumentEl, levelEl, areaEl, resolutionEl, productEl, yearEl, monthEl, timezoneEl]) node.disabled = loading;
+  $('#query-month').disabled = loading;
+  $('#clear-calendar').disabled = loading;
+}
+
 function restoreSelect(node, value) {
-  if (value && [...node.options].some(option => option.value === value)) node.value = value;
+  if (value !== undefined && value !== null && [...node.options].some(option => option.value === value)) node.value = value;
 }
 
 function readFilters() {
   try { return JSON.parse(localStorage.getItem(FILTER_KEY) || '{}'); } catch { return {}; }
+}
+
+function readFamilyFilters(family) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FAMILY_FILTER_KEY) || '{}');
+    if (saved?.[family] && typeof saved[family] === 'object') return saved[family];
+  } catch {}
+  const legacy = readFilters();
+  return savedFamily(legacy) === family ? legacy : {};
 }
 
 function rememberedCalendarYear(product) {
@@ -1776,7 +1967,8 @@ function rememberedCalendarYear(product) {
 
 function selectCalendarYear(product) {
   for (const option of yearEl.options) option.text = option.value;
-  const year = rememberedCalendarYear(product?.id) || product?.metadata?.last_day?.slice(0, 4) || String(defaultYear());
+  const latest = selectedCalendarProducts().map(item => item.metadata?.last_day || '').sort().at(-1);
+  const year = rememberedCalendarYear(product?.id) || latest?.slice(0, 4) || String(defaultYear());
   restoreSelect(yearEl, year);
 }
 
@@ -1826,21 +2018,32 @@ function changeCalendarYear(manual = true) {
 }
 
 function persistFilters() {
-  localStorage.setItem(FILTER_KEY, JSON.stringify({
-    family: sourceEl.value,
+  if (!state.selected) return;
+  const family = state.catalogFamily || sourceEl.value;
+  const record = {
+    family,
     source: state.selected?.source_id || '',
     satellite: satelliteEl.value,
     instrument: instrumentEl.value,
     level: levelEl.value,
+    area: areaEl.value,
+    resolution: resolutionEl.value,
     product: productEl.value,
     year: yearEl.value,
     month: monthEl.value,
     timezone: state.displayZone,
-  }));
+  };
+  let families = {};
+  try { families = JSON.parse(localStorage.getItem(FAMILY_FILTER_KEY) || '{}') || {}; } catch {}
+  if (typeof families !== 'object' || Array.isArray(families)) families = {};
+  families[family] = record;
+  localStorage.setItem(FAMILY_FILTER_KEY, JSON.stringify(families));
+  localStorage.setItem(FILTER_KEY, JSON.stringify(record));
 }
 
 function resetFilters() {
   localStorage.removeItem(FILTER_KEY);
+  localStorage.removeItem(FAMILY_FILTER_KEY);
   localStorage.removeItem(CALENDAR_YEARS_KEY);
   if ([...sourceEl.options].some(item => item.value === 'goes')) sourceEl.value = 'goes';
   else sourceEl.selectedIndex = 0;
@@ -2091,7 +2294,12 @@ function refreshDownloadFilters(changed = 'source') {
   if (changed !== 'product' && changed !== 'band' && changed !== 'resolution') {
     const node = $('#dl-product'), old = node.value;
     node.replaceChildren(new Option('选择产品', ''));
-    for (const item of items) node.add(new Option(item.display_name || item.data_type || item.product_key, item.product_key));
+    for (const item of items) {
+      const label = [...new Set([item.level, item.data_type, item.version, item.resolution, item.metadata?.access_class].filter(Boolean))].join(' · ');
+      const option = new Option(label || item.product_key, item.product_key);
+      option.title = item.display_name || item.data_type;
+      node.add(option);
+    }
     if (items.some(item => item.product_key === old)) node.value = old;
   }
   const product = state.downloads.catalog.find(item => item.product_key === $('#dl-product').value);
@@ -2100,7 +2308,7 @@ function refreshDownloadFilters(changed = 'source') {
   const resolutionNode = $('#dl-resolution');
   if (changed !== 'resolution') {
     const values = uniqueSorted(bands.map(item => item.resolution).concat(product?.resolution || []));
-    downloadSelect('resolution', values, values.length ? '全部分辨率' : '未标注分辨率');
+    downloadSelect('resolution', values, values.length ? '全部' : metadataStatusLabels[product?.metadata?.resolution_status] || '目录未提供');
     if (!bands.length && values.length === 1) resolutionNode.value = values[0];
     if (changed === 'band' && Number(band.value)) {
       resolutionNode.value = bands.find(item => item.number === Number(band.value))?.resolution || '';
@@ -2127,7 +2335,7 @@ async function loadDownloadCatalog() {
   try {
     const catalog = await json('/api/v1/downloads/catalog?source=' + encodeURIComponent(source));
     if (ticket !== state.downloads.loading) return;
-    state.downloads.catalog = catalog.products || [];
+    state.downloads.catalog = (catalog.products || []).map(normalizeCatalogProduct);
     state.downloads.source = source;
     refreshDownloadFilters();
   } catch (error) {
@@ -2138,7 +2346,7 @@ async function loadDownloadCatalog() {
 function initializeDownloadSubmit() {
   const node = $('#dl-source'), old = node.value;
   node.replaceChildren(new Option('选择数据源', ''));
-  for (const source of state.sources.filter(item => item.capabilities?.includes('download'))) node.add(new Option(source.name, source.id));
+  for (const source of state.sources.filter(item => item.id !== 'era5' && item.capabilities?.includes('download'))) node.add(new Option(source.name, source.id));
   if ([...node.options].some(option => option.value === old)) node.value = old;
   if (node.value && node.value !== state.downloads.source) loadDownloadCatalog();
 }
@@ -2956,6 +3164,8 @@ function bind() {
   satelliteEl.addEventListener('change', () => { rebuildFilters('satellite'); persistFilters(); });
   instrumentEl.addEventListener('change', () => { rebuildFilters('instrument'); persistFilters(); });
   levelEl.addEventListener('change', () => { rebuildFilters('level'); persistFilters(); });
+  areaEl.addEventListener('change', () => { rebuildFilters('area'); persistFilters(); });
+  resolutionEl.addEventListener('change', () => { rebuildFilters('resolution'); persistFilters(); });
   productEl.addEventListener('change', updateSelectedProduct);
   yearEl.addEventListener('change', () => changeCalendarYear());
   monthEl.addEventListener('change', () => {
@@ -3047,6 +3257,16 @@ function bind() {
   $('#refresh-sources').addEventListener('click', loadSources);
   $('#era5-form').addEventListener('submit', submitERA5);
   $('#era5-refresh').addEventListener('click', refreshERA5);
+  $('#era5-dataset').addEventListener('change', selectERA5Dataset);
+  $('#era5-inventory-refresh').addEventListener('click', loadERA5Inventory);
+  document.querySelectorAll('[data-era5-tab]').forEach(node => node.addEventListener('click', () => selectERA5Tab(node.dataset.era5Tab)));
+  document.querySelectorAll('[data-catalog-tab]').forEach(node => node.addEventListener('click', () => {
+    const sources = node.dataset.catalogTab === 'sources';
+    $('#catalog-products-panel').classList.toggle('hidden', sources);
+    $('#catalog-sources-panel').classList.toggle('hidden', !sources);
+    $('.catalog-search').classList.toggle('hidden', sources);
+    document.querySelectorAll('[data-catalog-tab]').forEach(tab => { tab.classList.toggle('active', tab === node); tab.setAttribute('aria-selected', String(tab === node)); });
+  }));
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
   $('#refresh-downloads').addEventListener('click', () => loadDownloads(true, true));
   $('#download-timezone').addEventListener('change', event => setDownloadTimezone(event.target.value));

@@ -47,7 +47,6 @@ func (p *Provider) Source() model.Source {
 			model.CapabilityCatalog,
 			model.CapabilitySearch,
 			model.CapabilityDownload,
-			model.CapabilitySubscription,
 		},
 		Description: "Catalog/search are anonymously accessible; product download requires an EUMETSAT API token.",
 	}
@@ -272,6 +271,8 @@ func mtgInstrument(title string) string {
 		return "IRS"
 	case strings.Contains(upper, "LIGHTNING"), strings.Contains(upper, "LI "):
 		return "LI"
+	case mtgFCILevelTwo(title):
+		return "FCI"
 	default:
 		return "MTG"
 	}
@@ -290,9 +291,26 @@ func mtgLevel(title string) string {
 		return "L2"
 	case strings.Contains(upper, "LEVEL 3"):
 		return "L3"
+	case strings.HasPrefix(upper, "LI "), mtgFCILevelTwo(title):
+		return "L2"
 	default:
 		return ""
 	}
+}
+
+func mtgFCILevelTwo(title string) bool {
+	upper := strings.ToUpper(title)
+	for _, name := range []string{
+		"ATMOSPHERIC MOTION VECTORS", "ALL SKY RADIANCE", "CLOUD MASK",
+		"CLEAR SKY REFLECTANCE MAP", "CLOUD TYPE", "CLOUD TOP TEMPERATURE AND HEIGHT",
+		"ACTIVE FIRE MONITORING", "GLOBAL INSTABILITY INDICES", "OPTIMAL CLOUD ANALYSIS",
+		"OUTGOING LW RADIATION",
+	} {
+		if strings.HasPrefix(upper, name) && isMTGCollection(title) {
+			return true
+		}
+	}
+	return false
 }
 
 func mtgCadence(title string) string {

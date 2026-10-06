@@ -67,7 +67,6 @@ func (p *Provider) Source() model.Source {
 			model.CapabilityCatalog,
 			model.CapabilitySearch,
 			model.CapabilityDownload,
-			model.CapabilitySubscription,
 		},
 		Description: "Native NOAA ABI/GLM/etc. products from the public GOES object hierarchy.",
 	}

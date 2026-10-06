@@ -40,7 +40,7 @@ function harness(product, schema) {
   });
   vm.runInContext(withoutBoot, context);
   context.testProduct = product;
-  vm.runInContext('state.selected = testProduct; state.era5.seq = 1;', context);
+  vm.runInContext('state.selected = testProduct; state.era5.selected = testProduct; state.era5.seq = 1;', context);
   return {context, element, storage, requests};
 }
 
@@ -71,7 +71,11 @@ test('portal login precedes data loading and credentials have no second login fo
   assert.equal(html.includes('access-login-form'), false);
   assert.equal(html.includes('access-password'), false);
   assert.match(html, /id="portal-logout"/);
-  assert.match(html, /id="cli-view"/);
+  assert.match(html, /id="cli-panel"/);
+  assert.equal(html.includes('id="cli-view"'),false);
+  assert.match(html,/https:\/\/github\.com\/nuist-fy-lab\/satellite-data-downloader/);
+  assert.match(html,/data-view="calendar-view"[^\n]+数据日历/);
+  assert.match(html,/data-view="access-view"[^\n]+访问凭据/);
   assert.match(loginHTML, /name="username"/);
   assert.match(loginHTML, /name="password"[^>]+type="password"|type="password"[^>]+name="password"/);
   const boot = app.slice(app.lastIndexOf('async function boot()'));

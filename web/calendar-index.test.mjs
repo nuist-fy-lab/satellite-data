@@ -211,7 +211,7 @@ test('CALIPSO levels from an older stored catalog have an L prefix without dupli
   for (const [input, expected] of [['1', 'L1'], ['1B', 'L1B'], ['2', 'L2'], ['L2', 'L2'], ['', '']]) {
     assert.equal(h.context.catalogLevel('calipso', input), expected);
   }
-  assert.equal(h.context.catalogLevel('goes18', 'L1b'), 'L1b');
+  assert.equal(h.context.catalogLevel('goes18', 'L1b'), 'L1B');
 });
 
 test('MTG level-one options include the precise product type and precede other products', () => {
@@ -293,4 +293,25 @@ test('month index priority applies to every displayed satellite, not only the fi
     assert.equal(params.get('end'), '2025-07-01');
   }
   h.context.stopIndexStream();
+});
+
+test('explicit all-satellite filters survive catalog reloads while legacy single-source filters still migrate', () => {
+  const h = harness();
+  h.run(`state.sources = [{id:'goes18',name:'GOES-18'},{id:'goes19',name:'GOES-19'}];
+    sourceEl.value = 'goes'; updateSelectedProduct = () => {};
+    const catalog = state.sources.map(source => ({product_key:source.id+':ABI-L1b-RadF',source_id:source.id,
+      satellite:source.name,instrument:'ABI',level:'L1b',data_type:'ABI-L1b-RadF',metadata:{}}));
+    applyCatalog(catalog, 'goes', {family:'goes',source:'goes18',satellite:''});`);
+  assert.equal(h.element('#satellite').value, '');
+  h.run(`applyCatalog(catalog, 'goes', {source:'goes18'});`);
+  assert.equal(h.element('#satellite').value, 'GOES-18');
+});
+
+test('all-satellite view defaults to the latest data year across all displayed products', () => {
+  const h = harness(); family(h);
+  h.run(`state.selected.metadata.last_day = '2023-12-31'; state.collections[2].metadata.last_day = '2026-10-01';
+    selectCalendarYear(state.selected);`);
+  assert.equal(h.element('#year').value, '2026');
+  h.run(`localStorage.setItem(CALENDAR_YEARS_KEY, JSON.stringify({[state.selected.id]:'2025'})); selectCalendarYear(state.selected);`);
+  assert.equal(h.element('#year').value, '2025');
 });

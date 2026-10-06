@@ -20,7 +20,7 @@ import (
 
 const cmrBase = "https://cmr.earthdata.nasa.gov/search"
 
-var resolutionPattern = regexp.MustCompile(`(?i)\b(?:250|375|500|750|1000)\s*m\b|\b(?:1|5|10)\s*km\b|\b(?:15|30)\s*arc-second\b|\b(?:0\.05|0\.1|0\.5|1)\s*(?:degree|deg)\b`)
+var resolutionPattern = regexp.MustCompile(`(?i)\b[0-9]+(?:\.[0-9]+)?(?:\s*x\s*[0-9]+(?:\.[0-9]+)?)?\s*(?:km|m|degrees?|deg\.?|arc[- ]seconds?)\b`)
 
 type Provider struct {
 	client *http.Client
@@ -47,7 +47,6 @@ func (p *Provider) Source() model.Source {
 			model.CapabilityCatalog,
 			model.CapabilitySearch,
 			model.CapabilityDownload,
-			model.CapabilitySubscription,
 		},
 		Description: "VIIRS products are discovered through the LAADS CMR provider. Science assets prefer LAADS Earthdata Cloud HTTPS and use the same LAADS download token as MODIS.",
 	}
@@ -60,6 +59,7 @@ type collectionFeed struct {
 			ShortName         string   `json:"short_name"`
 			VersionID         string   `json:"version_id"`
 			DatasetID         string   `json:"dataset_id"`
+			Summary           string   `json:"summary"`
 			ProcessingLevelID string   `json:"processing_level_id"`
 			TimeStart         string   `json:"time_start"`
 			TimeEnd           string   `json:"time_end"`
@@ -118,6 +118,7 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 				"official_id":        item.ID,
 				"concept_id":         item.ID,
 				"title":              item.DatasetID,
+				"description":        item.Summary,
 				"version":            item.VersionID,
 				"spatial_resolution": viirsResolution(item.DatasetID),
 				"time_start":         item.TimeStart,

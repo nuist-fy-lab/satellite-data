@@ -120,7 +120,7 @@ func (c *Coordinator) advanceERA5(ctx context.Context, request state.DownloadReq
 		return err
 	}
 	if asset.Size > 0 {
-		if err := c.store.RecordERA5Result(ctx, request.ID, task.ID, part.JobID, request.CollectionID, asset.ID, asset.Name, asset.Size); err != nil {
+		if err := c.store.RecordERA5Result(ctx, request.ID, task.ID, part.JobID, request.CollectionID, asset.ID, asset.Name, asset.Size, part); err != nil {
 			return fmt.Errorf("persist official CDS job result: %w", err)
 		}
 	}
