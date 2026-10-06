@@ -347,19 +347,25 @@ func (i *Indexer) localLoop(ctx context.Context) {
 }
 
 func (i *Indexer) scanLocal(ctx context.Context) {
+	files := make([]state.LocalFile, 0, 1024)
+	var scanErr error
+	i.store.BeginArchiveScan()
+	defer func() { i.store.FinishArchiveScan(len(files), scanErr) }()
 	if err := os.MkdirAll(i.archiveRoot, 0o777); err != nil {
+		scanErr = err
 		slog.Warn("create local archive root", "root", i.archiveRoot, "error", err)
 		return
 	}
-	files := make([]state.LocalFile, 0, 1024)
 	verified, err := i.store.VerifiedArchiveFiles(ctx)
 	if err != nil {
+		scanErr = err
 		slog.Warn("load verified archive", "error", err)
 		return
 	}
 	warnings := make([]string, 0)
 	for _, root := range i.roots() {
 		if err := i.walkArchiveRoot(ctx, root, root != i.archiveRoot, verified, &files, &warnings); err != nil {
+			scanErr = err
 			slog.Warn("scan local archive", "root", root, "error", err)
 			return
 		}
@@ -385,8 +391,11 @@ func (i *Indexer) scanLocal(ctx context.Context) {
 	}
 	fingerprint := hex.EncodeToString(hash.Sum(nil))
 	changed, err := i.store.ReplaceLocalFilesWithWarnings(ctx, files, fingerprint, warnings)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		slog.Warn("persist local archive index", "root", i.archiveRoot, "error", err)
+	if err != nil {
+		scanErr = err
+		if !errors.Is(err, context.Canceled) {
+			slog.Warn("persist local archive index", "root", i.archiveRoot, "error", err)
+		}
 		return
 	}
 	if changed {
@@ -394,6 +403,7 @@ func (i *Indexer) scanLocal(ctx context.Context) {
 	}
 	queued, recounted, err := i.reconcileGOESArchive(ctx, files)
 	if err != nil {
+		scanErr = err
 		slog.Warn("reconcile GOES archive dates", "error", err)
 	} else if queued > 0 || recounted > 0 {
 		slog.Info("GOES archive dates reconciled", "official_days_queued", queued, "days_recounted", recounted)
@@ -401,6 +411,7 @@ func (i *Indexer) scanLocal(ctx context.Context) {
 	if i.sharedRoots[0] != "" {
 		queued, err := i.queueHistoricalEarthCARE(ctx, files)
 		if err != nil {
+			scanErr = err
 			slog.Warn("queue historical EarthCARE official catalog lookup", "error", err)
 		} else if queued > 0 {
 			slog.Info("queued official EarthCARE dates for historical archive", "days", queued)
@@ -572,6 +583,9 @@ func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool,
 			}
 		}
 		*files = append(*files, file)
+		if len(*files)%128 == 0 {
+			i.store.ArchiveScanProgress(len(*files))
+		}
 		return nil
 	})
 }

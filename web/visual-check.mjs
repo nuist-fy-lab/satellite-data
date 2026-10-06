@@ -36,7 +36,7 @@ window.styleFixture = function(view, mode, wide) {
   const totals = bands.map(band => [band,144,band===6?24:0,24,band===6?24:0,0,0,0,0,0,0]);
   const hours = Array.from({length:24}, (_, hour) => [hour,16,1,0,0,0]);
   const coverage = state.coverage;
-  Object.assign(coverage,{supported:true,bands,view:mode,time:'all',band:0,day:'2023-06-14',hour:0});
+  Object.assign(coverage,{supported:true,bands,view:mode,time:'all',band:0,day:'2023-06-14',hour:-1});
   coverage.yearDays = new Map(Array.from({length:30}, (_, i) => ['2023-06-'+String(i+1).padStart(2,'0'),[151+i,'missing',2304,24,384,24,0,2280,0,0,false,'',totals,2,'grid']]));
   coverage.month = {days:Array.from({length:30}, (_, i) => [i+1,2,false,'grid',totals,hours])};
   const times = Array.from({length:144}, (_, i) => ['2023-06-14T'+String(Math.floor(i/6)).padStart(2,'0')+':'+String(i%6*10).padStart(2,'0')+':21Z',i*10]);
@@ -99,6 +99,46 @@ window.calendarSizingFixture = function(source, product, supported, year) {
     axisLeft:$('.calendar-axis').getBoundingClientRect().left,sidebarRight:$('.sidebar').getBoundingClientRect().right,
     scroll:document.documentElement.scrollWidth,viewport:innerWidth};
 };
+window.calendarIndexFixture = function(mode, wide) {
+  window.styleFixture('calendar-view','day',wide);
+  yearEl.replaceChildren(new Option('2025','2025'));
+  Object.assign(state.coverage,{bands:[2,6,7,14],day:'2025-06-09',hour:-1});
+  state.selected = {id:'goes18:ABI-L1b-RadC',source_id:'goes18',product:'ABI-L1b-RadC',cadence:'5m',metadata:{}};
+  const times = mode === 'grid' ? Array.from({length:288},(_,i)=>i*5).filter(minute=>minute!==905)
+    .map(minute=>['2025-06-09T'+String(Math.floor(minute/60)).padStart(2,'0')+':'+String(minute%60).padStart(2,'0')+':21Z',minute]) :
+    [['2025-06-09T00:01:02.500Z',-1],['2025-06-09T22:30:40Z',-1]];
+  const cells = times.flatMap((_,i)=>state.coverage.bands.map(band=>[i,band,1,1,0,0]));
+  state.coverage.dayData = {v:1,day:'2025-06-09',mode,cadence:mode==='grid'?5:0,official_state:2,times,cells};
+  state.coverage.cells = new Map(cells.map(cell=>[cell[0]+':'+cell[1],cell]));
+  renderCoverageDay();
+  const track = document.querySelector('.band-track');
+  const gap = track.querySelector('[data-minute="905"]');
+  return {range:$('#coverage-hour').value,count:track.children.length,hours:$('#coverage-day-overview').children.length,
+    gap:gap?.className,pattern:gap?getComputedStyle(gap).backgroundImage:'',
+    positions:[...track.children].map(cell=>parseFloat(cell.style.left)),
+    scroll:document.documentElement.scrollWidth,viewport:innerWidth};
+};
+window.incrementalIndexFixture = function() {
+  renderCoverageYear();
+  const grid=$('#year-grid'),first=grid.querySelector('[data-day="2025-01-01"]'),second=grid.querySelector('[data-day="2025-01-02"]');
+  const firstBand=first.children[0],secondBand=second.children[0];
+  let stream;
+  const previous=window.EventSource;
+  window.EventSource=class {
+    constructor(url) { this.url=url;this.listeners={};stream=this; }
+    addEventListener(name,callback) { this.listeners[name]=callback; }
+    close() {}
+  };
+  try { ensureIndexStream(state.selected.id,2025); } finally { window.EventSource=previous; }
+  const changes=[];
+  const observer=new MutationObserver(records=>changes.push(...records));
+  observer.observe(grid,{childList:true});
+  stream.listeners.index({data:JSON.stringify({coverage:true,bands:[2,6,7,14],active:false,
+    days:[[0,'complete',1,1,1,1,0,0,0,0,false,'',[[2,288,288,24,24,0,0,0,0,0,0]],2,'grid']]})});
+  const replaced=observer.takeRecords().length;observer.disconnect();stopIndexStream();
+  return {sameDay:first===grid.querySelector('[data-day="2025-01-01"]'),sameBand:firstBand===first.children[0],
+    untouched:secondBand===second.children[0],status:first.children[0].className,replaced};
+};
 bind();
 window.styleFixtureReady = true;
 `;
@@ -133,6 +173,29 @@ try {
     await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
     const timelineStability = await driver.executeScript('return window.coverageTimelineStability()');
     assert.equal(timelineStability.limitedTop,timelineStability.supportedTop,'coverage capability changed timeline vertical position');
+    const fixed=await driver.executeScript('return window.calendarIndexFixture("grid",arguments[0])',width>820);
+    assert.equal(fixed.range,'-1','daily coverage is not all-day by default');
+    assert.equal(fixed.count,288,'fixed-period timeline omitted nominal slots');
+    assert.equal(fixed.hours,24,'hour overview missing');
+    assert.match(fixed.gap,/official_missing/);
+    assert.match(fixed.pattern,/repeating-linear-gradient/,'official gap has no hatch');
+    assert.ok(fixed.scroll<=fixed.viewport+1,'all-day timeline overflows page');
+    const zoom=await driver.executeScript(`
+      document.querySelector('[data-hour="15"]').click();
+      const before={range:$('#coverage-hour').value,gaps:document.querySelectorAll('#coverage-matrix .official_missing').length};
+      $('#coverage-hour').value='-1';$('#coverage-hour').dispatchEvent(new Event('change'));
+      return {...before,restored:document.querySelector('.band-track').children.length};
+    `);
+    assert.equal(zoom.range,'15');assert.equal(zoom.gaps,4);assert.equal(zoom.restored,288);
+    await writeFile('dist/visual/calendar-all-day-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+    const incremental=await driver.executeScript('return window.incrementalIndexFixture()');
+    assert.deepEqual(incremental,{sameDay:true,sameBand:true,untouched:true,status:'complete',replaced:0});
+    const events=await driver.executeScript('return window.calendarIndexFixture("events",arguments[0])',width>820);
+    assert.equal(events.count,2,'event timeline invented gaps');
+    assert.ok(Math.abs(events.positions[0]-62.5/864)<1e-8);
+    assert.ok(Math.abs(events.positions[1]-81040/864)<1e-8);
+    assert.ok(events.scroll<=events.viewport+1,'event timeline overflows page');
+    await writeFile('dist/visual/calendar-events-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     for (const [source,product,supported] of [['goes18','ABI-L1b-RadF',true],['goes18','GLM-L2-LCFA',false],
       ['himawari9','AHI-L1b-FLDK',true],['earthcare','ACM_CAP_2B',false],['cloudsat','2B-GEOPROF',false],
       ['modis','MOD021KM',false],['viirs','VNP02MOD',false],['mtg','FCI-L1c',true]]) {
@@ -156,7 +219,7 @@ try {
         const bad = [];
         for (const node of document.querySelectorAll('.view.active button,.view.active input,.view.active select')) {
           const box = node.getBoundingClientRect();
-          if (box.width && box.height && box.width < 8) bad.push(node.id||node.className);
+          if (box.width && box.height && box.width < 8 && !node.classList.contains('band-slot')) bad.push(node.id||node.className);
         }
         return {width:innerWidth,scroll:document.documentElement.scrollWidth,bad};
       `);

@@ -34,6 +34,7 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	coverage := downloadfilter.ForProduct(product.SourceID, product.ProductKey) != nil
+	watch := r.URL.Query().Get("watch") == "1"
 	stream, err := newSSEWriter(w)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -45,6 +46,15 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 	lastActive := false
 
 	emit := func() (bool, error) {
+		if watch {
+			status, err := s.store.ProductArchiveIndexStatus(r.Context(), productKey, year)
+			if err != nil {
+				return false, err
+			}
+			if _, err := stream.event("archive", status, true); err != nil {
+				return false, err
+			}
+		}
 		next := map[string][]byte{}
 		removed := []string{}
 		active := false
@@ -120,7 +130,7 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	if !active {
+	if !active && !watch {
 		_, _ = stream.event("complete", map[string]any{"active": false}, false)
 		return
 	}
@@ -138,7 +148,7 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-			if !active {
+			if !active && !watch {
 				_, _ = stream.event("complete", map[string]any{"active": false}, false)
 				return
 			}

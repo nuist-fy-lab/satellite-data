@@ -17,11 +17,13 @@ const state = {
   dayState: new Map(),
   coverage: {
     supported: false, bands: [], yearDays: new Map(), month: null, dayData: null,
-    view: 'year', time: 'all', band: 0, day: '', hour: 0,
+    view: 'year', time: 'all', band: 0, day: '', hour: -1,
     requestSeq: 0, fileSeq: 0, poll: 0,
   },
   indexStream: null,
   indexStreamKey: '',
+  archiveIndex: null,
+  indexConnection: 'connecting',
   yearPoll: 0,
   dayPoll: 0,
   era5: {schema: null, seq: 0, submitting: false, checking: false},
@@ -48,6 +50,7 @@ const state = {
 
 const SIDEBAR_KEY = 'satellite-data-sidebar-expanded';
 const FILTER_KEY = 'satellite-data-filters-v1';
+const CALENDAR_YEARS_KEY = 'satellite-data-calendar-years-v1';
 function storedDisplayZone(key, fallback) {
   const zone = localStorage.getItem(key);
   return zone === 'UTC' || zone === 'BJT' ? zone : fallback;
@@ -132,6 +135,7 @@ function viewFromPath(pathname = location.pathname) {
 }
 
 function loadViewContent(id) {
+  if (id === 'calendar-view' && state.selected) loadYear(true);
   if (id === 'sources-view') renderSources();
   if (id === 'access-view') loadAccess();
   if (id === 'cli-view') loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; });
@@ -356,6 +360,8 @@ function fillMonths() {
 }
 
 function updateSelectedProduct() {
+  stopIndexStream();
+  state.archiveIndex = null;
   state.selected = selectedCollection();
   renderSatelliteTimelines();
   state.dayState.clear();
@@ -372,6 +378,8 @@ function updateSelectedProduct() {
   renderCoverageShell();
   renderCalendar();
   const product = state.selected;
+  selectCalendarYear(product);
+  renderArchiveIndex();
   const onDemand = product?.metadata?.availability_mode === 'on-demand';
   state.era5.seq++;
   state.era5.schema = null;
@@ -641,6 +649,7 @@ function applyCoverageYearRows(year, rows) {
   const changed = [];
   for (const row of rows || []) {
     const day = new Date(Date.UTC(year, 0, row[0] + 1)).toISOString().slice(0, 10);
+    if (JSON.stringify(state.coverage.yearDays.get(day)) === JSON.stringify(row)) continue;
     state.coverage.yearDays.set(day, row);
     state.dayState.set(day, {
       day, status: row[1], official_count: row[2], local_ok_count: row[3],
@@ -660,12 +669,44 @@ function stopIndexStream() {
 }
 
 function ensureIndexStream(product, year) {
+  if (!$('#calendar-view').classList.contains('active')) return;
   const key = product + '|' + year;
   if (state.indexStream && state.indexStreamKey === key) return;
   stopIndexStream();
-  const stream = new EventSource('/api/v1/index/stream?product=' + encodeURIComponent(product) + '&year=' + year);
+  const stream = new EventSource('/api/v1/index/stream?product=' + encodeURIComponent(product) + '&year=' + year + '&watch=1');
   state.indexStream = stream;
   state.indexStreamKey = key;
+  state.indexConnection = 'connecting';
+  renderArchiveIndex();
+  stream.addEventListener('open', () => {
+    if (state.indexStream !== stream) return;
+    state.indexConnection = 'connected';
+    renderArchiveIndex();
+  });
+  stream.addEventListener('error', () => {
+    if (state.indexStream !== stream) return;
+    state.indexConnection = 'reconnecting';
+    renderArchiveIndex();
+  });
+  stream.addEventListener('archive', event => {
+    if (state.indexStream !== stream || state.selected?.id !== product || Number(yearEl.value) !== year) return;
+    let status;
+    try { status = JSON.parse(event.data); } catch { return; }
+    if (status.product !== product || status.year !== year) return;
+    const first = !state.archiveIndex;
+    state.archiveIndex = status;
+    const counts = new Map((status.years || []).map(item => [String(item.year), item.files]));
+    for (const option of yearEl.options) option.text = counts.has(option.value) ? `${option.value} · 本地 ${counts.get(option.value)}` : option.value;
+    if (first && !rememberedCalendarYear(product) && status.last_day && !state.selected.metadata?.last_day) {
+      const preferred = status.last_day.slice(0, 4);
+      if (preferred !== yearEl.value && [...yearEl.options].some(option => option.value === preferred)) {
+        yearEl.value = preferred;
+        changeCalendarYear(false);
+        return;
+      }
+    }
+    renderArchiveIndex();
+  });
   stream.addEventListener('index', event => {
     if (state.indexStream !== stream || state.selected?.id !== product || Number(yearEl.value) !== year) return;
     let payload;
@@ -681,6 +722,7 @@ function ensureIndexStream(product, year) {
       }
     } else {
       for (const day of payload.days || []) {
+        if (JSON.stringify(state.dayState.get(day.day)) === JSON.stringify(day)) continue;
         state.dayState.set(day.day, day);
         changed.push(day.day);
       }
@@ -690,7 +732,7 @@ function ensureIndexStream(product, year) {
       }
     }
     if (changed.length) {
-      renderCalendar();
+      for (const day of changed) updateCell(day);
       if (state.coverage.supported && state.coverage.view === 'month') {
         const monthPrefix = year + '-' + String(Number(monthEl.value) + 1).padStart(2, '0') + '-';
         if (changed.some(day => day.startsWith(monthPrefix))) loadCoverageMonth();
@@ -734,7 +776,7 @@ async function loadCoverageYear(schedulePoll = true) {
     renderCoverageShell();
     renderCalendar();
     if (coverage.view === 'month') loadCoverageMonth();
-    if (schedulePoll && payload.days.some(row => row[10])) ensureIndexStream(product, year);
+    if (schedulePoll) ensureIndexStream(product, year);
   } catch (error) {
     if (seq === state.coverage.requestSeq) {
       $('#coverage-status').textContent = `年历读取失败 · ${error.message}`;
@@ -756,31 +798,37 @@ function renderCoverageYear() {
     spacer.className = 'c spacer';
     fragment.append(spacer);
   }
-  const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
   for (let date = new Date(first); date.getUTCFullYear() === year; date.setUTCDate(date.getUTCDate() + 1)) {
     const day = date.toISOString().slice(0, 10);
-    const row = coverage.yearDays.get(day);
-    const byBand = new Map((row?.[12] || []).map(total => [total[0], total]));
-    const officialState = row?.[13] || 0;
     const cell = document.createElement('i');
-    cell.className = `c coverage-day${day === coverage.day ? ' selected-day' : ''}`;
     cell.dataset.day = day;
     cell.tabIndex = 0;
-    cell.setAttribute('aria-label', dayTip(day));
-    for (const band of coverage.bands) {
-      const part = document.createElement('i');
-      part.className = `${coverageStatus(byBand.get(band), officialState, cadence, coverage.time === 'hourly', row?.[14])}${coverage.band && band !== coverage.band ? ' muted' : ''}`;
-      cell.append(part);
-    }
+    paintCoverageCell(cell, day);
     fragment.append(cell);
   }
   gridEl.replaceChildren(fragment);
   fitYearCalendar();
 }
 
+function paintCoverageCell(cell, day) {
+  const coverage = state.coverage;
+  const row = coverage.yearDays.get(day);
+  const byBand = new Map((row?.[12] || []).map(total => [total[0], total]));
+  const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
+  cell.className = `c coverage-day${day === coverage.day ? ' selected-day' : ''}`;
+  cell.setAttribute('aria-label', dayTip(day));
+  if (cell.children.length !== coverage.bands.length) {
+    cell.replaceChildren(...coverage.bands.map(() => document.createElement('i')));
+  }
+  coverage.bands.forEach((band, index) => {
+    cell.children[index].className = `${coverageStatus(byBand.get(band), row?.[13] || 0, cadence, coverage.time === 'hourly', row?.[14])}${coverage.band && band !== coverage.band ? ' muted' : ''}`;
+  });
+}
+
 function updateCell(day) {
   const cell = gridEl.querySelector(`[data-day="${day}"]`);
   if (!cell) return;
+  if (state.coverage.supported) { paintCoverageCell(cell, day); return; }
   const status = state.dayState.get(day)?.status || 'unknown';
   cell.className = `c ${status}`;
   cell.dataset.status = status;
@@ -831,7 +879,7 @@ async function loadYear(schedulePoll = true) {
     state.dayState.clear();
     for (const day of payload.days || []) state.dayState.set(day.day, day);
     renderCalendar();
-    if (schedulePoll && (payload.days || []).some(day => day.indexing)) ensureIndexStream(product, year);
+    if (schedulePoll) ensureIndexStream(product, year);
   } catch (error) {
     $('#product-meta').textContent = `年历索引读取失败 · ${error.message}`;
   }
@@ -989,9 +1037,9 @@ async function openCoverageDay(day) {
   const parsed = new Date(`${day}T00:00:00Z`);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number(day.slice(0, 4)) !== year ||
       !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) return;
+  if (coverage.day !== day) coverage.hour = -1;
   coverage.day = day;
   coverage.dayData = null;
-  coverage.hour = 0;
   coverage.view = 'day';
   coverage.fileSeq++;
   clearTimeout(coverage.poll);
@@ -1024,7 +1072,7 @@ function coverageDayColumns(day) {
   if (day.mode === 'grid' && day.cadence > 0) {
     const minutes = hourly
       ? Array.from({length: 24}, (_, hour) => hour * 60)
-      : Array.from({length: 60 / day.cadence}, (_, index) => state.coverage.hour * 60 + index * day.cadence);
+      : Array.from({length: (state.coverage.hour < 0 ? 1440 : 60) / day.cadence}, (_, index) => Math.max(0, state.coverage.hour) * 60 + index * day.cadence);
     const byMinute = new Map();
     day.times.forEach(([ts, minute], index) => {
       if (minute < 0) return;
@@ -1038,7 +1086,73 @@ function coverageDayColumns(day) {
   }
   return day.times.map(([ts], index) => ({
     label: ts.slice(11, 16), indices: [index],
-  })).filter(column => hourly ? column.label.endsWith(':00') : Number(column.label.slice(0, 2)) === state.coverage.hour);
+  })).filter(column => hourly ? column.label.endsWith(':00') : state.coverage.hour < 0 || Number(column.label.slice(0, 2)) === state.coverage.hour);
+}
+
+function coverageCellState(day, indices, band) {
+  const cells = indices.map(index => state.coverage.cells.get(`${index}:${band}`)).filter(Boolean);
+  const total = position => cells.reduce((sum, cell) => sum + cell[position], 0);
+  const official = total(2), ok = total(3), errors = total(4), processing = total(5);
+  const status = day.official_state !== 2 ? day.official_state === 1 ? 'official_missing' : 'unknown' :
+    !official ? 'official_missing' : errors ? 'error' : processing ? 'processing' :
+    ok >= official ? 'complete' : ok ? 'partial' : 'missing';
+  return {status, official, ok, indices: cells.map(cell => cell[0])};
+}
+
+function coverageDayHours(day) {
+  if (day.mode !== 'grid' || !(day.cadence > 0) || 60 % day.cadence !== 0) return [];
+  const bands = state.coverage.band ? [state.coverage.band] : state.coverage.bands;
+  const byMinute = new Map();
+  day.times.forEach(([, minute], index) => {
+    if (!byMinute.has(minute)) byMinute.set(minute, []);
+    byMinute.get(minute).push(index);
+  });
+  return Array.from({length:24}, (_, hour) => {
+    const slots = Array.from({length:state.coverage.time === 'hourly' ? 1 : 60 / day.cadence}, (_, step) => {
+      const minute = hour * 60 + step * day.cadence;
+      const states = bands.map(band => coverageCellState(day, byMinute.get(minute) || [], band).status);
+      const status = ['unknown','official_missing','error','processing'].find(value => states.includes(value)) ||
+        (states.every(value => value === 'complete') ? 'complete' : states.some(value => value === 'complete' || value === 'partial') ? 'partial' : 'missing');
+      return {minute, status};
+    });
+    return {hour, slots, gaps:slots.filter(slot => slot.status === 'official_missing').length};
+  });
+}
+
+function renderCoverageDayOverview(day) {
+  const hours = coverageDayHours(day);
+  const node = $('#coverage-day-overview');
+  node.classList.toggle('hidden', !hours.length);
+  const hourEl = $('#coverage-hour');
+  const fragment = document.createDocumentFragment();
+  for (const {hour, slots, gaps} of hours) {
+    const label = String(hour).padStart(2, '0');
+    if (hourEl.options[hour + 1]) hourEl.options[hour + 1].text = `${label}:00${gaps ? ` · 官方缺 ${gaps}` : ''}`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `day-hour${hour === state.coverage.hour ? ' selected' : ''}`;
+    button.dataset.hour = String(hour);
+    button.disabled = state.coverage.time === 'hourly';
+    const missing = slots.filter(slot => slot.status === 'official_missing').map(slot => `${label}:${String(slot.minute % 60).padStart(2, '0')}`);
+    button.title = `${label}:00 UTC${missing.length ? ' · 官方缺时次 ' + missing.join(', ') : ''}`;
+    button.setAttribute('aria-label', button.title);
+    const title = document.createElement('span');
+    title.textContent = label;
+    const strip = document.createElement('span');
+    strip.className = 'day-hour-slots';
+    strip.style.gridTemplateColumns = `repeat(${slots.length},1fr)`;
+    for (const slot of slots) {
+      const cell = document.createElement('i');
+      cell.className = `day-hour-slot ${slot.status}`;
+      cell.title = `${label}:${String(slot.minute % 60).padStart(2, '0')} UTC · ${statusLabels[slot.status] || slot.status}`;
+      strip.append(cell);
+    }
+    button.append(title, strip);
+    button.addEventListener('click', () => { state.coverage.hour = hour; renderCoverageDay(); });
+    fragment.append(button);
+  }
+  node.replaceChildren(fragment);
+  return hours.reduce((sum, hour) => sum + hour.gaps, 0);
 }
 
 function renderCoverageDay() {
@@ -1052,12 +1166,22 @@ function renderCoverageDay() {
     `${day.times.length} 个实际时次 · ${day.cells.length} 个波段时次 · 时间轴为 UTC`;
   const hourEl = $('#coverage-hour');
   if (!hourEl.options.length) {
+    hourEl.add(new Option('全天', '-1'));
     for (let hour = 0; hour < 24; hour++) hourEl.add(new Option(`${String(hour).padStart(2, '0')}:00`, String(hour)));
   }
   hourEl.value = String(coverage.hour);
   hourEl.disabled = coverage.time === 'hourly';
+  const gaps = renderCoverageDayOverview(day);
+  if (gaps && day.official_state === 2) summary.textContent += ` · 全天官方缺时次 ${gaps}`;
   const columns = coverageDayColumns(day);
   const matrix = $('#coverage-matrix');
+  const fullDay = coverage.hour < 0 || coverage.time === 'hourly';
+  matrix.classList.toggle('full-day', fullDay);
+  if (fullDay) {
+    renderCoverageTimelines(day, columns);
+    return;
+  }
+  matrix.style.minWidth = '';
   matrix.style.gridTemplateColumns = `70px repeat(${Math.max(1, columns.length)},20px)`;
   const fragment = document.createDocumentFragment();
   const first = document.createElement('span');
@@ -1078,22 +1202,70 @@ function renderCoverageDay() {
     label.textContent = coverageBandName(band);
     fragment.append(label);
     for (const column of columns) {
-      const matched = column.indices.map(index => coverage.cells.get(`${index}:${band}`)).filter(Boolean);
-      const official = matched.reduce((sum, cell) => sum + cell[2], 0);
-      const ok = matched.reduce((sum, cell) => sum + cell[3], 0);
-      const errors = matched.reduce((sum, cell) => sum + cell[4], 0);
-      const processing = matched.reduce((sum, cell) => sum + cell[5], 0);
-      const status = day.official_state !== 2 ? day.official_state === 1 ? 'official_missing' : 'unknown' :
-        !official ? 'official_missing' : errors ? 'error' : processing ? 'processing' :
-        ok >= official ? 'complete' : ok ? 'partial' : 'missing';
+      const {status, official, ok, indices} = coverageCellState(day, column.indices, band);
       const cell = document.createElement('button');
       cell.type = 'button';
       cell.className = `matrix-cell ${status}`;
       cell.title = `${coverageBandName(band)} · ${column.label} UTC · ${statusLabels[status] || status} · ${ok}/${official} 文件`;
       cell.dataset.band = String(band);
-      cell.dataset.indices = matched.map(row => row[0]).join(',');
+      cell.dataset.indices = indices.join(',');
       fragment.append(cell);
     }
+  }
+  matrix.replaceChildren(fragment);
+}
+
+function renderCoverageTimelines(day, columns) {
+  const matrix = $('#coverage-matrix');
+  matrix.style.gridTemplateColumns = '70px minmax(744px,1fr)';
+  const fragment = document.createDocumentFragment();
+  const heading = document.createElement('span');
+  heading.className = 'matrix-label';
+  heading.textContent = '波段 / UTC';
+  const axis = document.createElement('span');
+  axis.className = 'coverage-time-axis';
+  for (const hour of [0,4,8,12,16,20,24]) {
+    const label = document.createElement('span');
+    label.textContent = String(hour).padStart(2,'0') + ':00';
+    axis.append(label);
+  }
+  fragment.append(heading, axis);
+  const bands = state.coverage.band ? [state.coverage.band] : state.coverage.bands;
+  const fixed = day.mode === 'grid' && day.cadence > 0 && 1440 % day.cadence === 0;
+  matrix.style.minWidth = `${70 + Math.max(744, fixed ? columns.length * 3 - 1 : 0)}px`;
+  for (const band of bands) {
+    const label = document.createElement('span');
+    label.className = 'matrix-label';
+    label.textContent = coverageBandName(band);
+    const track = document.createElement('div');
+    track.className = `band-track ${fixed ? 'fixed' : 'events'}${day.official_state === 1 ? ' official_missing' : day.official_state !== 2 ? ' unknown' : ''}`;
+    track.dataset.band = String(band);
+    if (fixed) track.style.gridTemplateColumns = `repeat(${Math.max(1, columns.length)},minmax(2px,1fr))`;
+    for (const column of columns) {
+      const {status, official, ok, indices} = coverageCellState(day, column.indices, band);
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = `matrix-cell band-slot ${status}`;
+      cell.dataset.band = String(band);
+      cell.dataset.indices = indices.join(',');
+      cell.title = `${coverageBandName(band)} · ${column.label} UTC · ${statusLabels[status] || status} · ${ok}/${official} 文件`;
+      cell.setAttribute('aria-label', cell.title);
+      if (fixed) {
+        cell.dataset.minute = String(Number(column.label.slice(0,2)) * 60 + Number(column.label.slice(3,5)));
+      } else {
+        // Sparse products have markers at actual times, never synthetic gaps.
+        if (!official) continue;
+        const timestamp = day.times[column.indices[0]]?.[0];
+        const instant = new Date(timestamp);
+        const seconds = instant.getUTCHours() * 3600 + instant.getUTCMinutes() * 60 + instant.getUTCSeconds() + instant.getUTCMilliseconds() / 1000;
+        cell.style.left = `${seconds / 864}%`;
+        cell.dataset.timestamp = timestamp;
+        cell.title = `${coverageBandName(band)} · ${timestamp} · ${statusLabels[status] || status} · ${ok}/${official} 文件`;
+        cell.setAttribute('aria-label', cell.title);
+      }
+      track.append(cell);
+    }
+    fragment.append(label, track);
   }
   matrix.replaceChildren(fragment);
 }
@@ -1216,8 +1388,8 @@ function renderTimeline(day) {
 	  const group = by.get(i) || [];
       const cell = document.createElement('i');
       const hourly = i % (60 / interval) === 0;
-	  const status = ['error','processing','missing','official_missing','unknown','complete'].find(value => group.some(slot => slot.status === value))
-	    || (day.official_day?.state === 'present' ? 'official_missing' : 'unknown');
+	  const status = ['error','processing','partial','missing','official_missing','unknown','complete'].find(value => group.some(slot => slot.status === value))
+	    || (day.official_day ? 'official_missing' : 'unknown');
       cell.className = `slot c ${status}${hourly ? ' hourly' : ''}`;
       const minute = i * interval;
 	  cell.title = `${String(Math.floor(minute / 60)).padStart(2,'0')}:${String(minute % 60).padStart(2,'0')} · ${statusLabels[status] || status}` +
@@ -1323,6 +1495,8 @@ function applyCatalog(payload, family, saved = readFilters()) {
       catalog_source: product.catalog_source || '',
       product_count: product.product_count ? String(product.product_count) : '',
       local_covered: Boolean(product.local_covered),
+      first_day: product.first_day || '',
+      last_day: product.last_day || '',
     },
   }));
   rebuildFilters('source', false);
@@ -1399,6 +1573,64 @@ function readFilters() {
   try { return JSON.parse(localStorage.getItem(FILTER_KEY) || '{}'); } catch { return {}; }
 }
 
+function rememberedCalendarYear(product) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CALENDAR_YEARS_KEY) || '{}');
+    const value = String(saved?.[product] || '');
+    return [...yearEl.options].some(option => option.value === value) ? value : '';
+  } catch { return ''; }
+}
+
+function selectCalendarYear(product) {
+  for (const option of yearEl.options) option.text = option.value;
+  const year = rememberedCalendarYear(product?.id) || product?.metadata?.last_day?.slice(0, 4) || String(defaultYear());
+  restoreSelect(yearEl, year);
+}
+
+function renderArchiveIndex() {
+  const status = state.archiveIndex;
+  const node = $('#archive-index-status');
+  node.classList.toggle('hidden', !state.selected || state.selected.metadata?.availability_mode === 'on-demand');
+  const connection = state.indexConnection === 'reconnecting' ? ' · 实时状态重连中' : '';
+  if (!status) {
+    $('#archive-scan-state').textContent = '读取索引状态…' + connection;
+    $('#archive-product-state').textContent = '';
+    return;
+  }
+  const scan = status.scan || {};
+  const text = scan.state === 'running' ? `归档扫描中 · 已扫描 ${scan.observed_files || 0} 个文件` :
+    scan.state === 'error' ? `归档扫描失败 · ${scan.last_error || '等待重试'}` :
+    scan.state === 'ready' ? `归档扫描完成 · ${downloadTimestamp(scan.scanned_at, 'BJT')}` : '归档等待扫描';
+  $('#archive-scan-state').textContent = text + connection;
+  const details = [`本地已索引 ${status.files || 0} 个文件`, `${status.year} 年 ${status.year_files || 0} 个文件`, `官方已索引 ${status.official_days || 0} 天`];
+  if (status.first_day) details.push(`数据日期 ${status.first_day} 至 ${status.last_day} UTC`);
+  if (status.running_days) details.push(`官方索引中 ${status.running_days} 天`);
+  if (status.queued_days) details.push(`排队 ${status.queued_days} 天`);
+  if (status.retry_days) details.push(`退避重试 ${status.retry_days} 天`);
+  if (scan.skipped_paths?.length) details.push(`跳过 ${scan.skipped_paths.length} 个不可读目录`);
+  $('#archive-product-state').textContent = details.join(' · ');
+}
+
+function changeCalendarYear(manual = true) {
+  if (manual && state.selected) {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(CALENDAR_YEARS_KEY) || '{}') || {}; } catch {}
+    if (typeof saved !== 'object' || Array.isArray(saved)) saved = {};
+    saved[state.selected.id] = yearEl.value;
+    localStorage.setItem(CALENDAR_YEARS_KEY, JSON.stringify(saved));
+  }
+  state.coverage.requestSeq++;
+  state.coverage.fileSeq++;
+  clearTimeout(state.coverage.poll);
+  state.coverage.day = '';
+  state.coverage.dayData = null;
+  state.coverage.month = null;
+  state.coverage.yearDays.clear();
+  state.archiveIndex = null;
+  if (state.coverage.view === 'day') state.coverage.view = 'year';
+  state.dayState.clear(); closeDetail(); renderCoverageShell(); renderCalendar(); renderArchiveIndex(); persistFilters(); loadYear(true);
+}
+
 function persistFilters() {
   localStorage.setItem(FILTER_KEY, JSON.stringify({
     family: sourceEl.value,
@@ -1415,6 +1647,7 @@ function persistFilters() {
 
 function resetFilters() {
   localStorage.removeItem(FILTER_KEY);
+  localStorage.removeItem(CALENDAR_YEARS_KEY);
   if ([...sourceEl.options].some(item => item.value === 'goes')) sourceEl.value = 'goes';
   else sourceEl.selectedIndex = 0;
   yearEl.value = String(defaultYear());
@@ -2530,16 +2763,7 @@ function bind() {
   instrumentEl.addEventListener('change', () => { rebuildFilters('instrument'); persistFilters(); });
   levelEl.addEventListener('change', () => { rebuildFilters('level'); persistFilters(); });
   productEl.addEventListener('change', updateSelectedProduct);
-  yearEl.addEventListener('change', () => {
-    state.coverage.requestSeq++;
-    state.coverage.fileSeq++;
-    clearTimeout(state.coverage.poll);
-    state.coverage.day = '';
-    state.coverage.dayData = null;
-    state.coverage.month = null;
-    if (state.coverage.view === 'day') state.coverage.view = 'year';
-    state.dayState.clear(); closeDetail(); renderCoverageShell(); renderCalendar(); persistFilters(); loadYear(true);
-  });
+  yearEl.addEventListener('change', () => changeCalendarYear());
   monthEl.addEventListener('change', () => {
     persistFilters();
     if (state.coverage.supported && state.coverage.view === 'month') loadCoverageMonth();

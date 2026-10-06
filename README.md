@@ -58,7 +58,12 @@ the downloader. `SATELLITED_HIMAWARI_ARCHIVE` additionally enables the existing
 `/misc/nuist_data1/public_sharing/Himawari` historical archive. The centre scans
 all configured roots without moving other users'
 historical files. `GET /api/v1/archive/index-status` reports file counts and
-unreadable directories. Shared historical files are indexed as `unverified`
+unreadable directories. With `product` and `year`, it also reports that product's
+local file dates, available years and official-index queue state. The calendar
+uses the existing index SSE with `watch=1` to keep scan status live even while
+idle and applies changed dates in place. Daily band coverage opens on a full-day
+UTC timeline: fixed-period products retain official gaps with hatching, while
+event products place markers only at actual timestamps. Shared historical files are indexed as `unverified`
 until an exact official item/asset (EarthCARE) or CDS job/result (ERA5) can be
 matched and the file is hashed. A valid HDF5/NetCDF header is only a format
 check, not proof of official identity. On this installation the separate

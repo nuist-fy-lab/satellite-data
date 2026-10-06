@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=18">
+  <link rel="stylesheet" href="/styles.css?v=19">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -79,6 +79,7 @@
             <button id="clear-calendar" type="button">刷新年历</button>
           </div>
         </div>
+        <div id="archive-index-status" class="archive-index-status" role="status" aria-live="polite"><span id="archive-scan-state">读取索引状态…</span><span id="archive-product-state"></span></div>
         <div id="coverage-tools" class="coverage-tools">
           <div id="coverage-views" class="coverage-switch" role="group" aria-label="年历视图">
             <button type="button" data-coverage-view="year" class="active">年</button>
@@ -129,8 +130,9 @@
           <div id="month-grid" class="month-grid"></div>
         </section>
         <section id="day-coverage" class="day-coverage hidden" aria-label="日度波段覆盖">
-          <div class="coverage-heading"><strong id="coverage-day-title"></strong><input id="coverage-day-picker" type="date" aria-label="选择日期"><label>小时 <select id="coverage-hour" aria-label="展开小时"></select></label></div>
+          <div class="coverage-heading"><strong id="coverage-day-title"></strong><input id="coverage-day-picker" type="date" aria-label="选择日期"><label>范围 <select id="coverage-hour" aria-label="时间轴范围"></select></label></div>
           <div id="coverage-day-summary" class="coverage-day-summary"></div>
+          <div class="day-overview-scroll"><div id="coverage-day-overview" class="coverage-day-overview" aria-label="全天 UTC 时次覆盖"></div></div>
           <div class="matrix-scroll"><div id="coverage-matrix" class="coverage-matrix"></div></div>
           <div id="coverage-files" class="coverage-files"></div>
         </section>
@@ -346,6 +348,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=25"></script>
+  <script type="module" src="/app.js?v=26"></script>
 </body>
 </html>
