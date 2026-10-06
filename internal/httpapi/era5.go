@@ -12,6 +12,10 @@ import (
 
 func (s *Server) era5Inventory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("archive store unavailable"))
+		return
+	}
 	inventory, err := s.store.ERA5Inventory(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
