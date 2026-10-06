@@ -139,6 +139,16 @@ window.incrementalIndexFixture = function() {
   return {sameDay:first===grid.querySelector('[data-day="2025-01-01"]'),sameBand:firstBand===first.children[0],
     untouched:secondBand===second.children[0],status:first.children[0].className,replaced};
 };
+window.coverageZoomFixture = function() {
+  document.querySelector('[data-hour="15"]').click();
+  const before={range:$('#coverage-hour').value,gaps:document.querySelectorAll('#coverage-matrix .official_missing').length};
+  state.coverage.time='hourly';renderCoverageDay();
+  before.hourlyRange=$('#coverage-hour').value;
+  before.hourlyCount=document.querySelector('.band-track').children.length;
+  state.coverage.time='all';renderCoverageDay();
+  $('#coverage-hour').value='-1';$('#coverage-hour').dispatchEvent(new Event('change'));
+  return {...before,restored:document.querySelector('.band-track').children.length};
+};
 bind();
 window.styleFixtureReady = true;
 `;
@@ -180,16 +190,7 @@ try {
     assert.match(fixed.gap,/official_missing/);
     assert.match(fixed.pattern,/repeating-linear-gradient/,'official gap has no hatch');
     assert.ok(fixed.scroll<=fixed.viewport+1,'all-day timeline overflows page');
-    const zoom=await driver.executeScript(`
-      document.querySelector('[data-hour="15"]').click();
-      const before={range:$('#coverage-hour').value,gaps:document.querySelectorAll('#coverage-matrix .official_missing').length};
-      state.coverage.time='hourly';renderCoverageDay();
-      before.hourlyRange=$('#coverage-hour').value;
-      before.hourlyCount=document.querySelector('.band-track').children.length;
-      state.coverage.time='all';renderCoverageDay();
-      $('#coverage-hour').value='-1';$('#coverage-hour').dispatchEvent(new Event('change'));
-      return {...before,restored:document.querySelector('.band-track').children.length};
-    `);
+    const zoom=await driver.executeScript('return window.coverageZoomFixture()');
     assert.equal(zoom.range,'15');assert.equal(zoom.gaps,4);assert.equal(zoom.restored,288);
     assert.equal(zoom.hourlyRange,'-1');assert.equal(zoom.hourlyCount,24);
     await writeFile('dist/visual/calendar-all-day-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
