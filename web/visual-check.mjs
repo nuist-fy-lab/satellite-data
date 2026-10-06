@@ -9,7 +9,7 @@ const firefox = require('selenium-webdriver/firefox');
 const app = (await readFile(new URL('./static/app.js', import.meta.url), 'utf8')).replace(/\nboot\(\);\s*$/, '\n');
 // Synthetic data exercises the real renderers without accounts or upstream APIs.
 const fixture = `
-window.styleFixture = function(view, mode, wide) {
+window.styleFixture = async function(view, mode, wide) {
   stopIndexStream(); state.satelliteYears.clear();
   $('#satellite-year-calendars').replaceChildren(); $('#year-product-heading').classList.add('hidden');
   setView(view);
@@ -87,6 +87,8 @@ window.styleFixture = function(view, mode, wide) {
     $('#catalog-sources-panel').classList.toggle('hidden',!sources);
     $('.catalog-search').classList.toggle('hidden',sources);
   }
+  // The sidebar animates for 180ms; measure only after its layout settles.
+  await new Promise(resolve=>setTimeout(resolve,250));
 };
 window.inventoryFixture = async function() {
   const module=await import('/era5-inventory.js');
@@ -141,7 +143,7 @@ window.calendarSizingFixture = async function(source, product, supported, year) 
     scroll:document.documentElement.scrollWidth,viewport:innerWidth};
 };
 window.calendarIndexFixture = async function(mode, wide) {
-  window.styleFixture('calendar-view','day',wide);
+  await window.styleFixture('calendar-view','day',wide);
   yearEl.replaceChildren(new Option('2025','2025'));
   Object.assign(state.coverage,{bands:[2,6,7,14],day:'2025-06-09',hour:-1});
   state.selected = {id:'goes18:ABI-L1b-RadC',source_id:'goes18',product:'ABI-L1b-RadC',cadence:'5m',metadata:{}};
@@ -268,7 +270,7 @@ try {
     await writeFile('dist/visual/login-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     await driver.get(base);
     await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
-    await driver.executeScript('window.styleFixture("calendar-view","year",arguments[0])',width>820);
+    await driver.executeScript('return window.styleFixture("calendar-view","year",arguments[0])',width>820);
     const calendarCardSizing = await driver.executeScript(`
       const view=document.querySelector("#calendar-view");
       const header=view.querySelector(".page-header");
@@ -360,7 +362,7 @@ try {
     assert.equal(satellites.headingFits,true,'satellite heading overflows');
     await writeFile('dist/visual/calendar-all-satellites-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     for (const [view,mode] of cases) {
-      await driver.executeScript('window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
+      await driver.executeScript('return window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
       if(view==='era5-view') {
         const inventory=await driver.executeScript('return window.inventoryFixture()');
         assert.equal(inventory.datasets,3);assert.equal(inventory.months,2);
@@ -426,7 +428,7 @@ try {
   await driver.manage().window().setRect({width:2560,height:900});
   await driver.get(base);
   await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
-  await driver.executeScript('window.styleFixture("calendar-view","year",false)');
+  await driver.executeScript('return window.styleFixture("calendar-view","year",false)');
   const wideCalendar = await driver.executeScript(`
     const view=document.querySelector("#calendar-view").getBoundingClientRect();
     const header=document.querySelector("#calendar-view>.page-header").getBoundingClientRect();
@@ -451,7 +453,7 @@ try {
       await driver.manage().window().setRect({width:390,height:frame.height+height-contentHeight});
     }
     assert.equal(await driver.executeScript('return innerHeight'),height,'short-window content height was not set');
-    await driver.executeScript('window.styleFixture("calendar-view","year",false)');
+    await driver.executeScript('return window.styleFixture("calendar-view","year",false)');
     for (const expanded of [false,true]) {
       const footer=await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',expanded);
       assert.equal(footer.textLines,1,'short-window logout wrapped: '+JSON.stringify(footer));
