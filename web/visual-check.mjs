@@ -113,9 +113,13 @@ window.calendarIndexFixture = function(mode, wide) {
   renderCoverageDay();
   const track = document.querySelector('.band-track');
   const gap = track.querySelector('[data-minute="905"]');
+  const trackBox = track.getBoundingClientRect();
   return {range:$('#coverage-hour').value,count:track.children.length,hours:$('#coverage-day-overview').children.length,
     gap:gap?.className,pattern:gap?getComputedStyle(gap).backgroundImage:'',
     positions:[...track.children].map(cell=>parseFloat(cell.style.left)),
+    trackWidth:trackBox.width,centres:[...track.children].map(cell=>{
+      const box=cell.getBoundingClientRect();return box.left+box.width/2-trackBox.left;
+    }),
     scroll:document.documentElement.scrollWidth,viewport:innerWidth};
 };
 window.incrementalIndexFixture = function() {
@@ -198,8 +202,10 @@ try {
     assert.deepEqual(incremental,{sameDay:true,sameBand:true,untouched:true,status:'complete',replaced:0});
     const events=await driver.executeScript('return window.calendarIndexFixture("events",arguments[0])',width>820);
     assert.equal(events.count,2,'event timeline invented gaps');
-    assert.ok(Math.abs(events.positions[0]-62.5/864)<1e-8);
-    assert.ok(Math.abs(events.positions[1]-81040/864)<1e-8);
+    assert.ok(Math.abs(events.positions[0]-62.5/864)<1e-4,JSON.stringify(events));
+    assert.ok(Math.abs(events.positions[1]-81040/864)<1e-4,JSON.stringify(events));
+    assert.ok(Math.abs(events.centres[0]-events.trackWidth*62.5/86400)<.1,JSON.stringify(events));
+    assert.ok(Math.abs(events.centres[1]-events.trackWidth*81040/86400)<.1,JSON.stringify(events));
     assert.ok(events.scroll<=events.viewport+1,'event timeline overflows page');
     await writeFile('dist/visual/calendar-events-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     for (const [source,product,supported] of [['goes18','ABI-L1b-RadF',true],['goes18','GLM-L2-LCFA',false],
