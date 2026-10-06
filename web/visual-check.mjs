@@ -102,7 +102,7 @@ window.calendarSizingFixture = async function(source, product, supported, year) 
     axisLeft:$('.calendar-axis').getBoundingClientRect().left,sidebarRight:$('.sidebar').getBoundingClientRect().right,
     scroll:document.documentElement.scrollWidth,viewport:innerWidth};
 };
-window.calendarIndexFixture = function(mode, wide) {
+window.calendarIndexFixture = async function(mode, wide) {
   window.styleFixture('calendar-view','day',wide);
   yearEl.replaceChildren(new Option('2025','2025'));
   Object.assign(state.coverage,{bands:[2,6,7,14],day:'2025-06-09',hour:-1});
@@ -114,6 +114,7 @@ window.calendarIndexFixture = function(mode, wide) {
   state.coverage.dayData = {v:1,day:'2025-06-09',mode,cadence:mode==='grid'?5:0,official_state:2,times,cells};
   state.coverage.cells = new Map(cells.map(cell=>[cell[0]+':'+cell[1],cell]));
   renderCoverageDay();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   const track = document.querySelector('.band-track');
   const gap = track.querySelector('[data-minute="905"]');
   const trackBox = track.getBoundingClientRect();
@@ -125,7 +126,7 @@ window.calendarIndexFixture = function(mode, wide) {
     gap:gap?.className,pattern:gap?getComputedStyle(gap).backgroundImage:'',
     positions:[...track.children].map(cell=>parseFloat(cell.style.left)),
     slotWidth:slotBox.width,slotHeight:slotBox.height,mainWidth:mainBox.width,availableWidth:document.documentElement.clientWidth-sidebarBox.right,
-    matrixScrolls:scroller.scrollWidth>scroller.clientWidth,scrollerWidth:scroller.clientWidth,
+    matrixScrollWidth:scroller.scrollWidth,scrollerWidth:scroller.clientWidth,
     matrixWidth:document.querySelector('#coverage-matrix').getBoundingClientRect().width,
     trackWidth:trackBox.width,centres:[...track.children].map(cell=>{
       const box=cell.getBoundingClientRect();return box.left+box.width/2-trackBox.left;
@@ -233,7 +234,7 @@ try {
     assert.ok(fixed.slotWidth>=2.99,'fixed slot was compressed: '+JSON.stringify(fixed));
     assert.ok(fixed.slotWidth<=5.01,'fixed slot exceeds 5px: '+JSON.stringify(fixed));
     assert.equal(fixed.slotHeight,28);
-    assert.equal(fixed.matrixScrolls,fixed.matrixWidth>fixed.scrollerWidth+1,'matrix overflow was not isolated');
+    assert.ok(Math.abs(fixed.matrixScrollWidth-Math.max(fixed.matrixWidth,fixed.scrollerWidth))<=1,'matrix overflow was not isolated: '+JSON.stringify(fixed));
     assert.ok(Math.abs(fixed.mainWidth-fixed.availableWidth)<1,'calendar does not use available width: '+JSON.stringify(fixed));
     const zoom=await driver.executeScript('return window.coverageZoomFixture()');
     assert.equal(zoom.range,'15');assert.equal(zoom.gaps,4);assert.equal(zoom.restored,288);
