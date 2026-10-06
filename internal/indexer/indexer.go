@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/archiveevent"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
+	"github.com/nuist-fy-lab/satellite-data/internal/provider/goes"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
 
@@ -390,6 +392,12 @@ func (i *Indexer) scanLocal(ctx context.Context) {
 	if changed {
 		slog.Info("local archive index refreshed", "files", len(files), "unreadable_directories", len(warnings))
 	}
+	queued, recounted, err := i.reconcileGOESArchive(ctx, files)
+	if err != nil {
+		slog.Warn("reconcile GOES archive dates", "error", err)
+	} else if queued > 0 || recounted > 0 {
+		slog.Info("GOES archive dates reconciled", "official_days_queued", queued, "days_recounted", recounted)
+	}
 	if i.sharedRoots[0] != "" {
 		queued, err := i.queueHistoricalEarthCARE(ctx, files)
 		if err != nil {
@@ -398,6 +406,47 @@ func (i *Indexer) scanLocal(ctx context.Context) {
 			slog.Info("queued official EarthCARE dates for historical archive", "days", queued)
 		}
 	}
+}
+
+func (i *Indexer) reconcileGOESArchive(ctx context.Context, files []state.LocalFile) (int, int, error) {
+	type archiveDay struct {
+		state.ArchiveDay
+		digest hash.Hash
+	}
+	byDay := make(map[string]*archiveDay)
+	for _, file := range files {
+		if file.State != "ok" || file.Size <= 0 {
+			continue
+		}
+		rel, err := filepath.Rel(i.archiveRoot, file.Path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			continue
+		}
+		product, at, ok := goes.ArchiveIdentity(file.Filename)
+		if !ok {
+			continue
+		}
+		day := at.Format(time.DateOnly)
+		key := product + "|" + day
+		if byDay[key] == nil {
+			byDay[key] = &archiveDay{ArchiveDay: state.ArchiveDay{Product: product, Day: day}, digest: sha256.New()}
+		}
+		item := byDay[key]
+		item.Filenames = append(item.Filenames, file.Filename)
+		_, _ = fmt.Fprintf(item.digest, "%s\x00%d\x00%d\x00%s\x00%s\x00", file.Path, file.Size, file.MtimeNS, file.State, file.Detail)
+	}
+	days := make([]state.ArchiveDay, 0, len(byDay))
+	for _, day := range byDay {
+		day.Fingerprint = hex.EncodeToString(day.digest.Sum(nil))
+		days = append(days, day.ArchiveDay)
+	}
+	sort.Slice(days, func(a, b int) bool {
+		if days[a].Product == days[b].Product {
+			return days[a].Day < days[b].Day
+		}
+		return days[a].Product < days[b].Product
+	})
+	return i.store.ReconcileGOESArchiveDays(ctx, days)
 }
 
 func (i *Indexer) queueHistoricalEarthCARE(ctx context.Context, files []state.LocalFile) (int, error) {

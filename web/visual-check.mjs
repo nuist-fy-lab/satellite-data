@@ -53,7 +53,18 @@ window.styleFixture = function(view, mode, wide) {
   const points = Array.from({length:24}, (_, i) => ({at:new Date(Date.now()-(23-i)*150000).toISOString(),latency_ms:170+i%5*10,jitter_ms:4+i%3,loss_pct:0}));
   state.monitor.payload = {origin:'c2ln1',links:['GOES-18','EarthCARE','ERA5','MTG'].map((name,i) => ({name,source_id:['goes18','earthcare','era5','mtg'][i],target:['noaa-goes18.s3.amazonaws.com','earthcare.example','cds.climate.copernicus.eu','api.eumetsat.int'][i],port:443,latest:points.at(-1),points}))};
   renderMonitor();
-  $('#download-requests').innerHTML = '<div class="download-request"><strong>#20 · goes18:ABI-L1b-RadF</strong><span>已完成 · 720/720</span><span>2023-06-01 → 2023-06-30 · C06 · 整点</span></div>';
+  state.downloads.displayZone = 'UTC';
+  state.downloads.history.displayZone = 'BJT';
+  state.downloads.history.chartKey = '';
+  state.downloads.requests = [{id:20,collection_id:'goes18:ABI-L1b-RadF',state:'done',files_done:720,assets_queued:720,
+    start:'2026-12-31T20:00:00Z',end:'2027-01-01T02:00:00Z',band:6,times_count:24}];
+  const transferPoints = Array.from({length:24}, (_, i) => ({sampled_at:new Date(Date.now()-(23-i)*150000).toISOString(),bytes_per_second:1048576,active_transfers:2,adaptive_concurrency:4}));
+  state.downloads.providers = [{source_id:'goes',enabled:true,bytes_per_second:1048576,active_transfers:2,adaptive_concurrency:4,states:{done:720}}];
+  state.downloads.history.payload = {window:'1h',generated_at:new Date().toISOString(),bucket_seconds:15,
+    providers:[{source_id:'goes',latest:transferPoints.at(-1),points:transferPoints}]};
+  syncDownloadTimezones();
+  renderDownloadRequests(state.downloads.requests);
+  renderDownloadProviders(state.downloads.providers, true);
   if (mode === 'form') openPoolForm('account', state.access.accounts[0]);
   if (mode === 'era5') {
     $('#era5-panel').classList.remove('hidden');
@@ -71,6 +82,7 @@ window.coverageTimelineStability = function() {
   const limitedTop = timeline.getBoundingClientRect().top;
   return {supportedTop, limitedTop};
 };
+bind();
 window.styleFixtureReady = true;
 `;
 const assets = new Map();
@@ -116,7 +128,37 @@ try {
       `);
       assert.ok(metrics.scroll<=metrics.width+1,view+' '+mode+' overflows: '+JSON.stringify(metrics));
       assert.deepEqual(metrics.bad,[],view+' has collapsed controls');
-      if (['month','era5','form'].includes(mode)||view==='monitor-view') {
+      if (view === 'downloads-view') {
+        const initial = await driver.executeScript(`return {
+          task:$('#download-timezone').value,monitor:$('#download-monitor-timezone').value,
+          request:$('#download-requests').textContent,
+          axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)
+        }`);
+        assert.equal(initial.task, 'UTC');
+        assert.equal(initial.monitor, 'BJT');
+        assert.match(initial.request, /2026-12-31 20:00 UTC/);
+        assert.ok(initial.axis.length === 2 && initial.axis.every(value => value.endsWith(' BJT')));
+        const changed = await driver.executeScript(`
+          $('#download-timezone').value='BJT';
+          $('#download-timezone').dispatchEvent(new Event('change'));
+          return {request:$('#download-requests').textContent,
+            label:$('#dl-start-label').textContent,
+            axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)};
+        `);
+        assert.match(changed.request, /2027-01-01 04:00 BJT/);
+        assert.equal(changed.label, '开始日期（BJT）');
+        assert.deepEqual(changed.axis, initial.axis);
+        const monitorChanged = await driver.executeScript(`
+          $('#download-monitor-timezone').value='UTC';
+          $('#download-monitor-timezone').dispatchEvent(new Event('change'));
+          return {request:$('#download-requests').textContent,
+            axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)};
+        `);
+        assert.equal(monitorChanged.request, changed.request);
+        assert.ok(monitorChanged.axis.every(value => value.endsWith(' UTC')));
+        await driver.executeScript(`setDownloadTimezone('UTC');setDownloadMonitorTimezone('BJT');`);
+      }
+      if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view') {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
       }
       console.log('Layout OK:',width,view,mode);

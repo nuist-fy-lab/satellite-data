@@ -89,6 +89,14 @@ CREATE TABLE IF NOT EXISTS official_days (
   PRIMARY KEY(product_key,day)
 );
 
+CREATE TABLE IF NOT EXISTS archive_day_cursor (
+  product_key TEXT NOT NULL,
+  day TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(product_key,day)
+);
+
 CREATE TABLE IF NOT EXISTS local_files (
   path TEXT PRIMARY KEY,
   filename TEXT NOT NULL,

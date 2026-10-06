@@ -218,6 +218,9 @@ main{width:min(1180px,100%);min-width:0;margin:0 auto;padding:28px 24px 60px}
 .tier.special{color:#9a6700;background:#fff8c5;border-color:#eedf8b}
 .empty-panel{border-top:1px solid var(--line);padding:16px 0;color:var(--muted);font-size:12px}
 .download-section{margin:16px 0 26px}.download-section h2{font-size:14px;font-weight:650;margin:0 0 10px}
+.download-head-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.download-head-actions label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px}
+.download-head-actions select{min-width:76px}
 .download-monitor{border-top:1px solid var(--line);padding-top:14px}
 .download-monitor-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .download-monitor-head h2{margin:0}

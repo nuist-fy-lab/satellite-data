@@ -37,3 +37,31 @@ func TestGOESCadence(t *testing.T) {
 		}
 	}
 }
+
+func TestArchiveIdentity(t *testing.T) {
+	for prefix, want := range map[string]string{
+		"OR_ABI-L1b-RadF-M6C02_G18":  "goes18:ABI-L1b-RadF",
+		"OR_ABI-L1b-RadC-M6C14_G16":  "goes16:ABI-L1b-RadC",
+		"OR_ABI-L1b-RadM1-M6C06_G19": "goes19:ABI-L1b-RadM",
+		"OR_ABI-L2-CMIPM2-M6C06_G17": "goes17:ABI-L2-CMIPM",
+		"OR_GLM-L2-LCFA_G18":         "goes18:GLM-L2-LCFA",
+		"OR_SUVI-L1b-Fe171_G18":      "goes18:SUVI-L1b-Fe171",
+	} {
+		name := prefix + "_s20262650930215_e20262650939524_c20262650939553.nc"
+		product, start, ok := ArchiveIdentity(name)
+		if !ok || product != want || start.Format(time.DateOnly) != "2026-09-22" {
+			t.Fatalf("%s: product=%q start=%s ok=%v", name, product, start, ok)
+		}
+	}
+	for _, name := range []string{
+		"OR_ABI-L1b-RadF-M6C02_G18_s20263670930215_e20262650939524_c20262650939553.nc",
+		"OR_ABI-L1b-RadF-M6C02_G18_s20263660930215_e20262650939524_c20262650939553.nc",
+		"OR_ABI-L1b-RadF-M6C02_G20_s20262650930215_e20262650939524_c20262650939553.nc",
+		"OR_ABI-L1b-RadF-M6C02_G18_s20262650930215_e20262650939524_c20262650939553.nc.part",
+		"not-goes.nc",
+	} {
+		if _, _, ok := ArchiveIdentity(name); ok {
+			t.Fatalf("unexpected identity for %s", name)
+		}
+	}
+}
