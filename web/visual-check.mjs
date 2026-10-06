@@ -220,7 +220,7 @@ try {
       assert.ok(footer.buttonBottom<=footer.sidebarBottom,'logout is below viewport');
       assert.ok(footer.sidebarScroll<=footer.sidebarClient,'sidebar scrolls horizontally');
     }
-    await driver.executeScript('setSidebar(arguments[0])',width>820);
+    await driver.executeScript('return window.sidebarFooterFixture(arguments[0])',width>820);
     const timelineStability = await driver.executeScript('return window.coverageTimelineStability()');
     assert.equal(timelineStability.limitedTop,timelineStability.supportedTop,'coverage capability changed timeline vertical position');
     const fixed=await driver.executeScript('return window.calendarIndexFixture("grid",arguments[0])',width>820);
