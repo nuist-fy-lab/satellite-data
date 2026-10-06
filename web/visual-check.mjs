@@ -163,7 +163,7 @@ try {
       assert.ok(metrics.scroll<=metrics.width+1,view+' '+mode+' overflows: '+JSON.stringify(metrics));
       assert.deepEqual(metrics.bad,[],view+' has collapsed controls');
       if (view === 'downloads-view') {
-        const initial = await driver.executeScript(`return {
+        const initial = await driver.executeScript(`const $=selector=>document.querySelector(selector);return {
           task:$('#download-timezone').value,monitor:$('#download-monitor-timezone').value,
           request:$('#download-requests').textContent,
           axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)
@@ -173,6 +173,7 @@ try {
         assert.match(initial.request, /2026-12-31 20:00 UTC/);
         assert.ok(initial.axis.length === 2 && initial.axis.every(value => value.endsWith(' BJT')));
         const changed = await driver.executeScript(`
+          const $=selector=>document.querySelector(selector);
           $('#download-timezone').value='BJT';
           $('#download-timezone').dispatchEvent(new Event('change'));
           return {request:$('#download-requests').textContent,
@@ -183,6 +184,7 @@ try {
         assert.equal(changed.label, '开始日期（BJT）');
         assert.deepEqual(changed.axis, initial.axis);
         const monitorChanged = await driver.executeScript(`
+          const $=selector=>document.querySelector(selector);
           $('#download-monitor-timezone').value='UTC';
           $('#download-monitor-timezone').dispatchEvent(new Event('change'));
           return {request:$('#download-requests').textContent,
@@ -190,7 +192,11 @@ try {
         `);
         assert.equal(monitorChanged.request, changed.request);
         assert.ok(monitorChanged.axis.every(value => value.endsWith(' UTC')));
-        await driver.executeScript(`setDownloadTimezone('UTC');setDownloadMonitorTimezone('BJT');`);
+        await driver.executeScript(`
+          for(const [id,value] of [['download-timezone','UTC'],['download-monitor-timezone','BJT']]) {
+            const node=document.getElementById(id);node.value=value;node.dispatchEvent(new Event('change'));
+          }
+        `);
       }
       if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
