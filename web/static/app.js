@@ -1130,7 +1130,7 @@ function renderCoverageDayOverview(day) {
     if (hourEl.options[hour + 1]) hourEl.options[hour + 1].text = `${label}:00${gaps ? ` · 官方缺 ${gaps}` : ''}`;
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `day-hour${hour === state.coverage.hour ? ' selected' : ''}`;
+    button.className = `day-hour${state.coverage.time !== 'hourly' && hour === state.coverage.hour ? ' selected' : ''}`;
     button.dataset.hour = String(hour);
     button.disabled = state.coverage.time === 'hourly';
     const missing = slots.filter(slot => slot.status === 'official_missing').map(slot => `${label}:${String(slot.minute % 60).padStart(2, '0')}`);
@@ -1148,7 +1148,11 @@ function renderCoverageDayOverview(day) {
       strip.append(cell);
     }
     button.append(title, strip);
-    button.addEventListener('click', () => { state.coverage.hour = hour; renderCoverageDay(); });
+    button.addEventListener('click', () => {
+      state.coverage.hour = hour;
+      $('#coverage-files').replaceChildren();
+      renderCoverageDay();
+    });
     fragment.append(button);
   }
   node.replaceChildren(fragment);
@@ -1169,7 +1173,7 @@ function renderCoverageDay() {
     hourEl.add(new Option('全天', '-1'));
     for (let hour = 0; hour < 24; hour++) hourEl.add(new Option(`${String(hour).padStart(2, '0')}:00`, String(hour)));
   }
-  hourEl.value = String(coverage.hour);
+  hourEl.value = String(coverage.time === 'hourly' ? -1 : coverage.hour);
   hourEl.disabled = coverage.time === 'hourly';
   const gaps = renderCoverageDayOverview(day);
   if (gaps && day.official_state === 2) summary.textContent += ` · 全天官方缺时次 ${gaps}`;

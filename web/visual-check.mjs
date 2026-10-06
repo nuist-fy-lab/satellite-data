@@ -24,7 +24,7 @@ window.styleFixture = function(view, mode, wide) {
   $('#service-label').textContent = '服务正常';
   $('#service-dot').classList.add('ok');
   for (const node of document.querySelectorAll('select')) {
-    if (!node.options.length) node.add(new Option('全部', 'all'));
+    if (!node.options.length && node.id !== 'coverage-hour') node.add(new Option('全部', 'all'));
   }
   yearEl.replaceChildren(new Option('2023','2023'));
   monthEl.replaceChildren(new Option('6 月','5'));
@@ -183,10 +183,15 @@ try {
     const zoom=await driver.executeScript(`
       document.querySelector('[data-hour="15"]').click();
       const before={range:$('#coverage-hour').value,gaps:document.querySelectorAll('#coverage-matrix .official_missing').length};
+      state.coverage.time='hourly';renderCoverageDay();
+      before.hourlyRange=$('#coverage-hour').value;
+      before.hourlyCount=document.querySelector('.band-track').children.length;
+      state.coverage.time='all';renderCoverageDay();
       $('#coverage-hour').value='-1';$('#coverage-hour').dispatchEvent(new Event('change'));
       return {...before,restored:document.querySelector('.band-track').children.length};
     `);
     assert.equal(zoom.range,'15');assert.equal(zoom.gaps,4);assert.equal(zoom.restored,288);
+    assert.equal(zoom.hourlyRange,'-1');assert.equal(zoom.hourlyCount,24);
     await writeFile('dist/visual/calendar-all-day-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     const incremental=await driver.executeScript('return window.incrementalIndexFixture()');
     assert.deepEqual(incremental,{sameDay:true,sameBand:true,untouched:true,status:'complete',replaced:0});

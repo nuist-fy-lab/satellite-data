@@ -94,6 +94,10 @@ test('fixed timelines distinguish official gaps, band-specific gaps, local absen
   assert.equal(h.context.coverageCellState(h.run('state.coverage.dayData'), [], 2).status, 'unknown');
   h.run('state.coverage.time = "hourly"');
   assert.equal(h.context.coverageDayColumns(h.run('state.coverage.dayData')).length, 24);
+  h.run('state.coverage.hour = 15');
+  h.context.renderCoverageDay();
+  assert.equal(h.element('#coverage-hour').value, '-1');
+  assert.equal(h.element('#coverage-matrix').children[3].children.length, 24);
 });
 
 test('event timelines use actual timestamps including seconds and never invent fixed-period gaps', () => {
