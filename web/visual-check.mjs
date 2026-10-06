@@ -279,11 +279,11 @@ try {
       return {width:vb.width,headerWidth:hb.width,cardWidth:cb.width,
         left:vb.left,headerLeft:hb.left,cardLeft:cb.left,
         right:vb.right,headerRight:hb.right,cardRight:cb.right,
-        fontSize:parseFloat(getComputedStyle(view).fontSize),viewport:innerWidth,
+        fontSize:parseFloat(getComputedStyle(view).fontSize),viewport:innerWidth,contentWidth:document.documentElement.clientWidth,
         sidebar:parseFloat(getComputedStyle(document.body).getPropertyValue("--sidebar-width"))||0};
     `);
     if (calendarCardSizing.viewport >= 1200) {
-      const expected=Math.min(1600,calendarCardSizing.viewport-calendarCardSizing.sidebar-48);
+      const expected=Math.min(1600,calendarCardSizing.contentWidth-calendarCardSizing.sidebar-48);
       assert.ok(Math.abs(calendarCardSizing.width-expected)<1,
         'calendar view wide layout mismatch: '+JSON.stringify({...calendarCardSizing,expected}));
       assert.ok(Math.abs(calendarCardSizing.headerWidth-calendarCardSizing.cardWidth)<1,
