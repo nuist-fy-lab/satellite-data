@@ -28,8 +28,11 @@ jobs:
         run: |
           node --check web/static/app.js
           node --check web/static/login.js
+          node --check web/static/catalog.js
+          node --check web/static/era5-inventory.js
+          node --check web/visual-check.mjs
       - name: Test request controls and timezones without a browser
-        run: node --test web/era5.test.mjs web/download-timezones.test.mjs web/calendar-index.test.mjs
+        run: node --test web/era5.test.mjs web/download-timezones.test.mjs web/calendar-index.test.mjs web/catalog-inventory.test.mjs
       - name: Test historical EarthCARE verification controls
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
       - name: Check historical verifier on production Python 3.6

@@ -10,6 +10,16 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/era5"
 )
 
+func (s *Server) era5Inventory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	inventory, err := s.store.ERA5Inventory(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inventory)
+}
+
 func (s *Server) era5Provider(w http.ResponseWriter) *era5.Provider {
 	if s.registry == nil {
 		writeError(w, http.StatusServiceUnavailable, errors.New("ERA5 provider unavailable"))

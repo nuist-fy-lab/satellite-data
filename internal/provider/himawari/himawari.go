@@ -45,7 +45,6 @@ func (p *Provider) Source() model.Source {
 			model.CapabilityCatalog,
 			model.CapabilitySearch,
 			model.CapabilityDownload,
-			model.CapabilitySubscription,
 		},
 		Description: "JMA AHI products distributed through NOAA's public NODD S3 buckets.",
 	}

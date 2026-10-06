@@ -67,13 +67,46 @@ window.styleFixture = function(view, mode, wide) {
   renderDownloadRequests(state.downloads.requests);
   renderDownloadProviders(state.downloads.providers, true);
   if (mode === 'form') openPoolForm('account', state.access.accounts[0]);
-  if (mode === 'era5') {
-    $('#era5-panel').classList.remove('hidden');
-    $('#coverage-tools').classList.add('hidden');
-    $('#year-layout').classList.add('hidden');
-    $('#day-coverage').classList.add('hidden');
+  if (view === 'era5-view') {
+    const download=mode==='download';
+    document.querySelectorAll('[data-era5-tab]').forEach(node=>{node.classList.toggle('active',node.dataset.era5Tab===(download?'download':'inventory'));node.setAttribute('aria-selected',String(node.classList.contains('active')));});
+    $('#era5-panel').classList.toggle('hidden',!download);
+    $('#era5-inventory-panel').classList.toggle('hidden',download);
+    $('#era5-dataset').replaceChildren(new Option('ERA5 hourly pressure levels','era5:pressure'));
+    $('#era5-pressure').replaceChildren(new Option('850','850'),new Option('500','500'));
+    $('#era5-pressure-field').classList.remove('hidden');
+    $('#era5-status').textContent='';
+    $('#era5-date').value='2024-01-01';
     $('#era5-variables').replaceChildren(new Option('2m_temperature','2m_temperature'),new Option('total_precipitation','total_precipitation'));
   }
+  if (view === 'catalog-view') {
+    const sources=mode==='sources';
+    $('#catalog-products-panel').classList.toggle('hidden',sources);
+    $('#catalog-sources-panel').classList.toggle('hidden',!sources);
+    $('.catalog-search').classList.toggle('hidden',sources);
+  }
+};
+window.inventoryFixture = async function() {
+  const module=await import('/era5-inventory.js');
+  const files=[{dataset:'era5:reanalysis-era5-single-levels',name:'temperature_january.nc',bytes:25171,verified:true,state:'ok',start:'2024-01-01T00:00:00Z',end:'2024-02-01T00:00:00Z',variables:['2m_temperature','total_precipitation'],levels:[],times:['00:00','12:00'],area:[32.25,118.5,32,118.75]},
+    {dataset:'era5:reanalysis-era5-pressure-levels',name:'pressure.nc',bytes:65536,verified:true,state:'ok',start:'2024-02-01T00:00:00Z',end:'2024-03-01T00:00:00Z',variables:['temperature'],levels:['850','500'],times:['00:00'],area:[90,-180,-90,180]},
+    {dataset:'era5:unclassified',name:'historical_unclassified.nc',bytes:128,verified:false,state:'ok',start:'',end:'',variables:[],levels:[],times:[],area:[]}];
+  module.initialize({files,unverified_files:1,scanned_at:'2026-10-06T10:00:00Z'});
+  document.querySelector('.inventory-month.has-data').click();
+  await new Promise(resolve=>requestAnimationFrame(resolve));
+  return {datasets:document.querySelectorAll('.inventory-dataset').length,months:document.querySelectorAll('.inventory-month.has-data').length,
+    details:$('#era5-inventory-detail').textContent,status:$('#era5-inventory-status').textContent};
+};
+window.catalogFixture = async function() {
+  const module=await import('/catalog.js');
+  $('#catalog-search').value='';
+  const products=[{product_key:'goes18:ABI-L1b-RadF',source_id:'goes18',satellite:'GOES-18',instrument:'ABI',level:'L1B',data_type:'ABI-L1b-RadF',display_name:'ABI Full Disk Radiance',resolution:'0.5 / 1 / 2 km',version:'',official_id:'ABI-L1b-RadF',area_type:'DISK',cadence:'10m',metadata:{official_product_url:'https://storage.googleapis.com/storage/v1/b/gcp-public-data-goes-18/o?prefix=ABI-L1b-RadF',version_status:'per_file'}},
+    {product_key:'earthcare:validated:ACM_CAP_2B',source_id:'earthcare',satellite:'EarthCARE',instrument:'Synergy',level:'L2B',data_type:'ACM_CAP_2B',display_name:'Cloud aerosol precipitation synergy product',version:'4.0',official_id:'ACM_CAP_2B',metadata:{official_product_url:'https://catalog.maap.eo.esa.int/catalogue/collections?identifier=EarthCAREL2Validated_MAAP',access_class:'open'}}];
+  module.initialize(products);
+  document.querySelector('.catalog-product').open=true;
+  await new Promise(resolve=>requestAnimationFrame(resolve));
+  return {satellites:document.querySelectorAll('.catalog-satellite').length,products:document.querySelectorAll('.catalog-product').length,
+    link:document.querySelector('.catalog-product-links a').href};
 };
 window.coverageTimelineStability = function() {
   const timeline = document.querySelector('#satellite-timelines');
@@ -204,13 +237,13 @@ bind();
 window.styleFixtureReady = true;
 `;
 const assets = new Map();
-for (const file of ['index.html','login.html','styles.css','login.js']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
+for (const file of ['index.html','login.html','styles.css','login.js','catalog.js','era5-inventory.js','icons.svg']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
 assets.set('app.js', Buffer.from(app+fixture));
 const server = createServer((req, res) => {
   const path = new URL(req.url,'http://localhost').pathname;
   const file = path==='/'?'index.html':path==='/login'?'login.html':path.slice(1);
   if (!assets.has(file)) {res.writeHead(404);res.end();return;}
-  res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html');
+  res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':file.endsWith('.svg')?'image/svg+xml':'text/html');
   res.end(assets.get(file));
 });
 await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
@@ -222,7 +255,7 @@ try {
   if (process.env.FIREFOX_BIN) options.setBinary(process.env.FIREFOX_BIN);
   driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
   await driver.manage().setTimeouts({pageLoad:15000,script:15000});
-  const cases = [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['calendar-view','era5'],['sources-view','year'],['downloads-view','year'],['sync-view','year'],['monitor-view','year'],['cli-view','year'],['access-view','year'],['access-view','form']];
+  const cases = [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['era5-view','inventory'],['era5-view','download'],['catalog-view','products'],['catalog-view','sources'],['downloads-view','year'],['monitor-view','year'],['access-view','year'],['access-view','form']];
   for (const width of [320,390,1440,1920,2560]) {
     await driver.manage().window().setRect({width,height:900});
     await driver.get(base+'/login');
@@ -323,6 +356,16 @@ try {
     await writeFile('dist/visual/calendar-all-satellites-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     for (const [view,mode] of cases) {
       await driver.executeScript('window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
+      if(view==='era5-view') {
+        const inventory=await driver.executeScript('return window.inventoryFixture()');
+        assert.equal(inventory.datasets,3);assert.equal(inventory.months,2);
+        assert.match(inventory.details,/2m_temperature/);assert.match(inventory.status,/待核验/);
+      }
+      if(view==='catalog-view') {
+        const catalog=await driver.executeScript('return window.catalogFixture()');
+        assert.equal(catalog.satellites,2);assert.equal(catalog.products,1);
+        assert.ok(catalog.link.startsWith('https://storage.googleapis.com/'));
+      }
       const metrics = await driver.executeScript(`
         const bad = [];
         for (const node of document.querySelectorAll('.view.active button,.view.active input,.view.active select')) {

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=23">
+  <link rel="stylesheet" href="/styles.css?v=24">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -18,12 +18,11 @@
     </div>
     <nav class="sidebar-nav">
       <a class="nav-item active" href="/calendar" data-view="calendar-view"><span class="nav-icon">▦</span><span class="nav-label">数据日历</span></a>
-      <a class="nav-item" href="/sources" data-view="sources-view"><span class="nav-icon">◎</span><span class="nav-label">数据源</span></a>
       <a class="nav-item" href="/downloads" data-view="downloads-view"><span class="nav-icon">⇩</span><span class="nav-label">下载任务</span></a>
-      <a class="nav-item" href="/sync" data-view="sync-view"><span class="nav-icon">↻</span><span class="nav-label">同步订阅</span></a>
+      <a class="nav-item" href="/era5" data-view="era5-view"><span class="nav-icon">▤</span><span class="nav-label">ERA5</span></a>
+      <a class="nav-item" href="/catalog" data-view="catalog-view"><span class="nav-icon">≡</span><span class="nav-label">产品目录</span></a>
       <a class="nav-item" href="/monitor" data-view="monitor-view"><span class="nav-icon">∿</span><span class="nav-label">运行监控</span></a>
-      <a class="nav-item" href="/cli" data-view="cli-view"><span class="nav-icon">⌨</span><span class="nav-label">CLI</span></a>
-      <a class="nav-item" href="/access" data-view="access-view" data-admin-only><span class="nav-icon">⌘</span><span class="nav-label">访问凭据</span></a>
+      <a class="nav-item" href="/access" data-view="access-view"><span class="nav-icon">⌘</span><span class="nav-label">访问凭据</span></a>
     </nav>
     <div class="sidebar-status" title="Satellite Data 服务状态">
       <i id="service-dot"></i><span class="nav-label" id="service-label">连接中</span>
@@ -36,32 +35,34 @@
       <header class="page-header">
         <div class="brand-block">
           <div class="brand">Satellite Data</div>
-          <div class="subbrand">NUIST FY Lab · 多卫星科学数据归档与同步</div>
+          <div class="subbrand">NUIST FY Lab</div>
         </div>
         <div class="header-right">
           <div class="controls">
-            <select id="source" title="数据家族"></select>
-            <select id="satellite" title="卫星"></select>
-            <select id="instrument" title="传感器"></select>
-            <select id="level" title="数据级别"></select>
-            <select id="product" title="产品"></select>
-            <select id="year" title="年份"></select>
-            <select id="month" title="月份"></select>
-            <select id="timezone" title="显示时区">
+            <label><span>家族</span><select id="source" title="数据家族"></select></label>
+            <label><span id="satellite-filter-label">卫星</span><select id="satellite" title="卫星"></select></label>
+            <label><span id="instrument-filter-label">仪器</span><select id="instrument" title="仪器或产品组"></select></label>
+            <label><span id="level-filter-label">级别</span><select id="level" title="处理级别或数据类型"></select></label>
+            <label><span>区域</span><select id="area" title="产品空间范围"></select></label>
+            <label><span>分辨率</span><select id="resolution" title="产品名义分辨率；实际值依日期、文件和波段"></select></label>
+            <label class="product-filter"><span>产品</span><select id="product" title="产品"></select></label>
+            <label><span>年</span><select id="year" title="年份"></select></label>
+            <label><span>月</span><select id="month" title="月份"></select></label>
+            <label><span>时区</span><select id="timezone" title="显示时区">
               <option value="UTC">UTC</option>
               <option value="BJT">BJT</option>
-            </select>
-            <button id="reset-filters" class="filter-reset" type="button">重置</button>
+            </select></label>
+            <button id="reset-filters" class="filter-reset icon-button" type="button" title="重置筛选" aria-label="重置筛选"><svg class="icon" aria-hidden="true"><use href="/icons.svg#reset"/></svg></button>
           </div>
           <div class="legend" aria-label="状态图例">
-            <span class="legend-item"><i class="c complete"></i>全部时次完整</span>
-            <span class="legend-item"><i class="c complete_official_gap"></i>全部完整·官方缺</span>
+            <span class="legend-item" title="全部官方时次本地完整"><i class="c complete"></i>完整</span>
+            <span class="legend-item" title="全部现有官方时次本地完整，官方时序有缺次"><i class="c complete_official_gap"></i>完整·官方缺次</span>
             <span class="legend-item"><i class="c hourly_complete"></i>整点完整</span>
-            <span class="legend-item"><i class="c hourly_complete_official_gap"></i>整点完整·官方缺</span>
+            <span class="legend-item" title="整点官方时次本地完整，官方时序有缺次"><i class="c hourly_complete_official_gap"></i>整点·官方缺次</span>
             <span class="legend-item"><i class="c partial"></i>部分</span>
-            <span class="legend-item"><i class="c missing"></i>本地缺失</span>
-            <span class="legend-item"><i class="c processing"></i>索引 / 处理中</span>
-            <span class="legend-item"><i class="c official_missing"></i>官方缺失</span>
+            <span class="legend-item"><i class="c missing"></i>本地缺</span>
+            <span class="legend-item"><i class="c processing"></i>处理中</span>
+            <span class="legend-item"><i class="c official_missing"></i>官方缺</span>
             <span class="legend-item"><i class="c error"></i>错误</span>
             <span class="legend-item"><i class="c unknown"></i>待索引</span>
           </div>
@@ -73,10 +74,11 @@
           <div class="product-heading">
             <div id="product-title" class="product-title">读取产品目录…</div>
             <div id="product-meta" class="product-meta"></div>
+            <details id="product-details" class="product-details hidden"><summary title="产品详情" aria-label="产品详情"><svg class="icon" aria-hidden="true"><use href="/icons.svg#info"/></svg></summary><dl id="product-official-title" class="product-official-title"></dl></details>
           </div>
           <div class="calendar-actions">
-            <button id="query-month" type="button">优先索引本月</button>
-            <button id="clear-calendar" type="button">刷新年历</button>
+            <button id="query-month" type="button" title="优先索引所选月份">索引本月</button>
+            <button id="clear-calendar" class="icon-button" type="button" title="刷新年历" aria-label="刷新年历"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button>
           </div>
         </div>
         <div id="archive-index-status" class="archive-index-status" role="status" aria-live="polite"><span id="archive-scan-state">读取索引状态…</span><span id="archive-product-state"></span></div>
@@ -93,25 +95,9 @@
           </div>
           <span id="coverage-status" role="status"></span>
         </div>
-        <section id="era5-panel" class="era5-panel hidden" aria-label="ERA5 CDS 请求">
-          <form id="era5-form" class="era5-form">
-            <label>变量<select id="era5-variables" multiple size="6" required></select></label>
-            <label id="era5-pressure-field" class="hidden">气压层 (hPa)<select id="era5-pressure" multiple size="6"></select></label>
-            <div class="era5-options">
-              <label>日期 · UTC<input id="era5-date" type="date" required></label>
-              <label id="era5-type-field">产品类型<select id="era5-type"></select></label>
-              <label>格式<select id="era5-format"></select></label>
-              <label id="era5-time-field">时次 · UTC<select id="era5-time" multiple size="4"></select></label>
-              <fieldset id="era5-area"><legend>区域</legend><label>北<input id="era5-north" type="number" min="-90" max="90" value="90" step="any" required></label><label>西<input id="era5-west" type="number" min="-180" max="180" value="-180" step="any" required></label><label>南<input id="era5-south" type="number" min="-90" max="90" value="-90" step="any" required></label><label>东<input id="era5-east" type="number" min="-180" max="180" value="180" step="any" required></label></fieldset>
-              <button id="era5-submit" type="submit" disabled>提交 CDS 请求</button>
-            </div>
-          </form>
-          <div class="era5-job"><label>CDS Job ID<input id="era5-job-id" type="text" maxlength="128" autocomplete="off"></label><button id="era5-refresh" type="button">查询状态</button><a id="era5-result" class="hidden" target="_blank" rel="noopener noreferrer">下载结果</a></div>
-          <div id="era5-status" role="status"></div>
-        </section>
         <div id="year-layout">
           <section id="satellite-timelines" class="satellite-timelines hidden" aria-label="卫星任务时间轴">
-            <div class="timeline-heading"><strong>卫星任务时间轴</strong><span>历史归档 / 持续运行</span></div>
+            <div class="timeline-heading"><strong>任务时间轴</strong></div>
             <div id="satellite-timeline-rows" class="satellite-timeline-rows"></div>
           </section>
           <div id="year-product-heading" class="year-product-heading hidden"></div>
@@ -125,7 +111,7 @@
           </div>
           <div id="satellite-year-calendars"></div>
         </div>
-        <div id="calendar-help" class="calendar-help">年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。</div>
+        <div id="calendar-help" class="calendar-help" hidden></div>
         <section id="month-coverage" class="month-coverage hidden" aria-label="月度波段覆盖">
           <div class="coverage-heading"><button id="coverage-prev-month" type="button" title="上个月" aria-label="上个月">‹</button><strong id="coverage-month-title"></strong><button id="coverage-next-month" type="button" title="下个月" aria-label="下个月">›</button></div>
           <div class="month-weekdays" aria-hidden="true"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
@@ -156,17 +142,49 @@
       </section>
     </section>
 
-    <section class="view" id="sources-view">
-      <header class="simple-header">
-        <div><div class="brand">数据源</div><div class="subbrand">当前 Provider、访问级别与官方获取方式</div></div>
-        <button id="refresh-sources" type="button">刷新</button>
-      </header>
+    <section class="view" id="era5-view">
+      <header class="simple-header"><div class="brand">ERA5</div><div class="coverage-switch" role="tablist" aria-label="ERA5 板块"><button type="button" data-era5-tab="inventory" class="active" role="tab" aria-selected="true">已有数据</button><button type="button" data-era5-tab="download" role="tab" aria-selected="false">下载</button></div></header>
+      <section id="era5-panel" class="era5-panel hidden" aria-label="ERA5 CDS 下载">
+        <label class="era5-dataset-field">数据集<select id="era5-dataset"></select></label>
+        <div id="era5-dataset-meta" class="product-meta"></div>
+        <form id="era5-form" class="era5-form">
+          <label>变量<select id="era5-variables" multiple size="6" required></select></label>
+          <label id="era5-pressure-field" class="hidden">气压层 (hPa)<select id="era5-pressure" multiple size="6"></select></label>
+          <div class="era5-options">
+            <label>日期 UTC<input id="era5-date" type="date" required></label>
+            <label id="era5-time-field">时次 UTC<select id="era5-time" multiple size="4"></select></label>
+            <label id="era5-type-field">类型<select id="era5-type"></select></label>
+            <label>格式<select id="era5-format"></select></label>
+            <fieldset id="era5-area"><legend>区域</legend><label>N<input id="era5-north" type="number" min="-90" max="90" step="any" value="90" required></label><label>W<input id="era5-west" type="number" min="-180" max="180" step="any" value="-180" required></label><label>S<input id="era5-south" type="number" min="-90" max="90" step="any" value="-90" required></label><label>E<input id="era5-east" type="number" min="-180" max="180" step="any" value="180" required></label></fieldset>
+            <button id="era5-submit" type="submit" disabled>提交</button>
+          </div>
+        </form>
+        <div class="era5-job"><label>CDS Job ID<input id="era5-job-id" type="text" maxlength="128" autocomplete="off"></label><button id="era5-refresh" class="icon-button" type="button" title="查询作业" aria-label="查询作业"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button><a id="era5-result" class="hidden" target="_blank" rel="noopener noreferrer">下载结果</a></div>
+        <div id="era5-status" role="status"></div>
+      </section>
+      <section id="era5-inventory-panel" aria-label="ERA5 本地库存">
+        <div class="inventory-summary" id="era5-inventory-summary"></div>
+        <div class="inventory-controls"><label>数据集<select id="era5-inventory-dataset"></select></label><label>变量<select id="era5-inventory-variable"></select></label><label>层<select id="era5-inventory-level"></select></label><label>区域<select id="era5-inventory-area"></select></label><label>年<select id="era5-inventory-year"></select></label><button id="era5-inventory-refresh" class="icon-button" type="button" title="刷新库存" aria-label="刷新库存"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button></div>
+        <div id="era5-inventory-status" class="form-error" role="status"></div>
+        <div id="era5-inventory-empty" class="inventory-empty hidden">尚未索引到本地 ERA5 文件</div>
+        <div id="era5-inventory-calendars" class="inventory-calendars"></div>
+        <section id="era5-inventory-detail" class="inventory-detail hidden" aria-label="ERA5 库存明细"></section>
+      </section>
+    </section>
+
+    <section class="view" id="catalog-view">
+      <header class="simple-header"><div class="brand">卫星与产品</div><div class="catalog-head-controls"><div class="coverage-switch" role="tablist" aria-label="目录视图"><button type="button" data-catalog-tab="products" class="active" role="tab" aria-selected="true">产品目录</button><button type="button" data-catalog-tab="sources" role="tab" aria-selected="false">数据源</button></div><label class="catalog-search"><input id="catalog-search" type="search" placeholder="搜索" aria-label="搜索卫星、仪器、产品"></label></div></header>
+      <div id="catalog-status" class="form-error" role="status"></div>
+      <div id="catalog-products-panel" class="catalog-layout"><nav id="catalog-tree" class="catalog-tree" aria-label="卫星与仪器目录"></nav><section id="catalog-content" class="catalog-content"></section></div>
+      <section id="catalog-sources-panel" class="hidden">
+        <button id="refresh-sources" class="icon-button" type="button" title="刷新数据源" aria-label="刷新数据源"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button>
       <div class="source-summary">
         <article><span>匿名直连</span><strong id="tier-anonymous">—</strong></article>
         <article><span>登录 / Token</span><strong id="tier-token">—</strong></article>
         <article><span>特殊访问</span><strong id="tier-special">—</strong></article>
       </div>
       <div id="sources" class="source-list"></div>
+      </section>
     </section>
 
     <section class="view" id="downloads-view">
@@ -224,11 +242,6 @@
       <section class="download-section"><h2>最近请求</h2><div id="download-requests" class="download-list"></div></section>
     </section>
 
-    <section class="view" id="sync-view">
-      <header class="simple-header"><div><div class="brand">同步订阅</div><div class="subbrand">近实时 Watch / Feed 与历史补档</div></div></header>
-      <div class="empty-panel">Provider 的订阅与增量同步策略将在这里统一管理。</div>
-    </section>
-
     <section class="view" id="monitor-view">
       <header class="simple-header monitor-header">
         <div><div class="brand">链路监控</div><div class="subbrand">c2ln1 → Provider · TCP 443 延迟、抖动与丢包</div></div>
@@ -276,34 +289,16 @@
       </section>
     </section>
 
-    <section class="view" id="cli-view">
-      <header class="simple-header"><div class="brand">CLI</div><button id="refresh-cli-keys" type="button">刷新</button></header>
-      <section class="cli-key-manager" aria-label="CLI API Key">
-        <div class="pool-head"><strong>API Key</strong></div>
-        <form id="cli-key-form" class="cli-key-form">
-          <label>名称<input id="cli-key-name" maxlength="80" required autocomplete="off"></label>
-          <button id="cli-key-create" type="submit">创建</button>
-        </form>
-        <div id="cli-key-new" class="cli-key-new hidden">
-          <label>新 Key · 仅此次显示<input id="cli-key-value" type="password" readonly autocomplete="off"></label>
-          <button id="cli-key-copy" type="button">复制</button>
-          <button id="cli-key-dismiss" type="button">关闭</button>
-        </div>
-        <div id="cli-key-error" class="form-error"></div>
-        <div id="cli-key-list" class="pool-list"></div>
-      </section>
-    </section>
-
-    <section class="view" id="access-view" data-admin-only>
+    <section class="view" id="access-view">
       <header class="simple-header">
-        <div><div class="brand">访问池</div><div class="subbrand">访问配置 · IP 代理池</div></div>
-        <div class="controls">
-          <button id="refresh-access" type="button">刷新</button>
+        <div class="brand">访问凭据</div>
+        <div data-admin-only>
+          <button id="refresh-access" class="icon-button" type="button" title="刷新访问配置" aria-label="刷新访问配置"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button>
         </div>
       </header>
 
-      <div id="access-error" class="form-error"></div>
-      <section id="access-manager">
+      <div id="access-error" class="form-error" data-admin-only></div>
+      <section id="access-manager" data-admin-only>
         <div class="access-summary">
           <article><span>访问配置</span><strong id="access-account-count">0</strong></article>
           <article><span>待绑定凭据</span><strong id="access-credential-count">0</strong></article>
@@ -346,10 +341,16 @@
           </section>
         </div>
       </section>
+      <section id="cli-panel" class="cli-key-manager" aria-label="CLI API Key">
+        <div class="pool-head"><strong>CLI</strong><a href="https://github.com/nuist-fy-lab/satellite-data-downloader" target="_blank" rel="noopener noreferrer">下载器 · GitHub</a><button id="refresh-cli-keys" class="icon-button" type="button" title="刷新 API Key" aria-label="刷新 API Key"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button></div>
+        <form id="cli-key-form" class="cli-key-form"><label>名称<input id="cli-key-name" maxlength="80" required autocomplete="off"></label><button id="cli-key-create" type="submit">创建 Key</button></form>
+        <div id="cli-key-new" class="cli-key-new hidden"><label>新 Key · 仅此次显示<input id="cli-key-value" type="password" readonly autocomplete="off"></label><button id="cli-key-copy" type="button">复制</button><button id="cli-key-dismiss" type="button">关闭</button></div>
+        <div id="cli-key-error" class="form-error"></div><div id="cli-key-list" class="pool-list"></div>
+      </section>
     </section>
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=28"></script>
+  <script type="module" src="/app.js?v=29"></script>
 </body>
 </html>

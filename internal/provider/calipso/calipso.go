@@ -50,6 +50,9 @@ type collectionFeed struct {
 			ShortName         string   `json:"short_name"`
 			VersionID         string   `json:"version_id"`
 			DatasetID         string   `json:"dataset_id"`
+			Summary           string   `json:"summary"`
+			TimeStart         string   `json:"time_start"`
+			TimeEnd           string   `json:"time_end"`
 			ProcessingLevelID string   `json:"processing_level_id"`
 			OnlineAccess      bool     `json:"online_access_flag"`
 			Platforms         []string `json:"platforms"`
@@ -94,9 +97,12 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 			Product:    item.ShortName,
 			Cadence:    "event",
 			Metadata: map[string]string{
-				"concept_id": item.ID,
-				"version":    item.VersionID,
-				"title":      item.DatasetID,
+				"concept_id":  item.ID,
+				"version":     item.VersionID,
+				"title":       item.DatasetID,
+				"description": item.Summary,
+				"time_start":  item.TimeStart,
+				"time_end":    item.TimeEnd,
 			},
 		})
 	}
@@ -255,6 +261,8 @@ func mediaTypeForName(name string) string {
 func calipsoInstrument(shortName string) string {
 	upper := strings.ToUpper(shortName)
 	switch {
+	case strings.HasPrefix(upper, "CAL_WFC_"):
+		return "WFC"
 	case strings.Contains(upper, "LID"):
 		return "CALIOP"
 	case strings.Contains(upper, "IIR"):

@@ -104,6 +104,7 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 			Cadence:    "event",
 			Metadata: map[string]string{
 				"thredds_product_version": name,
+				"version":                 cloudsatVersion(name),
 			},
 		})
 	}
@@ -271,6 +272,14 @@ func cloudsatLevel(product string) string {
 		return product[:dot]
 	}
 	return ""
+}
+
+func cloudsatVersion(product string) string {
+	_, version, ok := strings.Cut(product, ".")
+	if !ok {
+		return ""
+	}
+	return version
 }
 
 func catalogSizeBytes(size dataSize) int64 {

@@ -105,6 +105,12 @@ func (p *adaptiveProvider) Collections(ctx context.Context) ([]model.Collection,
 	}
 	items, err := p.Provider.Collections(ctx)
 	p.flow.finish(err == nil, ctx.Err() == nil && !errors.Is(err, ErrUnsupportedCollection))
+	if err == nil {
+		items = append([]model.Collection(nil), items...)
+		for i := range items {
+			items[i] = NormalizeCollection(items[i])
+		}
+	}
 	return items, err
 }
 

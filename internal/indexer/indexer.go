@@ -384,7 +384,7 @@ func (i *Indexer) scanLocal(ctx context.Context) {
 		_, _ = hash.Write([]byte{0})
 		_, _ = hash.Write([]byte(strings.TrimSpace(strings.ToLower(file.Filename))))
 		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(file.State + "\x00" + file.Detail + "\x00"))
+		_, _ = hash.Write([]byte(file.State + "\x00" + file.Detail + "\x00" + file.SourceID + "\x00"))
 	}
 	for _, path := range warnings {
 		_, _ = hash.Write([]byte(path + "\x00"))
@@ -541,6 +541,9 @@ func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool,
 				for index := range known {
 					known[index].State = "unverified"
 					known[index].Detail = "directory inaccessible; previously indexed metadata only"
+					if root == i.sharedRoots[1] {
+						known[index].SourceID = "era5"
+					}
 				}
 				*files = append(*files, known...)
 				*warnings = append(*warnings, path)
@@ -576,6 +579,9 @@ func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool,
 			return nil
 		}
 		file := state.LocalFile{Path: path, Filename: name, Size: info.Size(), MtimeNS: info.ModTime().UnixNano(), State: "ok"}
+		if root == i.sharedRoots[1] {
+			file.SourceID = "era5"
+		}
 		if shared {
 			file.State, file.Detail = checkSharedFile(path, info.Size())
 			if record, ok := verified[path]; ok && file.State != "error" && record.Size == file.Size && record.MtimeNS == file.MtimeNS {

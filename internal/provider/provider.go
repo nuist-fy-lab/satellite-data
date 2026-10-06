@@ -80,6 +80,7 @@ func Underlying(p Provider) Provider {
 }
 
 func ProductFromCollection(source model.Source, collection model.Collection) model.Product {
+	collection = NormalizeCollection(collection)
 	metadata := collection.Metadata
 	officialID := firstMetadata(metadata, "official_id", "collection_ref", "concept_id", "stac_collection", "thredds_product_version")
 	if officialID == "" {
@@ -93,7 +94,7 @@ func ProductFromCollection(source model.Source, collection model.Collection) mod
 	if value := firstMetadata(metadata, "product_count"); value != "" {
 		productCount, _ = strconv.ParseInt(value, 10, 64)
 	}
-	return model.Product{
+	return NormalizeProduct(model.Product{
 		ProductKey:    collection.ID,
 		SourceID:      collection.SourceID,
 		OfficialID:    officialID,
@@ -110,7 +111,7 @@ func ProductFromCollection(source model.Source, collection model.Collection) mod
 		CatalogSource: catalogSource(source.ID),
 		ProductCount:  productCount,
 		Metadata:      copyMetadata(metadata),
-	}
+	})
 }
 
 func firstMetadata(metadata map[string]string, keys ...string) string {

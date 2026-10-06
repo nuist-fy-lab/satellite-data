@@ -191,11 +191,20 @@ func TestPortalLoginCoversEntireWebsiteAndCredentialsNeedNoSecondLogin(t *testin
 	if index.Code != http.StatusOK || strings.Contains(index.Body.String(), "access-login-form") || !strings.Contains(index.Body.String(), "portal-logout") {
 		t.Fatal("portal HTML missing or credentials still request a second password")
 	}
-	for _, path := range []string{"/calendar", "/sources", "/downloads", "/sync", "/monitor", "/cli", "/access"} {
+	for _, path := range []string{"/calendar", "/catalog", "/era5", "/downloads", "/monitor", "/access"} {
 		page := request(http.MethodGet, path, "", cookie)
 		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "id=\"calendar-view\"") {
 			t.Fatalf("portal module path %s status=%d", path, page.Code)
 		}
+	}
+	for path, target := range map[string]string{"/sources": "/catalog", "/sync": "/downloads", "/cli": "/access"} {
+		page := request(http.MethodGet, path, "", cookie)
+		if page.Code != http.StatusPermanentRedirect || page.Header().Get("Location") != target {
+			t.Fatalf("old route %s status=%d location=%s", path, page.Code, page.Header().Get("Location"))
+		}
+	}
+	if w := request(http.MethodGet, "/api/v1/era5/inventory", "", nil); w.Code != http.StatusUnauthorized {
+		t.Fatal("inventory accessible without authentication")
 	}
 	// The same portal cookie reaches the credential handler, not a second login.
 	if w := request(http.MethodGet, "/api/v1/access/pools", "", cookie); w.Code != http.StatusServiceUnavailable {
@@ -212,6 +221,9 @@ func TestPortalLoginCoversEntireWebsiteAndCredentialsNeedNoSecondLogin(t *testin
 		t.Fatal(err)
 	}
 	readerCookie := &http.Cookie{Name: accessSessionCookie, Value: readerSession}
+	if w := request(http.MethodGet, "/api/v1/era5/inventory", "", readerCookie); w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("reader inventory status=%d", w.Code)
+	}
 	if w := request(http.MethodGet, "/api/v1/sources", "", readerCookie); w.Code != http.StatusOK {
 		t.Fatalf("portal user query status=%d", w.Code)
 	}

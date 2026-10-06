@@ -66,6 +66,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("POST /api/v1/era5/requests", s.era5Submit)
 	mux.HandleFunc("GET /api/v1/era5/requests/{id}", s.era5Job)
 	mux.HandleFunc("GET /api/v1/era5/requests/{id}/result", s.era5Result)
+	mux.HandleFunc("GET /api/v1/era5/inventory", s.era5Inventory)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
 	mux.HandleFunc("GET /api/v1/downloads/updates", s.downloadUpdates)
@@ -131,8 +132,13 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(data)
 	}
-	for _, path := range []string{"/calendar", "/sources", "/downloads", "/sync", "/monitor", "/cli", "/access"} {
+	for _, path := range []string{"/calendar", "/downloads", "/era5", "/catalog", "/monitor", "/access"} {
 		mux.HandleFunc("GET "+path, servePortal)
+	}
+	for path, target := range map[string]string{"/sources": "/catalog", "/sync": "/downloads", "/cli": "/access"} {
+		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target, http.StatusPermanentRedirect)
+		})
 	}
 	mux.Handle("GET /", http.FileServerFS(static))
 	return withCompression(withHeaders(s.withPortalAuth(mux)))
@@ -629,6 +635,7 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]option, 0, len(products))
 	for _, product := range products {
+		product = provider.NormalizeProduct(product)
 		item := option{Product: product, Bands: []downloadfilter.Band{}, OrderMode: "archive"}
 		if product.SourceID == "era5" {
 			item.OrderMode = "on-demand"
@@ -714,6 +721,9 @@ func (s *Server) products(w http.ResponseWriter, r *http.Request) {
 			}
 			products = append(products, items...)
 		}
+	}
+	for i := range products {
+		products[i] = provider.NormalizeProduct(products[i])
 	}
 	writeJSON(w, http.StatusOK, products)
 }

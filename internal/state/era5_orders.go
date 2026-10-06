@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS era5_result_manifest(
  filename TEXT NOT NULL,
  size INTEGER NOT NULL,
  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS era5_result_identity_idx ON era5_result_manifest(collection_id,job_id,asset_id,size);
+CREATE TABLE IF NOT EXISTS era5_result_slices(
+ downloader_task_id INTEGER PRIMARY KEY REFERENCES era5_result_manifest(downloader_task_id) ON DELETE CASCADE,
+ start_ts TEXT NOT NULL,end_ts TEXT NOT NULL,inputs_json TEXT NOT NULL
 );`
 
 type ERA5Part struct {
@@ -37,22 +42,57 @@ type ERA5Part struct {
 	Stage, JobID string
 }
 
-func (s *Store) RecordERA5Result(ctx context.Context, requestID, taskID int64, jobID, collectionID, assetID, filename string, size int64) error {
+func (s *Store) RecordERA5Result(ctx context.Context, requestID, taskID int64, jobID, collectionID, assetID, filename string, size int64, slices ...ERA5Part) error {
 	if requestID <= 0 || taskID <= 0 || jobID == "" || collectionID == "" || assetID == "" || filename == "" || size <= 0 {
 		return errors.New("invalid ERA5 result provenance")
+	}
+	if len(slices) > 1 {
+		return errors.New("multiple ERA5 result slices")
+	}
+	if len(slices) == 1 {
+		part := slices[0]
+		if !part.End.After(part.Start) || part.Submission.CollectionID != collectionID || (part.JobID != "" && part.JobID != jobID) {
+			return errors.New("invalid ERA5 result slice")
+		}
 	}
 	var found int64
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM download_requests WHERE id=? AND source_id='era5' AND collection_id=?`, requestID, collectionID).Scan(&found); err != nil {
 		return err
 	}
-	_, err := s.writer.ExecContext(ctx, `INSERT INTO era5_result_manifest(
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `INSERT INTO era5_result_manifest(
 		downloader_task_id,request_id,job_id,collection_id,asset_id,filename,size,recorded_at)
 		VALUES(?,?,?,?,?,?,?,?)
 		ON CONFLICT(downloader_task_id) DO UPDATE SET job_id=excluded.job_id,
 		asset_id=excluded.asset_id,filename=excluded.filename,size=excluded.size,recorded_at=excluded.recorded_at
 		WHERE era5_result_manifest.request_id=excluded.request_id AND era5_result_manifest.collection_id=excluded.collection_id`,
 		taskID, requestID, jobID, collectionID, assetID, filename, size, formatTime(time.Now()))
-	return err
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return errors.New("ERA5 result task belongs to a different request")
+	}
+	if len(slices) > 0 {
+		part := slices[0]
+		encoded, err := json.Marshal(part.Submission.Inputs)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO era5_result_slices(downloader_task_id,start_ts,end_ts,inputs_json) VALUES(?,?,?,?)
+  ON CONFLICT(downloader_task_id) DO UPDATE SET start_ts=excluded.start_ts,end_ts=excluded.end_ts,inputs_json=excluded.inputs_json`, taskID, formatTime(part.Start), formatTime(part.End), string(encoded)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ERA5ResultMatches(ctx context.Context, taskID int64, jobID, collection, filename string, size int64) (bool, error) {

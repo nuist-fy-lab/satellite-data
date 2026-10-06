@@ -74,9 +74,10 @@ test('login retains authentication controls in the NSMC compact form', () => {
 });
 
 test('all portal pages and independent scientific visualizations remain present', () => {
-  for (const id of ['calendar-view', 'sources-view', 'downloads-view', 'sync-view', 'monitor-view', 'cli-view', 'access-view', 'coverage-views', 'month-grid', 'coverage-matrix', 'satellite-timelines', 'era5-form']) {
+  for (const id of ['calendar-view', 'catalog-view', 'era5-view', 'downloads-view', 'monitor-view', 'cli-panel', 'access-view', 'coverage-views', 'month-grid', 'coverage-matrix', 'satellite-timelines', 'era5-form']) {
     assert.ok(page.ids.has(id), `Missing view or visualization: ${id}`);
   }
+  for(const id of ['sync-view','sources-view','cli-view'])assert.equal(page.ids.has(id),false,`Redundant page: ${id}`);
   const calendarCard = first('#calendar-view>.calendar-card');
   assert.equal(calendarCard.get('width'), '100%');
   assert.equal(calendarCard.get('max-width'), 'none');
@@ -128,6 +129,7 @@ test('calendar uses full width and timeline slots cannot collapse into hairlines
   assert.equal(first('.band-slot.matrix-cell').get('height'), '28px');
   assert.equal(first('.coverage-matrix.full-day').get('grid-auto-rows'), '40px');
   assert.equal(first('.matrix-scroll').get('max-height'), 'none');
+  assert.equal(first('.band-track.fixed').get('overflow-x'), 'clip');
 });
 
 test('login and portal load the same current stylesheet', () => {
