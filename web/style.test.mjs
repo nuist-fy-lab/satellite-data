@@ -77,6 +77,10 @@ test('all portal pages and independent scientific visualizations remain present'
   for (const id of ['calendar-view', 'sources-view', 'downloads-view', 'sync-view', 'monitor-view', 'cli-view', 'access-view', 'coverage-views', 'month-grid', 'coverage-matrix', 'satellite-timelines', 'era5-form']) {
     assert.ok(page.ids.has(id), `Missing view or visualization: ${id}`);
   }
+  const calendarCard = first('#calendar-view>.calendar-card');
+  assert.equal(calendarCard.get('width'), '100%');
+  assert.equal(calendarCard.get('max-width'), '944px');
+  assert.equal(calendarCard.get('margin-inline'), 'auto');
   assert.equal(first('.coverage-year .c').get('grid-template-columns'), 'repeat(4,1fr)');
   assert.equal(first('.coverage-year .c').get('grid-template-rows'), 'repeat(4,1fr)');
   assert.equal(first('.month-ring').get('width'), '68px');

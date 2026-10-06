@@ -90,6 +90,7 @@ main{width:min(1180px,100%);min-width:0;margin:0 auto;padding:28px 24px 60px}
 .c[data-day]:hover{outline:2px solid #57606a;outline-offset:1px}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.42}}
 .calendar-card{padding:11px 0 8px;border-top:1px solid #d8dee4}
+#calendar-view>.calendar-card{width:100%;max-width:944px;margin-inline:auto}
 .satellite-timelines{padding:5px 0 12px;margin-bottom:11px;border-bottom:1px solid var(--line)}
 .cli-key-manager{margin-top:18px;padding-top:12px;border-top:1px solid var(--line)}
 .cli-key-form,.cli-key-new{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin:10px 0}
