@@ -143,7 +143,7 @@ try {
         sidebar:parseFloat(getComputedStyle(document.body).getPropertyValue("--sidebar-width"))||0};
     `);
     if (calendarCardSizing.viewport >= 1200) {
-      const expected=Math.min(1770,calendarCardSizing.viewport-calendarCardSizing.sidebar-48);
+      const expected=Math.min(1600,calendarCardSizing.viewport-calendarCardSizing.sidebar-48);
       assert.ok(Math.abs(calendarCardSizing.width-expected)<1,
         'calendar view wide layout mismatch: '+JSON.stringify({...calendarCardSizing,expected}));
       assert.ok(Math.abs(calendarCardSizing.headerWidth-calendarCardSizing.cardWidth)<1,
@@ -240,7 +240,7 @@ try {
       viewRight:view.right,headerRight:header.right,cardRight:card.right,
       sidebar:parseFloat(getComputedStyle(document.body).getPropertyValue("--sidebar-width"))||0};
   `);
-  assert.ok(Math.abs(wideCalendar.viewWidth-1770)<1,'2K calendar view is not 1770px wide: '+JSON.stringify(wideCalendar));
+  assert.ok(Math.abs(wideCalendar.viewWidth-1600)<1,'2K calendar view is not 1600px wide: '+JSON.stringify(wideCalendar));
   assert.ok(Math.abs(wideCalendar.headerWidth-wideCalendar.cardWidth)<1,'2K header/card widths differ: '+JSON.stringify(wideCalendar));
   assert.ok(Math.abs(wideCalendar.headerLeft-wideCalendar.cardLeft)<1 &&
     Math.abs(wideCalendar.headerRight-wideCalendar.cardRight)<1,'2K header/card edges differ: '+JSON.stringify(wideCalendar));
