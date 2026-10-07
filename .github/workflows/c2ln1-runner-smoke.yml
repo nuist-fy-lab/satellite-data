@@ -1,0 +1,41 @@
+name: c2ln1 runner smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, c2ln1-p1shr]
+    timeout-minutes: 10
+    steps:
+      - name: Check Slurm allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "host=$(hostname)"
+          echo "slurm_job_id=${SLURM_JOB_ID:-}"
+          echo "slurm_cpus_per_task=${SLURM_CPUS_PER_TASK:-}"
+          test -n "${SLURM_JOB_ID:-}"
+          test "${SLURM_CPUS_PER_TASK:-}" = "40"
+
+      - name: Check toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          git --version
+          python3 --version
+          node --version
+
+      - name: Checkout through the compute-node network path
+        uses: actions/checkout@v5
+
+      - name: Check GitHub connectivity
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 https://api.github.com/)"
+          test "$code" = "200"
+          echo "api.github.com=$code"
