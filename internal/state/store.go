@@ -1281,9 +1281,10 @@ func (s *Store) reconcileLocalSlotsTx(ctx context.Context, tx *sql.Tx, product, 
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO local_slots(product_key,slot_ts,path,filename,size,mtime_ns,state,detail,updated_at)
 		SELECT a.product_key,a.slot_ts,f.path,f.filename,f.size,f.mtime_ns,
-		       CASE WHEN a.size>0 AND a.size<>f.size THEN 'error' ELSE f.state END,
-		       CASE WHEN a.size>0 AND a.size<>f.size THEN 'local size differs from official asset' ELSE f.detail END,?
+		       CASE WHEN p.source_id NOT IN ('modis','viirs') AND a.size>0 AND a.size<>f.size THEN 'error' ELSE f.state END,
+		       CASE WHEN p.source_id NOT IN ('modis','viirs') AND a.size>0 AND a.size<>f.size THEN 'local size differs from official asset' ELSE f.detail END,?
 		FROM official_assets a JOIN local_files f ON f.filename=a.filename
+		JOIN products p ON p.product_key=a.product_key
 		WHERE a.product_key=? AND substr(a.slot_ts,1,10)=?`, now, product, day)
 	return err
 }

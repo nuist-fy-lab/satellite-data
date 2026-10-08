@@ -155,7 +155,7 @@ main.calendar-wide{width:100%}
 #calendar-view .timeline-heading strong,#calendar-view .timeline-name{font-size:12px}
 #calendar-view .timeline-dates,#calendar-view .timeline-status{font-size:11px}
 #calendar-view .calendar-axis{font-size:10px}
-@media(min-width:1200px){#calendar-view{max-width:1600px;margin-inline:auto}#calendar-view .controls{grid-template-columns:minmax(0,1fr) minmax(0,1.1fr) minmax(0,1fr) minmax(0,.7fr) minmax(0,.9fr) minmax(0,1.1fr) minmax(0,2.8fr) 100px 60px 66px 34px}.controls .product-filter{grid-column:auto}}
+@media(min-width:1200px){#calendar-view{max-width:1600px;margin-inline:auto}#calendar-view .controls{grid-template-columns:minmax(0,1fr) minmax(0,1.1fr) minmax(0,1fr) minmax(0,.7fr) minmax(0,.9fr) minmax(0,1.1fr) minmax(0,2.8fr) 100px 66px 34px}.controls .product-filter{grid-column:auto}}
 @media(max-width:600px){.controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .satellite-timelines{padding:5px 0 12px;margin-bottom:11px;border-bottom:1px solid var(--line)}
 .cli-key-manager{margin-top:18px;padding-top:12px;border-top:1px solid var(--line)}

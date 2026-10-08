@@ -469,13 +469,10 @@ function fillYears() {
 }
 
 function fillMonths() {
-  monthEl.replaceChildren();
-  for (let month = 0; month < 12; month++) {
-    monthEl.add(new Option(`${month + 1} 月`, String(month)));
-  }
+  // Month is internal month-view navigation state, no longer a header filter.
   const saved = readFilters();
   const current = String(new Date().getUTCMonth());
-  monthEl.value = [...monthEl.options].some(option => option.value === saved.month) ? saved.month : current;
+  monthEl.value = /^(?:[0-9]|1[01])$/.test(String(saved.month)) ? String(saved.month) : current;
 }
 
 function updateSelectedProduct() {
@@ -874,6 +871,7 @@ function renderCoverageShell() {
   const onDemand = state.selected?.metadata?.availability_mode === 'on-demand';
   const tools = $('#coverage-tools');
   tools.classList.toggle('hidden', onDemand);
+  $('#query-month').classList.toggle('hidden', onDemand || !visible || coverage.view !== 'month');
   tools.classList.toggle('coverage-tools-limited', !visible && !onDemand);
   tools.title = !visible && !onDemand ? '当前产品仅支持年视图' : '';
   const band = $('#coverage-band');
@@ -3168,10 +3166,6 @@ function bind() {
   resolutionEl.addEventListener('change', () => { rebuildFilters('resolution'); persistFilters(); });
   productEl.addEventListener('change', updateSelectedProduct);
   yearEl.addEventListener('change', () => changeCalendarYear());
-  monthEl.addEventListener('change', () => {
-    persistFilters();
-    if (state.coverage.supported && state.coverage.view === 'month') loadCoverageMonth();
-  });
   timezoneEl.addEventListener('change', () => {
     state.displayZone = timezoneEl.value;
     localStorage.setItem('satellite-data-zone', state.displayZone);

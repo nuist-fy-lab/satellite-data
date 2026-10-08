@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +16,17 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
+
+func TestSharedFilePermissionFailureIsNotReportedAsCorruptHeader(t *testing.T) {
+	status, detail := sharedFileOpenError(fs.ErrPermission)
+	if status != "error" || detail != "permission denied reading file header" {
+		t.Fatalf("permission error was misidentified: %s, %s", status, detail)
+	}
+	status, detail = sharedFileOpenError(errors.New("other read error"))
+	if status != "error" || detail != "cannot read file header" {
+		t.Fatalf("unexpected read error: %s, %s", status, detail)
+	}
+}
 
 func TestHimawariHistoricalRootExcludesAuxiliaryFiles(t *testing.T) {
 	base := t.TempDir()

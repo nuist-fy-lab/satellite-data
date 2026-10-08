@@ -234,6 +234,43 @@ func TestLocalScanUpdatesOnlyAffectedDaysAndChecksSize(t *testing.T) {
 	}
 }
 
+func TestCMRRoundedSizeDoesNotMarkValidModisOrVIIRSSwathAsCorrupt(t *testing.T) {
+	for _, source := range []string{"modis", "viirs"} {
+		t.Run(source, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			product := model.Product{ProductKey: source + ":test", SourceID: source, Cadence: "event"}
+			if err := store.UpsertProducts(ctx, source, []model.Product{product}); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Date(2023, 1, 1, 5, 30, 0, 0, time.UTC)
+			filename := "cloud-granule.hdf"
+			if err := store.SaveOfficialBatch(ctx, WorkBatch{Product: product.ProductKey, Days: []string{"2023-01-01"}}, []model.Granule{{
+				ID: "granule", Start: at, Assets: []model.Asset{{Name: filename, Size: 112559492}},
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ReplaceLocalFiles(ctx, []LocalFile{{
+				Path: "/archive/" + filename, Filename: filename, Size: 112559493, MtimeNS: 1, State: "ok",
+			}}, "rounded-size"); err != nil {
+				t.Fatal(err)
+			}
+			result, err := store.Year(ctx, product.ProductKey, 2023)
+			if err != nil {
+				t.Fatal(err)
+			}
+			day := findYearDay(t, result, "2023-01-01")
+			if day.ErrorCount != 0 || day.LocalOKCount != 1 || day.Status != "complete" {
+				t.Fatalf("rounded CMR metadata falsely marked file corrupt: %+v", day)
+			}
+		})
+	}
+}
+
 func findYearDay(t *testing.T, response YearResponse, day string) YearDay {
 	t.Helper()
 	for _, item := range response.Days {

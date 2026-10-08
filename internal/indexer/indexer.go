@@ -605,7 +605,7 @@ func checkSharedFile(path string, size int64) (string, string) {
 	case ".bz2":
 		handle, err := os.Open(path)
 		if err != nil {
-			return "error", "cannot read file header"
+			return sharedFileOpenError(err)
 		}
 		defer handle.Close()
 		var header [4]byte
@@ -631,7 +631,7 @@ func checkSharedFile(path string, size int64) (string, string) {
 	}
 	handle, err := os.Open(path)
 	if err != nil {
-		return "error", "cannot read file header"
+		return sharedFileOpenError(err)
 	}
 	defer handle.Close()
 	buffer := make([]byte, len(expected))
@@ -646,4 +646,11 @@ func checkSharedFile(path string, size int64) (string, string) {
 		return "error", "invalid file header"
 	}
 	return "unverified", "format header checked; no authoritative checksum"
+}
+
+func sharedFileOpenError(err error) (string, string) {
+	if errors.Is(err, fs.ErrPermission) {
+		return "error", "permission denied reading file header"
+	}
+	return "error", "cannot read file header"
 }

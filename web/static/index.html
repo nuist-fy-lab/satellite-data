@@ -47,7 +47,7 @@
             <label><span>分辨率</span><select id="resolution" title="产品名义分辨率；实际值依日期、文件和波段"></select></label>
             <label class="product-filter"><span>产品</span><select id="product" title="产品"></select></label>
             <label><span>年</span><select id="year" title="年份"></select></label>
-            <label><span>月</span><select id="month" title="月份"></select></label>
+            <input id="month" type="hidden" value="0">
             <label><span>时区</span><select id="timezone" title="显示时区">
               <option value="UTC">UTC</option>
               <option value="BJT">BJT</option>
@@ -77,7 +77,7 @@
             <details id="product-details" class="product-details hidden"><summary title="产品详情" aria-label="产品详情"><svg class="icon" aria-hidden="true"><use href="/icons.svg#info"/></svg></summary><dl id="product-official-title" class="product-official-title"></dl></details>
           </div>
           <div class="calendar-actions">
-            <button id="query-month" type="button" title="优先索引所选月份">索引本月</button>
+            <button id="query-month" class="hidden" type="button" title="优先索引当前月视图">索引本月</button>
             <button id="clear-calendar" class="icon-button" type="button" title="刷新年历" aria-label="刷新年历"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button>
           </div>
         </div>
