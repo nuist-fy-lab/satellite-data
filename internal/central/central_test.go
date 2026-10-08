@@ -136,6 +136,84 @@ func TestMODISReusesConnectionOnlyWithinTheSameCredentialRoute(t *testing.T) {
 	}
 }
 
+func TestMODISParallelHTTPSGranulesUseIndependentTCPConnections(t *testing.T) {
+	// Offer HTTP/2 deliberately: production LAADS advertised it, and a
+	// multiplexed TCP connection degraded all workers at the same time.
+	entered := make(chan string, 2)
+	release := make(chan struct{})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered <- r.RemoteAddr
+		<-release
+		_, _ = io.WriteString(w, "granule")
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+	service := NewService(nil)
+	transport := service.modisTransport("modis:isolation-test", nil)
+	defer transport.CloseIdleConnections()
+	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	client := &http.Client{Transport: transport}
+	type result struct {
+		proto int
+		err   error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			response, err := client.Get(server.URL)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			_, readErr := io.Copy(io.Discard, response.Body)
+			response.Body.Close()
+			results <- result{proto: response.ProtoMajor, err: readErr}
+		}()
+	}
+	var remotes [2]string
+	for i := range remotes {
+		select {
+		case remotes[i] = <-entered:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("parallel requests did not reach the server independently")
+		}
+	}
+	close(release)
+	if remotes[0] == remotes[1] {
+		t.Fatalf("concurrent MODIS transfers shared one TCP socket: %v", remotes)
+	}
+	for range 2 {
+		select {
+		case got := <-results:
+			if got.err != nil || got.proto != 1 {
+				t.Fatalf("MODIS transfer must negotiate HTTP/1.1: %+v", got)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("parallel HTTP/1.1 transfer did not finish")
+		}
+	}
+	// A new request should still reuse an idle HTTP/1.1 connection. The fix
+	// must not regress to allocating a fresh TLS socket for every granule.
+	var reused bool
+	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(t.Context(),
+		&httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}),
+		http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if err != nil || !reused || response.ProtoMajor != 1 {
+		t.Fatalf("sequential keep-alive reuse failed: reused=%t proto=%s err=%v", reused, response.Proto, err)
+	}
+}
+
 func TestAllCredentialKindsAreCentralAndSecretsAreWriteOnly(t *testing.T) {
 	s := testStore(t)
 	for _, tc := range []struct {

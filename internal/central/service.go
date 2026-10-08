@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -225,12 +226,22 @@ func (s *Service) modisTransport(key string, proxyURL *url.URL) *http.Transport 
 		}
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// LAADS granules are individually large transfers, not tiny RPCs.
+	// HTTP/2 multiplexed all four workers onto one TCP congestion window in
+	// production, slowing every download when that socket became congested.
+	// HTTP/1.1 retains sequential keep-alive reuse but gives *concurrent*
+	// transfers independent TCP congestion control and retransmission state.
+	// ForceAttemptHTTP2=false alone is insufficient with inherited settings:
+	// an explicit empty TLSNextProto map disables HTTP/2 negotiation.
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 	transport.Proxy = nil
 	if proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	transport.MaxIdleConns = 32
 	transport.MaxIdleConnsPerHost = 16
+	transport.MaxConnsPerHost = 8
 	transport.IdleConnTimeout = 90 * time.Second
 	s.modisTransports[key] = transport
 	return transport
