@@ -101,7 +101,8 @@ func TestERA5ResultManifestLinksOfficialJobToDownloaderTask(t *testing.T) {
 		{3694, "job-1", "file.nc", 25171, false},
 		{3693, "job-2", "file.nc", 25171, false},
 		{3693, "job-1", "other.nc", 25171, false},
-		{3693, "job-1", "file.nc", 1, false},
+		// CDS job/task/asset identity is authoritative; size is only metadata.
+		{3693, "job-1", "file.nc", 1, true},
 	} {
 		match, err := s.ERA5ResultMatches(t.Context(), item.taskID, item.job, order.CollectionID, item.name, item.size)
 		if err != nil || match != item.want {
