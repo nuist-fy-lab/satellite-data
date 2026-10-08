@@ -173,7 +173,7 @@ func TestRecoverOfficialWork(t *testing.T) {
 	}
 }
 
-func TestLocalScanUpdatesOnlyAffectedDaysAndChecksSize(t *testing.T) {
+func TestLocalScanUpdatesOnlyAffectedDaysWithoutSizeOnlyCorruption(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -216,11 +216,23 @@ func TestLocalScanUpdatesOnlyAffectedDaysAndChecksSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed := findYearDay(t, after, first)
-	if changed.Status != "error" || changed.ErrorCount != 1 || changed.LocalOKCount != 0 {
-		t.Fatalf("size mismatch summary=%+v", changed)
+	if changed.Status != "complete" || changed.ErrorCount != 0 || changed.LocalOKCount != 1 {
+		t.Fatalf("size-only change falsely marked corruption=%+v", changed)
 	}
 	if got := findYearDay(t, after, second); got.Status != "complete" || *got.UpdatedAt != secondUpdatedAt {
 		t.Fatalf("unaffected day changed=%+v", got)
+	}
+	files[0].State = "error"
+	files[0].Detail = "invalid file header"
+	if _, err := store.ReplaceLocalFiles(ctx, files, "invalid-header"); err != nil {
+		t.Fatal(err)
+	}
+	broken, err := store.Year(ctx, product.ProductKey, 2026)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findYearDay(t, broken, first); got.Status != "error" || got.ErrorCount != 1 {
+		t.Fatalf("real format error was hidden: %+v", got)
 	}
 	if _, err := store.ReplaceLocalFiles(ctx, files[1:], "removed-first"); err != nil {
 		t.Fatal(err)
@@ -231,6 +243,89 @@ func TestLocalScanUpdatesOnlyAffectedDaysAndChecksSize(t *testing.T) {
 	}
 	if got := findYearDay(t, after, first); got.Status != "missing" || got.MissingCount != 1 {
 		t.Fatalf("removed file summary=%+v", got)
+	}
+}
+
+func TestCatalogSizeDoesNotAssertIntegrityForAnyProduct(t *testing.T) {
+	for _, source := range []string{"modis", "viirs", "goes18", "earthcare", "era5", "himawari9"} {
+		t.Run(source, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			product := model.Product{ProductKey: source + ":test", SourceID: source, Cadence: "event"}
+			if err := store.UpsertProducts(ctx, source, []model.Product{product}); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Date(2023, 1, 1, 5, 30, 0, 0, time.UTC)
+			filename := "cloud-granule.hdf"
+			if err := store.SaveOfficialBatch(ctx, WorkBatch{Product: product.ProductKey, Days: []string{"2023-01-01"}}, []model.Granule{{
+				ID: "granule", Start: at, Assets: []model.Asset{{Name: filename, Size: 112559492}},
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ReplaceLocalFiles(ctx, []LocalFile{{
+				Path: "/archive/" + filename, Filename: filename, Size: 112559493, MtimeNS: 1, State: "ok",
+			}}, "rounded-size"); err != nil {
+				t.Fatal(err)
+			}
+			result, err := store.Year(ctx, product.ProductKey, 2023)
+			if err != nil {
+				t.Fatal(err)
+			}
+			day := findYearDay(t, result, "2023-01-01")
+			if day.ErrorCount != 0 || day.LocalOKCount != 1 || day.Status != "complete" {
+				t.Fatalf("catalogue byte count falsely marked file corrupt: %+v", day)
+			}
+		})
+	}
+}
+
+func TestUnchangedBackgroundScanHealsOldSizeOnlyErrors(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	product := model.Product{ProductKey: "earthcare:history", SourceID: "earthcare", Cadence: "event"}
+	if err := store.UpsertProducts(ctx, "earthcare", []model.Product{product}); err != nil {
+		t.Fatal(err)
+	}
+	day := "2025-06-23"
+	at, _ := time.Parse(time.DateOnly, day)
+	if err := store.SaveOfficialBatch(ctx, WorkBatch{Product: product.ProductKey, Days: []string{day}}, []model.Granule{{
+		ID: "historical", Start: at, Assets: []model.Asset{{Name: "cloud.h5", Size: 99}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	files := []LocalFile{{Path: "/archive/cloud.h5", Filename: "cloud.h5", Size: 123, MtimeNS: 7, State: "ok"}}
+	if _, err := store.ReplaceLocalFiles(ctx, files, "unchanged"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.writer.ExecContext(ctx, `UPDATE local_slots SET state='error',detail='local size differs from official asset' WHERE product_key=?`, product.ProductKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.writer.ExecContext(ctx, `UPDATE day_summary SET status='error',error_count=1,local_ok_count=0 WHERE product_key=?`, product.ProductKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.ReplaceLocalFiles(ctx, files, "unchanged")
+	if err != nil || !changed {
+		t.Fatalf("background scan must heal derived errors: changed=%v err=%v", changed, err)
+	}
+	year, err := store.Year(ctx, product.ProductKey, 2025)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findYearDay(t, year, day); got.Status != "complete" || got.ErrorCount != 0 || got.LocalOKCount != 1 {
+		t.Fatalf("historical stale error not healed: %+v", got)
+	}
+	if changed, err := store.ReplaceLocalFiles(ctx, files, "unchanged"); err != nil || changed {
+		t.Fatalf("unchanged healthy inventory should be a no-op: changed=%v err=%v", changed, err)
 	}
 }
 

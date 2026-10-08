@@ -28,7 +28,7 @@ window.styleFixture = async function(view, mode, wide) {
     if (!node.options.length && node.id !== 'coverage-hour') node.add(new Option('全部', 'all'));
   }
   yearEl.replaceChildren(new Option('2023','2023'));
-  monthEl.replaceChildren(new Option('6 月','5'));
+  monthEl.value = '5'; // Hidden month-view state; no homepage month filter.
   sourceEl.replaceChildren(new Option('GOES-18','goes18'));
   satelliteEl.replaceChildren(new Option('GOES-18','GOES-18'));
   instrumentEl.replaceChildren(new Option('ABI','ABI'));

@@ -295,6 +295,23 @@ test('month index priority applies to every displayed satellite, not only the fi
   h.context.stopIndexStream();
 });
 
+test('homepage has no visible month filter and month indexing uses the internal month view', async () => {
+  const {readFileSync} = await import('node:fs');
+  const html = readFileSync(new URL('./static/index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /<label>\s*<span>月<\/span>/);
+  assert.match(html, /<input[^>]*id="month"[^>]*type="hidden"/);
+  const h = harness();
+  h.run('state.coverage.supported = true; state.coverage.view = "year";');
+  h.context.renderCoverageShell();
+  assert.equal(h.element('#query-month').classList.contains('hidden'), true);
+  h.run('state.coverage.view = "month";');
+  h.context.renderCoverageShell();
+  assert.equal(h.element('#query-month').classList.contains('hidden'), false);
+  h.element('#month').value = '5';
+  h.context.moveCoverageMonth(1);
+  assert.equal(h.element('#month').value, '6');
+});
+
 test('explicit all-satellite filters survive catalog reloads while legacy single-source filters still migrate', () => {
   const h = harness();
   h.run(`state.sources = [{id:'goes18',name:'GOES-18'},{id:'goes19',name:'GOES-19'}];

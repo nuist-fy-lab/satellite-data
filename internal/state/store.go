@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS local_slots (
 );
 CREATE INDEX IF NOT EXISTS local_slots_day_idx ON local_slots(product_key,substr(slot_ts,1,10));
 CREATE INDEX IF NOT EXISTS local_slots_path_idx ON local_slots(path);
+CREATE INDEX IF NOT EXISTS local_slots_stale_size_errors_idx ON local_slots(product_key,slot_ts)
+WHERE detail='local size differs from official asset';
 
 CREATE TABLE IF NOT EXISTS day_summary (
   product_key TEXT NOT NULL,
@@ -1065,7 +1067,10 @@ func (s *Store) ReplaceLocalFilesWithWarnings(ctx context.Context, files []Local
 	var prior string
 	_ = s.db.QueryRowContext(ctx, `SELECT fingerprint FROM local_scan_state WHERE id=1`).Scan(&prior)
 	if prior == fingerprint {
-		return false, nil
+		// The file inventory may be identical after a deployment that fixes the
+		// reconciliation policy. Heal stale derived errors even without a new
+		// download, changed mtime, or an explicit indexing request.
+		return s.ReconcileStaleLocalErrors(ctx)
 	}
 	conn, err := s.writer.Conn(ctx)
 	if err != nil {
@@ -1091,7 +1096,10 @@ func (s *Store) ReplaceLocalFilesWithWarnings(ctx context.Context, files []Local
 			WHERE f.path IS NULL OR f.filename<>n.filename OR f.size<>n.size OR f.mtime_ns<>n.mtime_ns OR f.state<>n.state OR f.detail<>n.detail
 		)
 		SELECT DISTINCT a.product_key,substr(a.slot_ts,1,10)
-		FROM changed JOIN official_assets a ON a.filename=changed.filename`)
+		FROM changed JOIN official_assets a ON a.filename=changed.filename
+		UNION
+		SELECT DISTINCT product_key,substr(slot_ts,1,10)
+		FROM local_slots WHERE detail='local size differs from official asset'`)
 	if err != nil {
 		return false, err
 	}
@@ -1146,6 +1154,51 @@ func (s *Store) ReplaceLocalFilesWithWarnings(ctx context.Context, files []Local
 		return false, err
 	}
 	for _, item := range pairs {
+		if err := s.reconcileLocalSlotsTx(ctx, tx, item.product, item.day, now); err != nil {
+			return false, err
+		}
+		if err := s.recomputeDayTx(ctx, tx, item.product, item.day, now); err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit()
+}
+
+// ReconcileStaleLocalErrors is intentionally invoked during each background
+// local scan. Derived size-only errors from an earlier indexing policy must
+// not remain indefinitely when the file inventory fingerprint is unchanged.
+// Actual I/O or format errors come from the current scan and remain errors.
+func (s *Store) ReconcileStaleLocalErrors(ctx context.Context) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT product_key,substr(slot_ts,1,10)
+		FROM local_slots WHERE detail='local size differs from official asset'`)
+	if err != nil {
+		return false, err
+	}
+	type pair struct{ product, day string }
+	var affected []pair
+	for rows.Next() {
+		var item pair
+		if err := rows.Scan(&item.product, &item.day); err != nil {
+			rows.Close()
+			return false, err
+		}
+		affected = append(affected, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
+	rows.Close()
+	if len(affected) == 0 {
+		return false, nil
+	}
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, item := range affected {
 		if err := s.reconcileLocalSlotsTx(ctx, tx, item.product, item.day, now); err != nil {
 			return false, err
 		}
@@ -1281,8 +1334,7 @@ func (s *Store) reconcileLocalSlotsTx(ctx context.Context, tx *sql.Tx, product, 
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO local_slots(product_key,slot_ts,path,filename,size,mtime_ns,state,detail,updated_at)
 		SELECT a.product_key,a.slot_ts,f.path,f.filename,f.size,f.mtime_ns,
-		       CASE WHEN a.size>0 AND a.size<>f.size THEN 'error' ELSE f.state END,
-		       CASE WHEN a.size>0 AND a.size<>f.size THEN 'local size differs from official asset' ELSE f.detail END,?
+		       f.state,f.detail,?
 		FROM official_assets a JOIN local_files f ON f.filename=a.filename
 		WHERE a.product_key=? AND substr(a.slot_ts,1,10)=?`, now, product, day)
 	return err

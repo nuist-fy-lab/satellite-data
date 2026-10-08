@@ -43,7 +43,7 @@ type ERA5Part struct {
 }
 
 func (s *Store) RecordERA5Result(ctx context.Context, requestID, taskID int64, jobID, collectionID, assetID, filename string, size int64, slices ...ERA5Part) error {
-	if requestID <= 0 || taskID <= 0 || jobID == "" || collectionID == "" || assetID == "" || filename == "" || size <= 0 {
+	if requestID <= 0 || taskID <= 0 || jobID == "" || collectionID == "" || assetID == "" || filename == "" {
 		return errors.New("invalid ERA5 result provenance")
 	}
 	if len(slices) > 1 {
@@ -104,8 +104,8 @@ func (s *Store) ERA5ResultEvidence(ctx context.Context, taskID int64, jobID, col
 	var assetID string
 	err := s.db.QueryRowContext(ctx, `SELECT m.asset_id FROM era5_result_manifest m
 		JOIN download_requests r ON r.id=m.request_id
-		WHERE m.downloader_task_id=? AND m.job_id=? AND m.collection_id=? AND m.filename=? AND m.size=?
-		AND r.source_id='era5' AND r.collection_id=m.collection_id`, taskID, jobID, collection, filename, size).Scan(&assetID)
+		WHERE m.downloader_task_id=? AND m.job_id=? AND m.collection_id=? AND m.filename=?
+		AND r.source_id='era5' AND r.collection_id=m.collection_id`, taskID, jobID, collection, filename).Scan(&assetID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
