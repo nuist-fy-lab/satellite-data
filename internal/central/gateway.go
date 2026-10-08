@@ -57,8 +57,12 @@ func (s *Service) Gateway() http.Handler {
 		for _, source := range sources {
 			route, err := s.resolve(r.Context(), source, nil)
 			status[source] = err == nil
-			if err == nil && !route.keepIdleConnections {
-				route.client.CloseIdleConnections()
+			if err == nil {
+				if route.release != nil {
+					route.release()
+				} else if !route.keepIdleConnections {
+					route.client.CloseIdleConnections()
+				}
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")

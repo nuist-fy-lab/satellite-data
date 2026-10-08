@@ -279,6 +279,39 @@ func TestMODISTransportLeaseLimitsConcurrentStreams(t *testing.T) {
 	}
 }
 
+func TestMODISAccessStatusChecksReturnTransportLeases(t *testing.T) {
+	store := testStore(t)
+	_, _ = addAccount(t, store, "modis", "laads", Secret{Token: "fixture-laads"})
+	service := NewService(store)
+	handler := service.Gateway()
+	for i := 0; i < 20; i++ {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/access/status", nil).WithContext(ctx))
+		cancel()
+		if response.Code != http.StatusOK {
+			t.Fatalf("access status call %d returned %d", i, response.Code)
+		}
+		var body struct {
+			Providers map[string]bool `json:"providers"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || !body.Providers["modis"] {
+			t.Fatalf("access status call %d lost MODIS route: %s err=%v", i, response.Body.String(), err)
+		}
+	}
+	if len(service.modisPools) != 1 {
+		t.Fatalf("unexpected MODIS pool count: %d", len(service.modisPools))
+	}
+	for _, pool := range service.modisPools {
+		if got := len(pool.idle); got != cap(pool.idle) {
+			t.Fatalf("status checks leaked %d transport leases", cap(pool.idle)-got)
+		}
+		for _, transport := range pool.all {
+			transport.CloseIdleConnections()
+		}
+	}
+}
+
 func TestAllCredentialKindsAreCentralAndSecretsAreWriteOnly(t *testing.T) {
 	s := testStore(t)
 	for _, tc := range []struct {
