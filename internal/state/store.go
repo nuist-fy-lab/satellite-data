@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS local_slots (
 );
 CREATE INDEX IF NOT EXISTS local_slots_day_idx ON local_slots(product_key,substr(slot_ts,1,10));
 CREATE INDEX IF NOT EXISTS local_slots_path_idx ON local_slots(path);
+CREATE INDEX IF NOT EXISTS local_slots_stale_size_errors_idx ON local_slots(product_key,slot_ts)
+WHERE detail='local size differs from official asset';
 
 CREATE TABLE IF NOT EXISTS day_summary (
   product_key TEXT NOT NULL,

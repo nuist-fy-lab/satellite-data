@@ -42,7 +42,7 @@ func (s *Store) ERA5Inventory(ctx context.Context) (ERA5Inventory, error) {
  LEFT JOIN local_file_origins o ON o.path=f.path
  LEFT JOIN era5_result_manifest m ON m.downloader_task_id=(SELECT mm.downloader_task_id FROM era5_result_manifest mm
    WHERE mm.collection_id=v.official_collection AND mm.job_id=replace(v.official_item,'era5:','')
-   AND mm.asset_id=v.official_asset AND mm.size=f.size ORDER BY mm.downloader_task_id DESC LIMIT 1)
+   AND mm.asset_id=v.official_asset ORDER BY mm.downloader_task_id DESC LIMIT 1)
  LEFT JOIN era5_result_slices d ON d.downloader_task_id=m.downloader_task_id
  LEFT JOIN era5_order_parts p ON p.request_id=m.request_id AND p.job_id=m.job_id
  LEFT JOIN era5_order_inputs i ON i.request_id=m.request_id
