@@ -155,6 +155,37 @@ test('index SSE stays attached while idle and mutates only changed day cells, in
   assert.equal(stream.closed, true);
 });
 
+test('all products render pending downloads as processing and unindexed work as breathing grey', () => {
+  const h = harness();
+  h.run(`state.coverage.supported = false;
+    state.dayState = new Map([
+      ['2025-01-01',{status:'missing',indexing:1,official_count:0}],
+      ['2025-01-02',{status:'processing',indexing:0,official_count:3,download_count:2}],
+      ['2025-01-03',{status:'error',indexing:0,official_count:3,error_count:1}],
+      ['2025-01-04',{status:'complete',indexing:0,official_count:3,local_ok_count:3}]
+    ]);`);
+  h.context.renderCalendar();
+  const grid = h.element('#year-grid');
+  assert.equal(grid.querySelector('[data-day="2025-01-01"]').className, 'c indexing');
+  assert.equal(grid.querySelector('[data-day="2025-01-02"]').className, 'c processing');
+  assert.equal(grid.querySelector('[data-day="2025-01-03"]').className, 'c error');
+  assert.equal(grid.querySelector('[data-day="2025-01-04"]').className, 'c complete');
+  assert.match(h.context.dayTip('2025-01-02'), /已选待下载时次 2/);
+  h.run(`state.coverage.supported = true;
+    state.coverage.yearDays = new Map([['2025-01-01',[0,'unknown',0,0,0,0,0,0,0,0,1,'',[],0,'grid']]]);`);
+  h.context.renderCoverageYear();
+  assert.match(grid.querySelector('[data-day="2025-01-01"]').className, /indexing/);
+});
+
+test('all calendar granularities share yellow stripe and grey animation styling', async () => {
+  const css = await readFile(new URL('./static/styles.css', import.meta.url), 'utf8');
+  for (const selector of ['.c.processing', '.month-hour.processing', '.matrix-cell.processing', '.day-hour-slot.processing']) {
+    assert.ok(css.includes(selector), `missing status styling for ${selector}`);
+  }
+  assert.match(css, /\.c\.indexing\{[^}]*animation:index-breath/);
+  assert.match(css, /prefers-reduced-motion:reduce/);
+});
+
 test('archive SSE shows status and available years, without overriding a remembered product year', () => {
   const h = harness({'satellite-data-calendar-years-v1': '{"goes18:ABI-L1b-RadC":"2025"}'});
   h.run('changeCalendarYear = () => { throw new Error("remembered year was overridden"); };');

@@ -235,6 +235,20 @@ func (s *Store) coverageDay(ctx context.Context, product model.Product, day stri
 		return CoverageDay{}, err
 	}
 	rows.Close()
+	intent, err := s.calendarIntentForDay(ctx, product.ProductKey, day)
+	if err != nil {
+		return CoverageDay{}, err
+	}
+	if intent != nil {
+		for key, asset := range assets {
+			if asset.flags&(flagOK|flagError) != 0 {
+				continue
+			}
+			if at, parseErr := time.Parse(time.RFC3339Nano, key.timestamp); parseErr == nil && intent.matches(at, key.band) {
+				asset.flags |= flagProcessing
+			}
+		}
+	}
 
 	axis := slotaxis.Resolve(product.SourceID, product.ProductKey, product.Cadence)
 	timestamps := make([]string, 0, len(observed))
@@ -382,8 +396,10 @@ func (s *Store) cachedCoverageTotals(ctx context.Context, product model.Product,
 		revision += *day.UpdatedAt
 	}
 	key := coverageKey{product.ProductKey, day.Day}
-	if entry, ok := s.cachedCoverage(key, revision); ok {
-		return entry, nil
+	if day.DownloadCount == 0 {
+		if entry, ok := s.cachedCoverage(key, revision); ok {
+			return entry, nil
+		}
 	}
 	coverage, err := s.coverageDay(ctx, product, day.Day)
 	if err != nil {
@@ -391,7 +407,9 @@ func (s *Store) cachedCoverageTotals(ctx context.Context, product model.Product,
 	}
 	totals := coverageTotals(coverage, false)
 	entry := coverageEntry{revision: revision, totals: totals, officialState: coverage.OfficialState, mode: coverage.Mode}
-	s.rememberCoverage(key, entry)
+	if day.DownloadCount == 0 {
+		s.rememberCoverage(key, entry)
+	}
 	return entry, nil
 }
 

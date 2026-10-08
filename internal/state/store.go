@@ -236,6 +236,7 @@ type YearDay struct {
 	MissingCount           int     `json:"missing_count"`
 	ErrorCount             int     `json:"error_count"`
 	ProcessingCount        int     `json:"processing_count"`
+	DownloadCount          int     `json:"download_count,omitempty"`
 	HourlyOfficialCount    int     `json:"hourly_official_count"`
 	HourlyLocalOKCount     int     `json:"hourly_local_ok_count"`
 	OfficialGapCount       int     `json:"official_gap_count"`
@@ -917,7 +918,33 @@ func (s *Store) Year(ctx context.Context, product string, year int) (YearRespons
 		}
 		days = append(days, item)
 	}
-	return YearResponse{Product: product, Year: year, Days: days}, rows.Err()
+	if err := rows.Err(); err != nil {
+		return YearResponse{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return YearResponse{}, err
+	}
+	from := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC)
+	intents, err := s.activeCalendarDownloads(ctx, product, from, from.AddDate(1, 0, 0))
+	if err != nil {
+		return YearResponse{}, err
+	}
+	for i := range days {
+		item := &days[i]
+		intent := intents[item.Day]
+		if intent == nil || item.ErrorCount > 0 || item.MissingCount <= 0 || item.OfficialCount <= 0 {
+			continue
+		}
+		if len(intent.allBands) > 0 {
+			item.DownloadCount = item.MissingCount
+		} else {
+			item.DownloadCount = min(item.MissingCount, intent.count())
+		}
+		if item.DownloadCount > 0 {
+			item.Status = "processing"
+		}
+	}
+	return YearResponse{Product: product, Year: year, Days: days}, nil
 }
 
 func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, error) {
@@ -1002,6 +1029,10 @@ func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, erro
 		}
 	}
 	slots := make([]DaySlot, 0, len(ordered))
+	intent, err := s.calendarIntentForDay(ctx, product, day)
+	if err != nil {
+		return DayResponse{}, err
+	}
 	for _, key := range ordered {
 		status := "unknown"
 		official := officialBy[key]
@@ -1034,6 +1065,11 @@ func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, erro
 				status = "partial"
 			default:
 				status = "missing"
+			}
+		}
+		if (status == "missing" || status == "partial") && intent != nil {
+			if at, parseErr := time.Parse(time.RFC3339Nano, key); parseErr == nil && intent.matchesAny(at) {
+				status = "processing"
 			}
 		}
 		slot := DaySlot{Slot: key, Status: status, Official: official, Local: local}

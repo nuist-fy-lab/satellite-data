@@ -73,6 +73,7 @@ const statusLabels = {
   partial: '部分完成',
   error: '错误',
   processing: '处理中',
+  indexing: '索引中',
   official_missing: '官方缺失',
   unknown: '待索引',
 };
@@ -802,7 +803,8 @@ function renderYearGrid(grid, days, year, open) {
   }
   for (let date = new Date(start); date <= end; date.setUTCDate(date.getUTCDate() + 1)) {
     const day = date.toISOString().slice(0, 10);
-    const status = days.get(day)?.status || 'unknown';
+    const item = days.get(day);
+    const status = item?.indexing && (!item.official_count || item.status === 'unknown') ? 'indexing' : item?.status || 'unknown';
     const cell = document.createElement('i');
     cell.className = `c ${status}`;
     cell.dataset.day = day;
@@ -893,7 +895,7 @@ function renderCoverageShell() {
   $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');
   $('#day-coverage').classList.toggle('hidden', !visible || coverage.view !== 'day');
   $('#calendar-help').textContent = visible
-    ? '绿色 完整 · 浅绿 部分 · 橙色 未下载 · 蓝色 处理中 · 红色 错误 · 斜纹 官方缺时次 · 灰色 待索引'
+    ? '绿色 完整 · 橙色 未下载 · 黄色斜纹 下载/处理中 · 灰色呼吸 索引中 · 红色 错误 · 斜纹 官方缺时次'
     : '年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。';
   $('#calendar-help').classList.toggle('hidden', onDemand);
   document.querySelectorAll('[data-coverage-view]').forEach(button => {
@@ -1079,7 +1081,7 @@ function paintCoverageCell(cell, day) {
   const row = coverage.yearDays.get(day);
   const byBand = new Map((row?.[12] || []).map(total => [total[0], total]));
   const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
-  cell.className = `c coverage-day${day === coverage.day ? ' selected-day' : ''}`;
+  cell.className = `c coverage-day${row?.[10] && (row?.[13] === 0 || row?.[13] === 3) ? ' indexing' : ''}${day === coverage.day ? ' selected-day' : ''}`;
   cell.setAttribute('aria-label', dayTip(day));
   if (cell.children.length !== coverage.bands.length) {
     cell.replaceChildren(...coverage.bands.map(() => document.createElement('i')));
@@ -1093,7 +1095,8 @@ function updateCell(day) {
   const cell = gridEl.querySelector(`[data-day="${day}"]`);
   if (!cell) return;
   if (state.coverage.supported) { paintCoverageCell(cell, day); return; }
-  const status = state.dayState.get(day)?.status || 'unknown';
+  const item = state.dayState.get(day);
+  const status = item?.indexing && (!item.official_count || item.status === 'unknown') ? 'indexing' : item?.status || 'unknown';
   cell.className = `c ${status}`;
   cell.dataset.status = status;
   cell.setAttribute('aria-label', dayTip(day));
@@ -1110,6 +1113,7 @@ function dayTip(day, days = state.dayState) {
   const status = band ? coverageStatus(row, officialState, cadence, state.coverage.time === 'hourly', state.coverage.yearDays.get(day)?.[14]) : item.status;
   const lines = [`${day} · ${band ? coverageBandName(band) + ' · ' : ''}${statusLabels[status] || status} · ${state.displayZone}`];
   if (item.indexing) lines.push('官方索引中');
+  if (item.download_count) lines.push(`已选待下载时次 ${item.download_count}`);
   lines.push(`全产品官方时次 ${item.local_ok_count || 0} / ${item.official_count || 0}`);
   if (item.hourly_official_count) lines.push(`整点官方时次 ${item.hourly_local_ok_count || 0} / ${item.hourly_official_count}`);
   if (item.missing_count) lines.push(`本地缺失 ${item.missing_count}`);
@@ -1292,6 +1296,7 @@ function renderCoverageMonth() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'month-day';
+    if (indexing && (officialState === 0 || officialState === 3)) button.classList.add('indexing');
     button.dataset.day = date;
     const descriptions = coverage.bands.filter(band => !coverage.band || band === coverage.band).map(band => {
       const row = byBand.get(band);
@@ -1313,7 +1318,7 @@ function renderCoverageMonth() {
         colors.push(`#e4e8eb ${begin}deg ${end}deg`);
       } else {
         const color = {complete:'var(--green)', complete_official_gap:'var(--green)', partial:'var(--partial)',
-          error:'var(--red)', processing:'var(--blue)', missing:'var(--orange)',
+          error:'var(--red)', processing:'var(--yellow)', missing:'var(--orange)',
           official_missing:'#b5bec4', unknown:'var(--empty)'}[status] || 'var(--empty)';
         colors.push(`${color} ${begin}deg ${end}deg`);
       }
@@ -1338,7 +1343,7 @@ function renderCoverageMonth() {
     bar.className = 'month-hours';
     for (const [, expected, ok, partial, errors, processing] of hours) {
       const slot = document.createElement('i');
-      const status = officialState === 0 || officialState === 3 || (coverage.time === 'hourly' && mode !== 'grid') ? 'unknown' : officialState === 1 ? 'official_missing' :
+      const status = indexing && (officialState === 0 || officialState === 3) ? 'indexing' : officialState === 0 || officialState === 3 || (coverage.time === 'hourly' && mode !== 'grid') ? 'unknown' : officialState === 1 ? 'official_missing' :
         errors ? 'error' : processing ? 'processing' : !expected ? 'official_missing' :
         ok >= expected ? 'complete' : ok || partial ? 'partial' : 'missing';
       slot.className = `month-hour ${status}`;
@@ -1732,7 +1737,7 @@ function renderTimeline(day) {
       const cell = document.createElement('i');
       const hourly = i % (60 / interval) === 0;
 	  const status = ['error','processing','partial','missing','official_missing','unknown','complete'].find(value => group.some(slot => slot.status === value))
-	    || (day.official_day ? 'official_missing' : 'unknown');
+	    || (day.indexing && !day.official_day ? 'indexing' : day.official_day ? 'official_missing' : 'unknown');
       cell.className = `slot c ${status}${hourly ? ' hourly' : ''}`;
       const minute = i * interval;
 	  cell.title = `${String(Math.floor(minute / 60)).padStart(2,'0')}:${String(minute % 60).padStart(2,'0')} · ${statusLabels[status] || status}` +
