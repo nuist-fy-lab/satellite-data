@@ -372,6 +372,10 @@ main.calendar-wide{width:100%}
 @media(max-width:780px){.download-submit-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:450px){.download-submit-form{grid-template-columns:minmax(0,1fr)}}
 .download-list{border-top:1px solid var(--line)}
+.download-pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin:12px 0;font-size:12px;color:var(--muted)}
+.download-pagination button{min-height:30px;padding:4px 10px}
+.download-pagination button:disabled{opacity:.45;cursor:not-allowed}
+.download-pagination #download-page-summary{margin-right:auto}
 .download-provider{display:flex;align-items:center;gap:14px;padding:10px 2px;border-bottom:1px solid var(--line);font-size:11px;min-width:0}
 .download-provider-name{flex:0 0 120px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .download-provider-chips{display:grid;grid-template-columns:minmax(102px,1.25fr) minmax(74px,.9fr) minmax(74px,.9fr) minmax(82px,1fr) minmax(78px,.9fr) minmax(68px,.8fr) minmax(66px,.78fr) minmax(76px,.9fr);align-items:center;gap:6px;min-width:0;flex:1}

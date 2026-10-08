@@ -43,7 +43,7 @@ const state = {
   downloads: {
     displayZone: storedDisplayZone('satellite-data-download-zone', 'UTC'),
     poll: 0, pollSeq: 0, catalog: [], source: '', loading: 0,
-    cursor: '', requests: [], providers: [], stream: null,
+    cursor: '', requests: [], page: 1, total: 0, pages: 1, providers: [], stream: null,
     history: {
       displayZone: storedDisplayZone('satellite-data-download-monitor-zone', 'BJT'),
       window: localStorage.getItem('satellite-data-download-window') || '1h',
@@ -2636,7 +2636,7 @@ function renderDownloadProviders(statuses, liveAvailable = true) {
 }
 
 function renderDownloadRequests(items) {
-  $('#download-requests').innerHTML = items.map(item => '<div class="download-request">' +
+  $('#download-requests').innerHTML = items.slice(0, 50).map(item => '<div class="download-request">' +
     '<strong>#' + esc(item.id) + ' · ' + esc(item.collection_id) + '</strong>' +
     '<span>' + esc(downloadStates[item.state] || item.state) + ' · ' + esc(item.files_done) + '/' + esc(item.assets_queued) + ' 文件</span>' +
     '<span>' + esc(downloadTimestamp(item.start, state.downloads.displayZone)) + ' - ' + esc(downloadTimestamp(item.end, state.downloads.displayZone)) + ' · ' +
@@ -2644,6 +2644,29 @@ function renderDownloadRequests(items) {
     esc(item.times_count ? item.times_count + ' 时次/天' : '全部时次') + '</span>' +
     (item.last_error ? '<small title="' + esc(item.last_error) + '">' + esc(item.last_error) + '</small>' : '') +
     '</div>').join('') || '<div class="pool-empty">暂无下载任务</div>';
+  const {page, pages, total} = state.downloads;
+  const pager = $('#download-pages');
+  pager.classList.toggle('hidden', total <= 50);
+  $('#download-page-summary').textContent = `共 ${total} 条，每页最多 50 条`;
+  $('#download-page-current').textContent = `第 ${page} / ${Math.max(1, pages)} 页`;
+  $('#download-page-prev').disabled = page <= 1;
+  $('#download-page-next').disabled = page >= pages;
+}
+
+function applyDownloadPage(payload) {
+  // Query only 50 rows on the server; never retain the entire download history.
+  state.downloads.requests = (payload.downloads || []).slice(0, 50);
+  state.downloads.page = payload.page || state.downloads.page;
+  state.downloads.total = payload.total || 0;
+  state.downloads.pages = Math.max(1, payload.pages || 1);
+  renderDownloadRequests(state.downloads.requests);
+}
+
+function changeDownloadPage(direction) {
+  const next = Math.max(1, Math.min(state.downloads.pages, state.downloads.page + direction));
+  if (next === state.downloads.page) return;
+  state.downloads.page = next;
+  loadDownloads(true);
 }
 
 function mergeDownloadUpdates(payload, reset = false) {
@@ -2708,8 +2731,7 @@ async function loadDownloads(schedule = true, forceHistory = false) {
   if (!downloadWindowSeconds[history.window]) history.window = '1h';
   const cacheFresh = !forceHistory && history.payload?.window === history.window && Date.now() - history.loadedAt < 15_000;
   const historySince = !forceHistory && history.payload?.window === history.window ? incrementalSeriesSince(history.payload, 'providers') : '';
-  const requestURL = '/api/v1/downloads/updates?limit=' + (state.downloads.cursor ? '100' : '50') +
-    (state.downloads.cursor ? '&cursor=' + encodeURIComponent(state.downloads.cursor) : '');
+  const requestURL = '/api/v1/downloads?limit=50&page=' + encodeURIComponent(state.downloads.page);
   const [requests, samples] = await Promise.allSettled([
     json(requestURL),
     cacheFresh ? Promise.resolve(history.payload) : json('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window) +
@@ -2718,7 +2740,14 @@ async function loadDownloads(schedule = true, forceHistory = false) {
   if (ticket !== state.downloads.pollSeq) return;
   state.downloads.requestError = requests.status === 'rejected' ? requests.reason.message : '';
   $('#downloads-error').textContent = [state.downloads.requestError, state.downloads.providerError].filter(Boolean).join(' · ');
-  if (requests.status === 'fulfilled') mergeDownloadUpdates(requests.value, !state.downloads.cursor);
+  if (requests.status === 'fulfilled') {
+    applyDownloadPage(requests.value);
+    if (!state.downloads.requests.length && state.downloads.page > 1) {
+      state.downloads.page = Math.max(1, state.downloads.pages);
+      loadDownloads(schedule, forceHistory);
+      return;
+    }
+  }
   if (samples.status === 'fulfilled') {
     history.payload = cacheFresh ? samples.value : mergeDownloadHistory(history.payload, samples.value, history.window);
     if (!cacheFresh) history.loadedAt = Date.now();
@@ -3268,6 +3297,8 @@ function bind() {
   }));
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
   $('#refresh-downloads').addEventListener('click', () => loadDownloads(true, true));
+  $('#download-page-prev').addEventListener('click', () => changeDownloadPage(-1));
+  $('#download-page-next').addEventListener('click', () => changeDownloadPage(1));
   $('#download-timezone').addEventListener('change', event => setDownloadTimezone(event.target.value));
   $('#download-monitor-timezone').addEventListener('change', event => setDownloadMonitorTimezone(event.target.value));
   $('#download-monitor-provider').addEventListener('change', event => {

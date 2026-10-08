@@ -244,7 +244,7 @@ func (s *Store) coverageDay(ctx context.Context, product model.Product, day stri
 			if asset.flags&(flagOK|flagError) != 0 {
 				continue
 			}
-			if at, parseErr := time.Parse(time.RFC3339Nano, key.timestamp); parseErr == nil && intent.matches(at, key.band) {
+			if at, parseErr := time.Parse(time.RFC3339Nano, key.timestamp); parseErr == nil && intent.matches(at, asset.band) {
 				asset.flags |= flagProcessing
 			}
 		}

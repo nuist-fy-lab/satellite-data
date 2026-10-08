@@ -100,6 +100,27 @@ test('timestamps handle offsets and date rollover without using the browser time
   for (const value of ['', null, undefined, 'invalid']) assert.equal(h.context.downloadTimestamp(value, 'UTC'), '—');
 });
 
+test('download history shows at most 50 requests and pages through older history', () => {
+  const h = harness();
+  h.context.bind();
+  const items = Array.from({length: 53}, (_, i) => ({id: 53-i, collection_id: 'modis:MYD06_L2', state:'pending',
+    files_done:0, assets_queued:1, start:'2023-01-01T00:00:00Z',end:'2023-01-02T00:00:00Z'}));
+  h.context.applyDownloadPage({downloads:items, page:1, pages:2, total:53});
+  assert.equal(h.run('state.downloads.requests.length'), 50);
+  assert.match(h.element('#download-page-summary').textContent, /53 条/);
+  assert.equal(h.element('#download-page-prev').disabled, true);
+  assert.equal(h.element('#download-page-next').disabled, false);
+  assert.doesNotMatch(h.element('#download-requests').innerHTML, /#1 ·/);
+  h.context.changeDownloadPage(1);
+  assert.equal(h.run('state.downloads.page'), 2);
+  h.context.applyDownloadPage({downloads:items.slice(50), page:2, pages:2, total:53});
+  assert.equal(h.run('state.downloads.requests.length'), 3);
+  assert.equal(h.element('#download-page-next').disabled, true);
+  h.context.changeDownloadPage(-1);
+  assert.equal(h.run('state.downloads.page'), 1);
+  assert.match(html, /id="download-pages"/);
+});
+
 test('UTC inclusive end date remains a half-open UTC range', () => {
   const h = harness();
   assert.deepEqual(JSON.parse(JSON.stringify(h.context.downloadRange('2026-12-31', '2026-12-31'))), {

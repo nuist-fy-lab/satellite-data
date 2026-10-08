@@ -598,6 +598,32 @@ func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The download history UI requests explicit bounded pages; clients using
+	// the original unpaged endpoint retain their existing response format.
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		page, err := strconv.Atoi(raw)
+		if err != nil || page < 1 || page > 1000000 {
+			writeError(w, http.StatusBadRequest, errors.New("invalid download page"))
+			return
+		}
+		var items []state.DownloadRequest
+		var total int
+		if user.Role == "admin" {
+			items, total, err = s.store.DownloadRequestsPage(r.Context(), page, 50)
+		} else {
+			items, total, err = s.store.DownloadRequestsOwnedPage(r.Context(), page, 50, user.ID)
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		summaries, _, _ := summarizeDownloads(items)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"downloads": summaries, "page": page, "page_size": 50,
+			"total": total, "pages": (total + 49) / 50,
+		})
+		return
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	var items []state.DownloadRequest
 	var err error

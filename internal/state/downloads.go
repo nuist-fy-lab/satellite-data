@@ -292,6 +292,54 @@ func (s *Store) DownloadRequestsOwned(ctx context.Context, limit int, ownerUserI
 	return s.downloadRequests(ctx, limit, ownerUserID, true)
 }
 
+// DownloadRequestsPage reads one bounded page rather than loading all
+// historical requests in the browser. Ownership is applied to both the count
+// and the row query so non-admin users never learn other users' history.
+func (s *Store) DownloadRequestsPage(ctx context.Context, page, size int) ([]DownloadRequest, int, error) {
+	return s.downloadRequestsPage(ctx, page, size, "", false)
+}
+
+func (s *Store) DownloadRequestsOwnedPage(ctx context.Context, page, size int, ownerUserID string) ([]DownloadRequest, int, error) {
+	return s.downloadRequestsPage(ctx, page, size, ownerUserID, true)
+}
+
+func (s *Store) downloadRequestsPage(ctx context.Context, page, size int, ownerUserID string, scoped bool) ([]DownloadRequest, int, error) {
+	if page < 1 || size < 1 || size > 50 || page > 1000000 {
+		return nil, 0, errors.New("invalid download page")
+	}
+	offset := (page - 1) * size
+	countSQL := `SELECT COUNT(*) FROM download_requests`
+	var args []any
+	if scoped {
+		countSQL += ` WHERE owner_user_id=?`
+		args = append(args, ownerUserID)
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := downloadRequestSelect + ` ORDER BY id DESC LIMIT ? OFFSET ?`
+	queryArgs := []any{size, offset}
+	if scoped {
+		query = downloadRequestSelect + ` WHERE owner_user_id=? ORDER BY id DESC LIMIT ? OFFSET ?`
+		queryArgs = []any{ownerUserID, size, offset}
+	}
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]DownloadRequest, 0, size)
+	for rows.Next() {
+		item, err := scanDownloadRequest(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
+}
+
 func (s *Store) DownloadRequestUpdates(ctx context.Context, limit int, since time.Time, sinceID int64) ([]DownloadRequest, error) {
 	return s.downloadRequestUpdates(ctx, limit, since, sinceID, "", false)
 }

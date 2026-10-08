@@ -240,7 +240,14 @@
         </div>
       </section>
       <section class="download-section"><h2>Provider 传输</h2><div id="download-providers" class="download-list"></div></section>
-      <section class="download-section"><h2>最近请求</h2><div id="download-requests" class="download-list"></div></section>
+      <section class="download-section"><h2>下载请求</h2><div id="download-requests" class="download-list"></div>
+        <nav id="download-pages" class="download-pagination hidden" aria-label="下载请求分页">
+          <span id="download-page-summary" aria-live="polite"></span>
+          <button type="button" id="download-page-prev">上一页</button>
+          <span id="download-page-current"></span>
+          <button type="button" id="download-page-next">下一页</button>
+        </nav>
+      </section>
     </section>
 
     <section class="view" id="monitor-view">
