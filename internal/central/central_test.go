@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -83,6 +84,55 @@ func TestVaultAuthenticatedEncryptionAndPrivateKey(t *testing.T) {
 	}
 	if _, err := OpenVault(path); err == nil {
 		t.Fatal("public key file accepted")
+	}
+}
+
+func TestMODISReusesConnectionOnlyWithinTheSameCredentialRoute(t *testing.T) {
+	store := testStore(t)
+	credentialID, _ := addAccount(t, store, "modis", "laads", Secret{Token: "fixture-laads"})
+	service := NewService(store)
+	first, err := service.resolve(t.Context(), "modis", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.resolve(t.Context(), "modis", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.keepIdleConnections || first.client.Transport != second.client.Transport {
+		t.Fatal("same MODIS identity must reuse an isolated transport")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+	for i := 0; i < 2; i++ {
+		wasReused := false
+		request, _ := http.NewRequestWithContext(httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { wasReused = info.Reused },
+		}), http.MethodGet, server.URL, nil)
+		response, err := first.client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+		if (i == 1) != wasReused {
+			t.Fatalf("attempt %d reused=%t", i, wasReused)
+		}
+	}
+	if _, err := store.UpsertCredential(t.Context(), CredentialSpec{ID: credentialID, Alias: "modis", Kind: "laads", Secret: Secret{Token: "updated-laads"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := service.resolve(t.Context(), "modis", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.client.Transport == updated.client.Transport {
+		t.Fatal("credential rotation reused another credential's transport")
+	}
+	for _, transport := range service.modisTransports {
+		transport.CloseIdleConnections()
 	}
 }
 
