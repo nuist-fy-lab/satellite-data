@@ -101,8 +101,11 @@ func TestDownloadHistoryHTTPPaginatesInBatchesOfFifty(t *testing.T) {
 				return
 			}
 			var response struct {
-				Downloads                    []downloadSummary `json:"downloads"`
-				Page, PageSize, Total, Pages int
+				Downloads []downloadSummary `json:"downloads"`
+				Page      int               `json:"page"`
+				PageSize  int               `json:"page_size"`
+				Total     int               `json:"total"`
+				Pages     int               `json:"pages"`
 			}
 			if err := json.Unmarshal(r.Body.Bytes(), &response); err != nil {
 				t.Fatal(err)
