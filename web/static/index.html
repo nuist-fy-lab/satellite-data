@@ -61,7 +61,8 @@
             <span class="legend-item" title="整点官方时次本地完整，官方时序有缺次"><i class="c hourly_complete_official_gap"></i>整点·官方缺次</span>
             <span class="legend-item"><i class="c partial"></i>部分</span>
             <span class="legend-item"><i class="c missing"></i>本地缺</span>
-            <span class="legend-item"><i class="c processing"></i>处理中</span>
+            <span class="legend-item"><i class="c processing"></i>下载／处理中</span>
+            <span class="legend-item"><i class="c indexing"></i>索引中</span>
             <span class="legend-item"><i class="c official_missing"></i>官方缺</span>
             <span class="legend-item"><i class="c error"></i>错误</span>
             <span class="legend-item"><i class="c unknown"></i>待索引</span>
@@ -239,7 +240,14 @@
         </div>
       </section>
       <section class="download-section"><h2>Provider 传输</h2><div id="download-providers" class="download-list"></div></section>
-      <section class="download-section"><h2>最近请求</h2><div id="download-requests" class="download-list"></div></section>
+      <section class="download-section"><h2>下载请求</h2><div id="download-requests" class="download-list"></div>
+        <nav id="download-pages" class="download-pagination hidden" aria-label="下载请求分页">
+          <span id="download-page-summary" aria-live="polite"></span>
+          <button type="button" id="download-page-prev">上一页</button>
+          <span id="download-page-current"></span>
+          <button type="button" id="download-page-next">下一页</button>
+        </nav>
+      </section>
     </section>
 
     <section class="view" id="monitor-view">

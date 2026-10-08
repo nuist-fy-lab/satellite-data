@@ -178,6 +178,50 @@ func TestDownloadSelectionSurvivesRestartAndMigratesOldSchema(t *testing.T) {
 	}
 }
 
+func TestDownloadHistoryPaginationIsBoundedAndUserScoped(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	start := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 108; i++ {
+		owner := "user-a"
+		if i%2 == 1 {
+			owner = "user-b"
+		}
+		if _, err := store.EnqueueSelectedDownloadRequestOwned(t.Context(), owner, "modis", "modis", "modis:sample", start, start.AddDate(0, 0, 1), downloadfilter.Selection{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, total, err := store.DownloadRequestsPage(t.Context(), 1, 50)
+	if err != nil || total != 108 || len(first) != 50 || first[0].ID != 108 {
+		t.Fatalf("page1 total=%d len=%d first=%+v err=%v", total, len(first), first[0], err)
+	}
+	second, total, err := store.DownloadRequestsPage(t.Context(), 2, 50)
+	if err != nil || total != 108 || len(second) != 50 || second[0].ID != 58 {
+		t.Fatalf("page2 total=%d len=%d err=%v", total, len(second), err)
+	}
+	last, total, err := store.DownloadRequestsPage(t.Context(), 3, 50)
+	if err != nil || total != 108 || len(last) != 8 || last[0].ID != 8 {
+		t.Fatalf("last total=%d len=%d err=%v", total, len(last), err)
+	}
+	owned, total, err := store.DownloadRequestsOwnedPage(t.Context(), 2, 50, "user-a")
+	if err != nil || total != 54 || len(owned) != 4 {
+		t.Fatalf("owner total=%d len=%d err=%v", total, len(owned), err)
+	}
+	for _, item := range owned {
+		if item.ID%2 != 1 {
+			t.Fatalf("leaked another user's request: %d", item.ID)
+		}
+	}
+	for _, args := range [][2]int{{0, 50}, {1, 51}, {-2, 50}, {1000001, 50}} {
+		if _, _, err := store.DownloadRequestsPage(t.Context(), args[0], args[1]); err == nil {
+			t.Fatalf("invalid pagination accepted: %v", args)
+		}
+	}
+}
+
 func TestDownloadOwnershipMigrationKeepsExistingOrdersPrivate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.sqlite3")
 	db, err := sql.Open("sqlite", path)

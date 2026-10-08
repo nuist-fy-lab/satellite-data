@@ -43,7 +43,7 @@ const state = {
   downloads: {
     displayZone: storedDisplayZone('satellite-data-download-zone', 'UTC'),
     poll: 0, pollSeq: 0, catalog: [], source: '', loading: 0,
-    cursor: '', requests: [], providers: [], stream: null,
+    cursor: '', requests: [], page: 1, total: 0, pages: 1, providers: [], stream: null,
     history: {
       displayZone: storedDisplayZone('satellite-data-download-monitor-zone', 'BJT'),
       window: localStorage.getItem('satellite-data-download-window') || '1h',
@@ -73,6 +73,7 @@ const statusLabels = {
   partial: '部分完成',
   error: '错误',
   processing: '处理中',
+  indexing: '索引中',
   official_missing: '官方缺失',
   unknown: '待索引',
 };
@@ -802,7 +803,8 @@ function renderYearGrid(grid, days, year, open) {
   }
   for (let date = new Date(start); date <= end; date.setUTCDate(date.getUTCDate() + 1)) {
     const day = date.toISOString().slice(0, 10);
-    const status = days.get(day)?.status || 'unknown';
+    const item = days.get(day);
+    const status = item?.indexing && (!item.official_count || item.status === 'unknown') ? 'indexing' : item?.status || 'unknown';
     const cell = document.createElement('i');
     cell.className = `c ${status}`;
     cell.dataset.day = day;
@@ -893,7 +895,7 @@ function renderCoverageShell() {
   $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');
   $('#day-coverage').classList.toggle('hidden', !visible || coverage.view !== 'day');
   $('#calendar-help').textContent = visible
-    ? '绿色 完整 · 浅绿 部分 · 橙色 未下载 · 蓝色 处理中 · 红色 错误 · 斜纹 官方缺时次 · 灰色 待索引'
+    ? '绿色 完整 · 橙色 未下载 · 黄色斜纹 下载/处理中 · 灰色呼吸 索引中 · 红色 错误 · 斜纹 官方缺时次'
     : '年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。';
   $('#calendar-help').classList.toggle('hidden', onDemand);
   document.querySelectorAll('[data-coverage-view]').forEach(button => {
@@ -1079,7 +1081,7 @@ function paintCoverageCell(cell, day) {
   const row = coverage.yearDays.get(day);
   const byBand = new Map((row?.[12] || []).map(total => [total[0], total]));
   const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
-  cell.className = `c coverage-day${day === coverage.day ? ' selected-day' : ''}`;
+  cell.className = `c coverage-day${row?.[10] && (row?.[13] === 0 || row?.[13] === 3) ? ' indexing' : ''}${day === coverage.day ? ' selected-day' : ''}`;
   cell.setAttribute('aria-label', dayTip(day));
   if (cell.children.length !== coverage.bands.length) {
     cell.replaceChildren(...coverage.bands.map(() => document.createElement('i')));
@@ -1093,7 +1095,8 @@ function updateCell(day) {
   const cell = gridEl.querySelector(`[data-day="${day}"]`);
   if (!cell) return;
   if (state.coverage.supported) { paintCoverageCell(cell, day); return; }
-  const status = state.dayState.get(day)?.status || 'unknown';
+  const item = state.dayState.get(day);
+  const status = item?.indexing && (!item.official_count || item.status === 'unknown') ? 'indexing' : item?.status || 'unknown';
   cell.className = `c ${status}`;
   cell.dataset.status = status;
   cell.setAttribute('aria-label', dayTip(day));
@@ -1110,6 +1113,7 @@ function dayTip(day, days = state.dayState) {
   const status = band ? coverageStatus(row, officialState, cadence, state.coverage.time === 'hourly', state.coverage.yearDays.get(day)?.[14]) : item.status;
   const lines = [`${day} · ${band ? coverageBandName(band) + ' · ' : ''}${statusLabels[status] || status} · ${state.displayZone}`];
   if (item.indexing) lines.push('官方索引中');
+  if (item.download_count) lines.push(`已选待下载时次 ${item.download_count}`);
   lines.push(`全产品官方时次 ${item.local_ok_count || 0} / ${item.official_count || 0}`);
   if (item.hourly_official_count) lines.push(`整点官方时次 ${item.hourly_local_ok_count || 0} / ${item.hourly_official_count}`);
   if (item.missing_count) lines.push(`本地缺失 ${item.missing_count}`);
@@ -1292,6 +1296,7 @@ function renderCoverageMonth() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'month-day';
+    if (indexing && (officialState === 0 || officialState === 3)) button.classList.add('indexing');
     button.dataset.day = date;
     const descriptions = coverage.bands.filter(band => !coverage.band || band === coverage.band).map(band => {
       const row = byBand.get(band);
@@ -1313,7 +1318,7 @@ function renderCoverageMonth() {
         colors.push(`#e4e8eb ${begin}deg ${end}deg`);
       } else {
         const color = {complete:'var(--green)', complete_official_gap:'var(--green)', partial:'var(--partial)',
-          error:'var(--red)', processing:'var(--blue)', missing:'var(--orange)',
+          error:'var(--red)', processing:'var(--yellow)', missing:'var(--orange)',
           official_missing:'#b5bec4', unknown:'var(--empty)'}[status] || 'var(--empty)';
         colors.push(`${color} ${begin}deg ${end}deg`);
       }
@@ -1338,7 +1343,7 @@ function renderCoverageMonth() {
     bar.className = 'month-hours';
     for (const [, expected, ok, partial, errors, processing] of hours) {
       const slot = document.createElement('i');
-      const status = officialState === 0 || officialState === 3 || (coverage.time === 'hourly' && mode !== 'grid') ? 'unknown' : officialState === 1 ? 'official_missing' :
+      const status = indexing && (officialState === 0 || officialState === 3) ? 'indexing' : officialState === 0 || officialState === 3 || (coverage.time === 'hourly' && mode !== 'grid') ? 'unknown' : officialState === 1 ? 'official_missing' :
         errors ? 'error' : processing ? 'processing' : !expected ? 'official_missing' :
         ok >= expected ? 'complete' : ok || partial ? 'partial' : 'missing';
       slot.className = `month-hour ${status}`;
@@ -1732,7 +1737,7 @@ function renderTimeline(day) {
       const cell = document.createElement('i');
       const hourly = i % (60 / interval) === 0;
 	  const status = ['error','processing','partial','missing','official_missing','unknown','complete'].find(value => group.some(slot => slot.status === value))
-	    || (day.official_day ? 'official_missing' : 'unknown');
+	    || (day.indexing && !day.official_day ? 'indexing' : day.official_day ? 'official_missing' : 'unknown');
       cell.className = `slot c ${status}${hourly ? ' hourly' : ''}`;
       const minute = i * interval;
 	  cell.title = `${String(Math.floor(minute / 60)).padStart(2,'0')}:${String(minute % 60).padStart(2,'0')} · ${statusLabels[status] || status}` +
@@ -2631,7 +2636,7 @@ function renderDownloadProviders(statuses, liveAvailable = true) {
 }
 
 function renderDownloadRequests(items) {
-  $('#download-requests').innerHTML = items.map(item => '<div class="download-request">' +
+  $('#download-requests').innerHTML = items.slice(0, 50).map(item => '<div class="download-request">' +
     '<strong>#' + esc(item.id) + ' · ' + esc(item.collection_id) + '</strong>' +
     '<span>' + esc(downloadStates[item.state] || item.state) + ' · ' + esc(item.files_done) + '/' + esc(item.assets_queued) + ' 文件</span>' +
     '<span>' + esc(downloadTimestamp(item.start, state.downloads.displayZone)) + ' - ' + esc(downloadTimestamp(item.end, state.downloads.displayZone)) + ' · ' +
@@ -2639,6 +2644,29 @@ function renderDownloadRequests(items) {
     esc(item.times_count ? item.times_count + ' 时次/天' : '全部时次') + '</span>' +
     (item.last_error ? '<small title="' + esc(item.last_error) + '">' + esc(item.last_error) + '</small>' : '') +
     '</div>').join('') || '<div class="pool-empty">暂无下载任务</div>';
+  const {page, pages, total} = state.downloads;
+  const pager = $('#download-pages');
+  pager.classList.toggle('hidden', total <= 50);
+  $('#download-page-summary').textContent = `共 ${total} 条，每页最多 50 条`;
+  $('#download-page-current').textContent = `第 ${page} / ${Math.max(1, pages)} 页`;
+  $('#download-page-prev').disabled = page <= 1;
+  $('#download-page-next').disabled = page >= pages;
+}
+
+function applyDownloadPage(payload) {
+  // Query only 50 rows on the server; never retain the entire download history.
+  state.downloads.requests = (payload.downloads || []).slice(0, 50);
+  state.downloads.page = payload.page || state.downloads.page;
+  state.downloads.total = payload.total || 0;
+  state.downloads.pages = Math.max(1, payload.pages || 1);
+  renderDownloadRequests(state.downloads.requests);
+}
+
+function changeDownloadPage(direction) {
+  const next = Math.max(1, Math.min(state.downloads.pages, state.downloads.page + direction));
+  if (next === state.downloads.page) return;
+  state.downloads.page = next;
+  loadDownloads(true);
 }
 
 function mergeDownloadUpdates(payload, reset = false) {
@@ -2703,8 +2731,7 @@ async function loadDownloads(schedule = true, forceHistory = false) {
   if (!downloadWindowSeconds[history.window]) history.window = '1h';
   const cacheFresh = !forceHistory && history.payload?.window === history.window && Date.now() - history.loadedAt < 15_000;
   const historySince = !forceHistory && history.payload?.window === history.window ? incrementalSeriesSince(history.payload, 'providers') : '';
-  const requestURL = '/api/v1/downloads/updates?limit=' + (state.downloads.cursor ? '100' : '50') +
-    (state.downloads.cursor ? '&cursor=' + encodeURIComponent(state.downloads.cursor) : '');
+  const requestURL = '/api/v1/downloads?limit=50&page=' + encodeURIComponent(state.downloads.page);
   const [requests, samples] = await Promise.allSettled([
     json(requestURL),
     cacheFresh ? Promise.resolve(history.payload) : json('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window) +
@@ -2713,7 +2740,14 @@ async function loadDownloads(schedule = true, forceHistory = false) {
   if (ticket !== state.downloads.pollSeq) return;
   state.downloads.requestError = requests.status === 'rejected' ? requests.reason.message : '';
   $('#downloads-error').textContent = [state.downloads.requestError, state.downloads.providerError].filter(Boolean).join(' · ');
-  if (requests.status === 'fulfilled') mergeDownloadUpdates(requests.value, !state.downloads.cursor);
+  if (requests.status === 'fulfilled') {
+    applyDownloadPage(requests.value);
+    if (!state.downloads.requests.length && state.downloads.page > 1) {
+      state.downloads.page = Math.max(1, state.downloads.pages);
+      loadDownloads(schedule, forceHistory);
+      return;
+    }
+  }
   if (samples.status === 'fulfilled') {
     history.payload = cacheFresh ? samples.value : mergeDownloadHistory(history.payload, samples.value, history.window);
     if (!cacheFresh) history.loadedAt = Date.now();
@@ -3263,6 +3297,8 @@ function bind() {
   }));
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
   $('#refresh-downloads').addEventListener('click', () => loadDownloads(true, true));
+  $('#download-page-prev').addEventListener('click', () => changeDownloadPage(-1));
+  $('#download-page-next').addEventListener('click', () => changeDownloadPage(1));
   $('#download-timezone').addEventListener('change', event => setDownloadTimezone(event.target.value));
   $('#download-monitor-timezone').addEventListener('change', event => setDownloadMonitorTimezone(event.target.value));
   $('#download-monitor-provider').addEventListener('change', event => {

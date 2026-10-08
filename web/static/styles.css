@@ -138,6 +138,7 @@ main.calendar-wide{width:100%}
 .c.hourly_complete_official_gap{background:repeating-linear-gradient(135deg,var(--blue) 0 4px,#b9d7ff 4px 7px)}
 .c.missing{background:var(--orange)}
 .c.processing{background:repeating-linear-gradient(135deg,var(--yellow) 0 4px,#fff4b8 4px 7px);animation:pulse 1.5s ease-in-out infinite}
+.c.indexing{background:#bbc4cd;animation:index-breath 1.9s ease-in-out infinite}
 .c.official_missing{background:repeating-linear-gradient(135deg,#b7bec7 0 3px,#f6f8fa 3px 6px)}
 .c.error{background:var(--red)}
 .c.unknown{background:var(--empty)}
@@ -146,6 +147,8 @@ main.calendar-wide{width:100%}
 .c[data-day]{cursor:pointer}
 .c[data-day]:hover{outline:2px solid #57606a;outline-offset:1px}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.42}}
+@keyframes index-breath{0%,100%{opacity:.87}50%{opacity:.30}}
+@media(prefers-reduced-motion:reduce){.c.processing,.c.indexing,.month-day.indexing{animation:none!important}}
 .calendar-card{padding:11px 0 8px;border-top:1px solid #d8dee4}
 #calendar-view{width:100%;max-width:none;font-size:14px}
 #calendar-view>.calendar-card{width:100%;max-width:none;margin-inline:auto}
@@ -226,7 +229,10 @@ main.calendar-wide{width:100%}
 .coverage-year .c i.partial,.month-hour.partial,.matrix-cell.partial,.day-hour-slot.partial{background:var(--partial)}
 .coverage-year .c i.missing,.month-hour.missing,.matrix-cell.missing,.day-hour-slot.missing{background:var(--orange)}
 .coverage-year .c i.error,.month-hour.error,.matrix-cell.error,.day-hour-slot.error{background:var(--red)}
-.coverage-year .c i.processing,.month-hour.processing,.matrix-cell.processing,.day-hour-slot.processing{background:var(--blue)}
+.coverage-year .c i.processing,.month-hour.processing,.matrix-cell.processing,.day-hour-slot.processing{background:repeating-linear-gradient(135deg,var(--yellow) 0 2px,#fff4b8 2px 4px);animation:pulse 1.5s ease-in-out infinite}
+.coverage-year .c.indexing{background:#bbc4cd;animation:index-breath 1.9s ease-in-out infinite}
+.month-day.indexing .month-ring{background:#bbc4cd!important;animation:index-breath 1.9s ease-in-out infinite}
+@media(prefers-reduced-motion:reduce){.coverage-year .c i.processing,.coverage-year .c.indexing,.month-day.indexing .month-ring{animation:none!important}}
 .coverage-year .c i.official_missing,.month-hour.official_missing,.matrix-cell.official_missing,.day-hour-slot.official_missing{background:repeating-linear-gradient(135deg,#adb5bd 0 2px,#f4f6f7 2px 4px)}
 .coverage-year .c i.unknown{background:#e4e8eb;outline:0}
 .month-hour.unknown,.matrix-cell.unknown{background:#e4e8eb;outline:1px solid #9ba7ac;outline-offset:-1px}
@@ -366,6 +372,10 @@ main.calendar-wide{width:100%}
 @media(max-width:780px){.download-submit-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:450px){.download-submit-form{grid-template-columns:minmax(0,1fr)}}
 .download-list{border-top:1px solid var(--line)}
+.download-pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin:12px 0;font-size:12px;color:var(--muted)}
+.download-pagination button{min-height:30px;padding:4px 10px}
+.download-pagination button:disabled{opacity:.45;cursor:not-allowed}
+.download-pagination #download-page-summary{margin-right:auto}
 .download-provider{display:flex;align-items:center;gap:14px;padding:10px 2px;border-bottom:1px solid var(--line);font-size:11px;min-width:0}
 .download-provider-name{flex:0 0 120px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .download-provider-chips{display:grid;grid-template-columns:minmax(102px,1.25fr) minmax(74px,.9fr) minmax(74px,.9fr) minmax(82px,1fr) minmax(78px,.9fr) minmax(68px,.8fr) minmax(66px,.78fr) minmax(76px,.9fr);align-items:center;gap:6px;min-width:0;flex:1}
