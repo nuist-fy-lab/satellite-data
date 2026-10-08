@@ -57,7 +57,7 @@ func (s *Service) Gateway() http.Handler {
 		for _, source := range sources {
 			route, err := s.resolve(r.Context(), source, nil)
 			status[source] = err == nil
-			if err == nil {
+			if err == nil && !route.keepIdleConnections {
 				route.client.CloseIdleConnections()
 			}
 		}
@@ -109,7 +109,9 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "centre access route is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	defer route.client.CloseIdleConnections()
+	if !route.keepIdleConnections {
+		defer route.client.CloseIdleConnections()
+	}
 	s.Store.markUsed(r.Context(), route)
 	if cdsJobID != "" {
 		route.client.Timeout = 60 * time.Second

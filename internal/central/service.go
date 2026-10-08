@@ -28,10 +28,13 @@ type Service struct {
 	clientFactory func(*url.URL) *http.Client
 	mu            sync.Mutex
 	authorizers   map[string]Authorizer
+	// Each pool belongs to one MODIS account, credential revision and network
+	// route. Never share authentication cookies or connections across routes.
+	modisTransports map[string]*http.Transport
 }
 
 func NewService(store *Store, clients ...*http.Client) *Service {
-	s := &Service{Store: store, authorizers: make(map[string]Authorizer)}
+	s := &Service{Store: store, authorizers: make(map[string]Authorizer), modisTransports: make(map[string]*http.Transport)}
 	if len(clients) > 0 && clients[0] != nil {
 		s.clientFactory = func(*url.URL) *http.Client { copy := *clients[0]; return &copy }
 	}
@@ -42,6 +45,7 @@ type route struct {
 	accountID, credentialID, proxyID                             int64
 	accountVersion, credentialVersion, proxyVersion, fingerprint string
 	client                                                       *http.Client
+	keepIdleConnections                                          bool
 	provider                                                     *era5.Provider
 	authorizer                                                   Authorizer
 }
@@ -153,8 +157,17 @@ func (s *Service) resolve(ctx context.Context, source string, binding *Binding) 
 			proxyURL = u
 		}
 		var client *http.Client
+		var keepIdleConnections bool
 		if s.clientFactory != nil {
 			client = s.clientFactory(proxyURL)
+		} else if source == "modis" {
+			// LAADS serves many short granules through the same HTTPS endpoint.
+			// Reuse TLS/TCP connections without sharing a cookie jar or credentials
+			// between different user accounts, secret revisions or proxy routes.
+			key := fmt.Sprintf("%s:%d:%s:%d:%s:%d:%s", source, account.ID, account.UpdatedAt,
+				credentialID, fingerprint, proxyID, proxyVersion)
+			client = &http.Client{Transport: s.modisTransport(key, proxyURL)}
+			keepIdleConnections = true
 		} else {
 			transport := http.DefaultTransport.(*http.Transport).Clone()
 			transport.Proxy = nil
@@ -191,9 +204,36 @@ func (s *Service) resolve(ctx context.Context, source string, binding *Binding) 
 				return route{}, err
 			}
 		}
-		return route{accountID: account.ID, credentialID: credentialID, proxyID: proxyID, accountVersion: account.UpdatedAt, credentialVersion: credentialVersion, proxyVersion: proxyVersion, fingerprint: fingerprint, client: client, authorizer: authorizer, provider: era5.NewWithToken(client, secret.Token)}, nil
+		return route{accountID: account.ID, credentialID: credentialID, proxyID: proxyID, accountVersion: account.UpdatedAt, credentialVersion: credentialVersion, proxyVersion: proxyVersion, fingerprint: fingerprint, client: client, keepIdleConnections: keepIdleConnections, authorizer: authorizer, provider: era5.NewWithToken(client, secret.Token)}, nil
 	}
 	return route{}, ErrNoRoute
+}
+
+// The transport is intentionally long-lived while each HTTP client remains
+// request-scoped (especially CheckRedirect). Idle sockets are closed on
+// eviction, and active in-flight requests are not interrupted.
+func (s *Service) modisTransport(key string, proxyURL *url.URL) *http.Transport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing := s.modisTransports[key]; existing != nil {
+		return existing
+	}
+	if len(s.modisTransports) >= 32 {
+		for oldKey, old := range s.modisTransports {
+			old.CloseIdleConnections()
+			delete(s.modisTransports, oldKey)
+		}
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	transport.MaxIdleConns = 32
+	transport.MaxIdleConnsPerHost = 16
+	transport.IdleConnTimeout = 90 * time.Second
+	s.modisTransports[key] = transport
+	return transport
 }
 
 func (s *Service) Submit(ctx context.Context, submission era5.Submission) (era5.Job, error) {
