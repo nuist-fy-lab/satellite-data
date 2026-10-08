@@ -99,9 +99,11 @@ func TestMODISReusesConnectionOnlyWithinTheSameCredentialRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.keepIdleConnections || first.client.Transport != second.client.Transport {
-		t.Fatal("same MODIS identity must reuse an isolated transport")
+	if !first.keepIdleConnections || !second.keepIdleConnections || first.client.Transport == second.client.Transport {
+		t.Fatal("concurrent MODIS requests must use separate route-isolated transports")
 	}
+	defer first.release()
+	defer second.release()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))
@@ -128,17 +130,20 @@ func TestMODISReusesConnectionOnlyWithinTheSameCredentialRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer updated.release()
 	if first.client.Transport == updated.client.Transport {
 		t.Fatal("credential rotation reused another credential's transport")
 	}
-	for _, transport := range service.modisTransports {
-		transport.CloseIdleConnections()
+	for _, pool := range service.modisPools {
+		for _, transport := range pool.all {
+			transport.CloseIdleConnections()
+		}
 	}
 }
 
 func TestMODISParallelHTTPSGranulesUseIndependentTCPConnections(t *testing.T) {
-	// Offer HTTP/2 deliberately: production LAADS advertised it, and a
-	// multiplexed TCP connection degraded all workers at the same time.
+	// LAADS prefers HTTP/2, but concurrent granules must not share one TCP
+	// congestion window (the root cause of the production slowdown).
 	entered := make(chan string, 2)
 	release := make(chan struct{})
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -150,17 +155,31 @@ func TestMODISParallelHTTPSGranulesUseIndependentTCPConnections(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 	service := NewService(nil)
-	transport := service.modisTransport("modis:isolation-test", nil)
-	defer transport.CloseIdleConnections()
-	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
-	client := &http.Client{Transport: transport}
+	first, releaseFirst, err := service.leaseMODISTransport(t.Context(), "modis:isolation-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseFirst()
+	second, releaseSecond, err := service.leaseMODISTransport(t.Context(), "modis:isolation-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseSecond()
+	if first == second {
+		t.Fatal("two concurrent leases shared the same transport")
+	}
+	defer first.CloseIdleConnections()
+	defer second.CloseIdleConnections()
+	first.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	second.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	clients := []*http.Client{{Transport: first}, {Transport: second}}
 	type result struct {
 		proto int
 		err   error
 	}
 	results := make(chan result, 2)
-	for range 2 {
-		go func() {
+	for _, client := range clients {
+		go func(client *http.Client) {
 			response, err := client.Get(server.URL)
 			if err != nil {
 				results <- result{err: err}
@@ -169,7 +188,7 @@ func TestMODISParallelHTTPSGranulesUseIndependentTCPConnections(t *testing.T) {
 			_, readErr := io.Copy(io.Discard, response.Body)
 			response.Body.Close()
 			results <- result{proto: response.ProtoMajor, err: readErr}
-		}()
+		}(client)
 	}
 	var remotes [2]string
 	for i := range remotes {
@@ -187,15 +206,15 @@ func TestMODISParallelHTTPSGranulesUseIndependentTCPConnections(t *testing.T) {
 	for range 2 {
 		select {
 		case got := <-results:
-			if got.err != nil || got.proto != 1 {
-				t.Fatalf("MODIS transfer must negotiate HTTP/1.1: %+v", got)
+			if got.err != nil || got.proto != 2 {
+				t.Fatalf("MODIS transfer must retain LAADS-compatible HTTP/2: %+v", got)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatal("parallel HTTP/1.1 transfer did not finish")
+			t.Fatal("parallel HTTP/2 transfer did not finish")
 		}
 	}
-	// A new request should still reuse an idle HTTP/1.1 connection. The fix
-	// must not regress to allocating a fresh TLS socket for every granule.
+	// A subsequent transfer should reuse the idle HTTP/2 connection in its
+	// leased transport, rather than always allocating a new TLS socket.
 	var reused bool
 	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(t.Context(),
 		&httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}),
@@ -203,14 +222,60 @@ func TestMODISParallelHTTPSGranulesUseIndependentTCPConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := client.Do(request)
+	response, err := clients[0].Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = io.Copy(io.Discard, response.Body)
 	response.Body.Close()
-	if err != nil || !reused || response.ProtoMajor != 1 {
-		t.Fatalf("sequential keep-alive reuse failed: reused=%t proto=%s err=%v", reused, response.Proto, err)
+	if err != nil || !reused || response.ProtoMajor != 2 {
+		t.Fatalf("sequential HTTP/2 reuse failed: reused=%t proto=%s err=%v", reused, response.Proto, err)
+	}
+}
+
+func TestMODISTransportLeaseLimitsConcurrentStreams(t *testing.T) {
+	service := NewService(nil)
+	var transports []*http.Transport
+	var releases []func()
+	for range 8 {
+		transport, release, err := service.leaseMODISTransport(t.Context(), "same-account-route", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		transports = append(transports, transport)
+		releases = append(releases, release)
+	}
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+		for _, transport := range transports {
+			transport.CloseIdleConnections()
+		}
+	}()
+	for i := 0; i < len(transports); i++ {
+		for j := i + 1; j < len(transports); j++ {
+			if transports[i] == transports[j] {
+				t.Fatal("two simultaneous MODIS leases shared a TCP transport")
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 80*time.Millisecond)
+	defer cancel()
+	if _, _, err := service.leaseMODISTransport(ctx, "same-account-route", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ninth concurrent lease should wait or cancel: %v", err)
+	}
+	// Returning a lease must unblock a pending stream, without changing
+	// its transport or forcing the TLS keep-alive connection closed.
+	releases[0]()
+	releases = releases[1:]
+	again, releaseAgain, err := service.leaseMODISTransport(t.Context(), "same-account-route", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseAgain()
+	if again != transports[0] {
+		t.Fatal("a returned MODIS transport was not reused")
 	}
 }
 

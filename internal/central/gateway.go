@@ -109,6 +109,9 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "centre access route is unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	if route.release != nil {
+		defer route.release()
+	}
 	if !route.keepIdleConnections {
 		defer route.client.CloseIdleConnections()
 	}

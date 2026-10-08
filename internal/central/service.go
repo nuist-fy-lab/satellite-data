@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,11 +30,19 @@ type Service struct {
 	authorizers   map[string]Authorizer
 	// Each pool belongs to one MODIS account, credential revision and network
 	// route. Never share authentication cookies or connections across routes.
-	modisTransports map[string]*http.Transport
+	modisPools map[string]*modisPool
+}
+
+// Each concurrent LAADS fetch leases one HTTP/2 transport for its entire
+// lifetime. HTTP/2 is compatible with LAADS; exclusive transport leases
+// prevent simultaneous granules from sharing a TCP congestion window.
+type modisPool struct {
+	idle chan *http.Transport
+	all  []*http.Transport
 }
 
 func NewService(store *Store, clients ...*http.Client) *Service {
-	s := &Service{Store: store, authorizers: make(map[string]Authorizer), modisTransports: make(map[string]*http.Transport)}
+	s := &Service{Store: store, authorizers: make(map[string]Authorizer), modisPools: make(map[string]*modisPool)}
 	if len(clients) > 0 && clients[0] != nil {
 		s.clientFactory = func(*url.URL) *http.Client { copy := *clients[0]; return &copy }
 	}
@@ -47,6 +54,7 @@ type route struct {
 	accountVersion, credentialVersion, proxyVersion, fingerprint string
 	client                                                       *http.Client
 	keepIdleConnections                                          bool
+	release                                                      func()
 	provider                                                     *era5.Provider
 	authorizer                                                   Authorizer
 }
@@ -159,6 +167,7 @@ func (s *Service) resolve(ctx context.Context, source string, binding *Binding) 
 		}
 		var client *http.Client
 		var keepIdleConnections bool
+		var release func()
 		if s.clientFactory != nil {
 			client = s.clientFactory(proxyURL)
 		} else if source == "modis" {
@@ -167,7 +176,12 @@ func (s *Service) resolve(ctx context.Context, source string, binding *Binding) 
 			// between different user accounts, secret revisions or proxy routes.
 			key := fmt.Sprintf("%s:%d:%s:%d:%s:%d:%s", source, account.ID, account.UpdatedAt,
 				credentialID, fingerprint, proxyID, proxyVersion)
-			client = &http.Client{Transport: s.modisTransport(key, proxyURL)}
+			transport, returnToPool, leaseErr := s.leaseMODISTransport(ctx, key, proxyURL)
+			if leaseErr != nil {
+				return route{}, leaseErr
+			}
+			client = &http.Client{Transport: transport}
+			release = returnToPool
 			keepIdleConnections = true
 		} else {
 			transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -202,49 +216,57 @@ func (s *Service) resolve(ctx context.Context, source string, binding *Binding) 
 			}
 			s.mu.Unlock()
 			if err != nil {
+				if release != nil {
+					release()
+				}
 				return route{}, err
 			}
 		}
-		return route{accountID: account.ID, credentialID: credentialID, proxyID: proxyID, accountVersion: account.UpdatedAt, credentialVersion: credentialVersion, proxyVersion: proxyVersion, fingerprint: fingerprint, client: client, keepIdleConnections: keepIdleConnections, authorizer: authorizer, provider: era5.NewWithToken(client, secret.Token)}, nil
+		return route{accountID: account.ID, credentialID: credentialID, proxyID: proxyID, accountVersion: account.UpdatedAt, credentialVersion: credentialVersion, proxyVersion: proxyVersion, fingerprint: fingerprint, client: client, keepIdleConnections: keepIdleConnections, release: release, authorizer: authorizer, provider: era5.NewWithToken(client, secret.Token)}, nil
 	}
 	return route{}, ErrNoRoute
 }
 
-// The transport is intentionally long-lived while each HTTP client remains
-// request-scoped (especially CheckRedirect). Idle sockets are closed on
-// eviction, and active in-flight requests are not interrupted.
-func (s *Service) modisTransport(key string, proxyURL *url.URL) *http.Transport {
+// A pool retains at most eight independent HTTP/2 TCP connections per
+// identity/route, matching the downloaders' 4→8 adaptive concurrency ceiling.
+// One lease is held until the response body finishes streaming. Consequently
+// no two simultaneous granules multiplex onto one TCP socket, while an idle
+// connection can be reused by the next granule.
+func (s *Service) leaseMODISTransport(ctx context.Context, key string, proxyURL *url.URL) (*http.Transport, func(), error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if existing := s.modisTransports[key]; existing != nil {
-		return existing
-	}
-	if len(s.modisTransports) >= 32 {
-		for oldKey, old := range s.modisTransports {
-			old.CloseIdleConnections()
-			delete(s.modisTransports, oldKey)
+	pool := s.modisPools[key]
+	if pool == nil {
+		if len(s.modisPools) >= 32 {
+			for oldKey, old := range s.modisPools {
+				for _, transport := range old.all {
+					transport.CloseIdleConnections()
+				}
+				delete(s.modisPools, oldKey)
+			}
 		}
+		pool = &modisPool{idle: make(chan *http.Transport, 8)}
+		for range cap(pool.idle) {
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.Proxy = nil
+			if proxyURL != nil {
+				transport.Proxy = http.ProxyURL(proxyURL)
+			}
+			transport.ForceAttemptHTTP2 = true
+			transport.MaxConnsPerHost = 1
+			transport.MaxIdleConnsPerHost = 1
+			transport.IdleConnTimeout = 90 * time.Second
+			pool.all = append(pool.all, transport)
+			pool.idle <- transport
+		}
+		s.modisPools[key] = pool
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// LAADS granules are individually large transfers, not tiny RPCs.
-	// HTTP/2 multiplexed all four workers onto one TCP congestion window in
-	// production, slowing every download when that socket became congested.
-	// HTTP/1.1 retains sequential keep-alive reuse but gives *concurrent*
-	// transfers independent TCP congestion control and retransmission state.
-	// ForceAttemptHTTP2=false alone is insufficient with inherited settings:
-	// an explicit empty TLSNextProto map disables HTTP/2 negotiation.
-	transport.ForceAttemptHTTP2 = false
-	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	transport.Proxy = nil
-	if proxyURL != nil {
-		transport.Proxy = http.ProxyURL(proxyURL)
+	s.mu.Unlock()
+	select {
+	case transport := <-pool.idle:
+		return transport, func() { pool.idle <- transport }, nil
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
 	}
-	transport.MaxIdleConns = 32
-	transport.MaxIdleConnsPerHost = 16
-	transport.MaxConnsPerHost = 8
-	transport.IdleConnTimeout = 90 * time.Second
-	s.modisTransports[key] = transport
-	return transport
 }
 
 func (s *Service) Submit(ctx context.Context, submission era5.Submission) (era5.Job, error) {
