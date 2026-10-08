@@ -3,6 +3,9 @@ package state
 import (
 	"context"
 	"encoding/json"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
@@ -45,6 +48,40 @@ func (i *calendarDownloadIntent) matchesAny(at time.Time) bool {
 		return false
 	}
 	return len(i.allBands) > 0 || len(i.times[at.UTC().Format("15:04")]) > 0
+}
+
+// Stable request selection signature for the coverage cache. Rebuilding a
+// multi-year index every SSE tick would otherwise repeat expensive official
+// and local-file joins for every active day.
+func (i *calendarDownloadIntent) revision() string {
+	if i == nil {
+		return ""
+	}
+	var b strings.Builder
+	appendBands := func(bands map[int]struct{}) {
+		values := make([]int, 0, len(bands))
+		for band := range bands {
+			values = append(values, band)
+		}
+		sort.Ints(values)
+		for _, band := range values {
+			b.WriteString(strconv.Itoa(band))
+			b.WriteByte(',')
+		}
+	}
+	appendBands(i.allBands)
+	clocks := make([]string, 0, len(i.times))
+	for clock := range i.times {
+		clocks = append(clocks, clock)
+	}
+	sort.Strings(clocks)
+	for _, clock := range clocks {
+		b.WriteByte('|')
+		b.WriteString(clock)
+		b.WriteByte('=')
+		appendBands(i.times[clock])
+	}
+	return b.String()
 }
 
 // Active orders are separate from official indexing and local file scanning.

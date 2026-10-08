@@ -11,7 +11,7 @@ import (
 )
 
 func TestCalendarActiveDownloadIntentUsesExactSelectedTimesForEverySource(t *testing.T) {
-	for _, source := range []string{"modis", "viirs", "goes18", "himawari9", "earthcare", "mtg", "calipso", "cloudsat"} {
+	for _, source := range []string{"modis", "viirs", "goes18", "goes19", "himawari8", "himawari9", "earthcare", "mtg", "calipso", "cloudsat", "era5"} {
 		t.Run(source, func(t *testing.T) {
 			ctx := t.Context()
 			store, err := Open(filepath.Join(t.TempDir(), "state.db"))

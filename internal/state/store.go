@@ -237,6 +237,7 @@ type YearDay struct {
 	ErrorCount             int     `json:"error_count"`
 	ProcessingCount        int     `json:"processing_count"`
 	DownloadCount          int     `json:"download_count,omitempty"`
+	DownloadRevision       string  `json:"-"`
 	HourlyOfficialCount    int     `json:"hourly_official_count"`
 	HourlyLocalOKCount     int     `json:"hourly_local_ok_count"`
 	OfficialGapCount       int     `json:"official_gap_count"`
@@ -942,6 +943,7 @@ func (s *Store) Year(ctx context.Context, product string, year int) (YearRespons
 		}
 		if item.DownloadCount > 0 {
 			item.Status = "processing"
+			item.DownloadRevision = intent.revision()
 		}
 	}
 	return YearResponse{Product: product, Year: year, Days: days}, nil

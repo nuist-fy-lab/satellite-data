@@ -391,15 +391,13 @@ func (s *Store) cachedCoverageTotals(ctx context.Context, product model.Product,
 		}
 		return coverageEntry{totals: []BandTotals{}, officialState: state, mode: slotaxis.Resolve(product.SourceID, product.ProductKey, product.Cadence).Mode()}, nil
 	}
-	revision := product.Cadence
+	revision := product.Cadence + "|" + day.DownloadRevision
 	if day.UpdatedAt != nil {
 		revision += *day.UpdatedAt
 	}
 	key := coverageKey{product.ProductKey, day.Day}
-	if day.DownloadCount == 0 {
-		if entry, ok := s.cachedCoverage(key, revision); ok {
-			return entry, nil
-		}
+	if entry, ok := s.cachedCoverage(key, revision); ok {
+		return entry, nil
 	}
 	coverage, err := s.coverageDay(ctx, product, day.Day)
 	if err != nil {
@@ -407,9 +405,7 @@ func (s *Store) cachedCoverageTotals(ctx context.Context, product model.Product,
 	}
 	totals := coverageTotals(coverage, false)
 	entry := coverageEntry{revision: revision, totals: totals, officialState: coverage.OfficialState, mode: coverage.Mode}
-	if day.DownloadCount == 0 {
-		s.rememberCoverage(key, entry)
-	}
+	s.rememberCoverage(key, entry)
 	return entry, nil
 }
 
