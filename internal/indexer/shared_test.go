@@ -142,17 +142,17 @@ func TestSharedRootsRequireChecksumForCompletion(t *testing.T) {
 		t.Fatalf("unverified historical files: %+v (%v)", status, err)
 	}
 	invalid := archiveevent.Event{SourceID: "earthcare", CollectionID: "earthcare:official-collection:CPR_FMR_2A", GranuleID: "earthcare:official-123", ArchivePath: path, Filename: name, Size: int64(len(h5)), SHA256: hex.EncodeToString(make([]byte, 32))}
-	wrongOfficialSize := invalid
-	wrongOfficialSize.Size++
-	if err := idx.RecordArchiveEvent(context.Background(), wrongOfficialSize); err == nil {
-		t.Fatal("file with wrong official size accepted")
-	}
 	if err := idx.RecordArchiveEvent(context.Background(), invalid); err == nil {
 		t.Fatal("incorrect digest accepted")
 	}
 	valid := invalid
 	digest := sha256.Sum256(h5)
 	valid.SHA256 = hex.EncodeToString(digest[:])
+	roundedMetadataSize := valid
+	roundedMetadataSize.Size++
+	if err := idx.RecordArchiveEvent(context.Background(), roundedMetadataSize); err != nil {
+		t.Fatalf("matching SHA-256 and official asset identity should outweigh byte metadata: %v", err)
+	}
 	wrongOfficialItem := valid
 	wrongOfficialItem.GranuleID = "earthcare:another-item"
 	if err := idx.RecordArchiveEvent(context.Background(), wrongOfficialItem); err == nil {

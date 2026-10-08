@@ -62,7 +62,7 @@ func (i *Indexer) TriggerLocalScan() {
 
 func (i *Indexer) RecordArchiveEvent(ctx context.Context, event archiveevent.Event) error {
 	path := filepath.Clean(event.ArchivePath)
-	if event.Size <= 0 || len(event.SHA256) != 64 || filepath.Base(path) != event.Filename {
+	if len(event.SHA256) != 64 || filepath.Base(path) != event.Filename {
 		return errors.New("invalid archive event")
 	}
 	if _, err := hex.DecodeString(event.SHA256); err != nil {
@@ -103,8 +103,8 @@ func (i *Indexer) RecordArchiveEvent(ctx context.Context, event archiveevent.Eve
 	if err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() || info.Size() != event.Size {
-		return errors.New("archive event file is not regular or has different size")
+	if !info.Mode().IsRegular() {
+		return errors.New("archive event file is not regular")
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -159,12 +159,12 @@ func (i *Indexer) verifyOfficialCorrespondence(ctx context.Context, event archiv
 				continue
 			}
 			for _, asset := range granule.Assets {
-				if asset.Name == event.Filename && asset.Size > 0 && asset.Size == event.Size {
+				if asset.Name == event.Filename {
 					return asset.ID, nil
 				}
 			}
 		}
-		return "", errors.New("archive file has no exact official EarthCARE collection/item/asset and size match")
+		return "", errors.New("archive file has no matching official EarthCARE collection/item/asset")
 	case "era5":
 		job, ok := strings.CutPrefix(event.GranuleID, "era5:")
 		if !ok || job == "" || filepath.Base(filepath.Dir(event.ArchivePath)) != safeJobPath(job) {
@@ -426,7 +426,7 @@ func (i *Indexer) reconcileGOESArchive(ctx context.Context, files []state.LocalF
 	}
 	byDay := make(map[string]*archiveDay)
 	for _, file := range files {
-		if file.State != "ok" || file.Size <= 0 {
+		if file.State != "ok" {
 			continue
 		}
 		rel, err := filepath.Rel(i.archiveRoot, file.Path)
@@ -597,9 +597,7 @@ func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool,
 }
 
 func checkSharedFile(path string, size int64) (string, string) {
-	if size <= 0 {
-		return "error", "empty file"
-	}
+	_ = size // Length is inventory metadata, not evidence of file integrity.
 	var expected []byte
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".bz2":
