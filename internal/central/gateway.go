@@ -55,10 +55,14 @@ func (s *Service) Gateway() http.Handler {
 	mux.HandleFunc("GET /v1/access/status", func(w http.ResponseWriter, r *http.Request) {
 		status := make(map[string]bool, len(sources))
 		for _, source := range sources {
-			route, err := s.resolve(r.Context(), source, nil)
+			route, err := s.probeRoute(r.Context(), source)
 			status[source] = err == nil
-			if err == nil && !route.keepIdleConnections {
-				route.client.CloseIdleConnections()
+			if err == nil {
+				if route.release != nil {
+					route.release()
+				} else if !route.keepIdleConnections {
+					route.client.CloseIdleConnections()
+				}
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -108,6 +112,9 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "centre access route is unavailable", http.StatusServiceUnavailable)
 		return
+	}
+	if route.release != nil {
+		defer route.release()
 	}
 	if !route.keepIdleConnections {
 		defer route.client.CloseIdleConnections()
