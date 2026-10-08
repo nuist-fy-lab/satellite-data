@@ -60,6 +60,17 @@ type route struct {
 }
 
 func (s *Service) resolve(ctx context.Context, source string, binding *Binding) (route, error) {
+	return s.resolveRoute(ctx, source, binding, false)
+}
+
+// Route readiness probes check credentials and routing without acquiring an
+// HTTP/2 transfer lease. Status requests must remain responsive even if all
+// eight MODIS connections are occupied by long-running scientific downloads.
+func (s *Service) probeRoute(ctx context.Context, source string) (route, error) {
+	return s.resolveRoute(ctx, source, nil, true)
+}
+
+func (s *Service) resolveRoute(ctx context.Context, source string, binding *Binding, probeOnly bool) (route, error) {
 	kind, err := ProviderKind(source)
 	if err != nil {
 		return route{}, err
@@ -170,6 +181,8 @@ func (s *Service) resolve(ctx context.Context, source string, binding *Binding) 
 		var release func()
 		if s.clientFactory != nil {
 			client = s.clientFactory(proxyURL)
+		} else if source == "modis" && probeOnly {
+			client = &http.Client{}
 		} else if source == "modis" {
 			// LAADS serves many short granules through the same HTTPS endpoint.
 			// Reuse TLS/TCP connections without sharing a cookie jar or credentials

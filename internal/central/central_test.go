@@ -279,10 +279,28 @@ func TestMODISTransportLeaseLimitsConcurrentStreams(t *testing.T) {
 	}
 }
 
-func TestMODISAccessStatusChecksReturnTransportLeases(t *testing.T) {
+func TestMODISAccessStatusRemainsAvailableWithAllTransportLeasesBusy(t *testing.T) {
 	store := testStore(t)
 	_, _ = addAccount(t, store, "modis", "laads", Secret{Token: "fixture-laads"})
 	service := NewService(store)
+	var downloads []route
+	for range 8 {
+		r, err := service.resolve(t.Context(), "modis", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		downloads = append(downloads, r)
+	}
+	defer func() {
+		for _, r := range downloads {
+			r.release()
+		}
+	}()
+	for _, pool := range service.modisPools {
+		if len(pool.idle) != 0 {
+			t.Fatal("all eight slots should be occupied")
+		}
+	}
 	handler := service.Gateway()
 	for i := 0; i < 20; i++ {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
@@ -303,8 +321,8 @@ func TestMODISAccessStatusChecksReturnTransportLeases(t *testing.T) {
 		t.Fatalf("unexpected MODIS pool count: %d", len(service.modisPools))
 	}
 	for _, pool := range service.modisPools {
-		if got := len(pool.idle); got != cap(pool.idle) {
-			t.Fatalf("status checks leaked %d transport leases", cap(pool.idle)-got)
+		if got := len(pool.idle); got != 0 {
+			t.Fatalf("status checks improperly took or returned a busy transport: idle=%d", got)
 		}
 		for _, transport := range pool.all {
 			transport.CloseIdleConnections()
