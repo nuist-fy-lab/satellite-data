@@ -31,9 +31,12 @@ type calendarYear struct {
 func (s *Store) autoCalendarYears(ctx context.Context, now time.Time) ([]calendarYear, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT product_key,first_year,last_year,carry_forward FROM (
-		  SELECT collection_id product_key,substr(min(start_ts),1,4) first_year,
-		    substr(max(end_ts),1,4) last_year,0 carry_forward
-		    FROM download_requests GROUP BY collection_id
+		  SELECT r.collection_id product_key,substr(min(r.start_ts),1,4) first_year,
+		    substr(max(r.end_ts),1,4) last_year,0 carry_forward
+		    FROM download_requests r
+		    JOIN products p ON p.product_key=r.collection_id
+		    WHERE p.source_id<>'era5'
+		    GROUP BY r.collection_id
 		  UNION ALL
 		  -- A year that is already substantially tracked continues to
 		  -- receive new days automatically without opening the calendar.

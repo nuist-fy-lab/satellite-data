@@ -23,8 +23,14 @@ func TestAutonomousIndexAndRecountWithoutCalendarVisit(t *testing.T) {
 	if err := s.UpsertProducts(ctx, "earthcare", []model.Product{{ProductKey: "earthcare:sparse", SourceID: "earthcare"}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.UpsertProducts(ctx, "era5", []model.Product{{ProductKey: "era5:reanalysis-era5-single-levels", SourceID: "era5"}}); err != nil {
+		t.Fatal(err)
+	}
 	start := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := s.EnqueueDownloadRequest(ctx, "modis", "modis", key, start, start.AddDate(0, 0, 4)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnqueueDownloadRequest(ctx, "era5", "era5", "era5:reanalysis-era5-single-levels", start, start.AddDate(0, 0, 4)); err != nil {
 		t.Fatal(err)
 	}
 	// One fully indexed day but no derived summary simulates an interrupted
