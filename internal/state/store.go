@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/slotaxis"
 	_ "modernc.org/sqlite"
@@ -147,6 +148,18 @@ CREATE TABLE IF NOT EXISTS day_summary (
 );
 CREATE INDEX IF NOT EXISTS day_summary_year_idx ON day_summary(product_key,day);
 
+-- Materialized multi-band year cells: current on every day reconciliation,
+-- unlike the old process-local LRU which was lost on daemon restart.
+CREATE TABLE IF NOT EXISTS coverage_day_cache (
+  product_key TEXT NOT NULL,
+  day TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  totals_json TEXT NOT NULL,
+  official_state INTEGER NOT NULL,
+  timeline_mode TEXT NOT NULL,
+  PRIMARY KEY(product_key,day)
+);
+
 CREATE TABLE IF NOT EXISTS official_work (
   product_key TEXT NOT NULL,
   day TEXT NOT NULL,
@@ -221,13 +234,18 @@ CREATE INDEX IF NOT EXISTS download_monitor_samples_time_idx ON download_monitor
 `
 
 type Store struct {
-	db            *sql.DB
-	writer        *sql.DB
-	coverageMu    sync.Mutex
-	coverageCache map[coverageKey]*list.Element
-	coverageLRU   list.List
-	scanMu        sync.RWMutex
-	scanRuntime   archiveScanRuntime
+	db                   *sql.DB
+	writer               *sql.DB
+	coverageMu           sync.Mutex
+	coverageCache        map[coverageKey]*list.Element
+	coverageLRU          list.List
+	coverageWarmupMu     sync.Mutex
+	coverageWarmups      map[string]bool
+	coverageWarmupSlots  chan struct{}
+	coverageWarmupCtx    context.Context
+	coverageWarmupCancel context.CancelFunc
+	scanMu               sync.RWMutex
+	scanRuntime          archiveScanRuntime
 }
 
 type YearDay struct {
@@ -452,10 +470,17 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(8)
-	return &Store{db: db, writer: writer}, nil
+	warmupCtx, warmupCancel := context.WithCancel(context.Background())
+	return &Store{db: db, writer: writer, coverageWarmupCtx: warmupCtx,
+		coverageWarmupCancel: warmupCancel, coverageWarmupSlots: make(chan struct{}, 1)}, nil
 }
 
-func (s *Store) Close() error { return errors.Join(s.db.Close(), s.writer.Close()) }
+func (s *Store) Close() error {
+	if s.coverageWarmupCancel != nil {
+		s.coverageWarmupCancel()
+	}
+	return errors.Join(s.db.Close(), s.writer.Close())
+}
 
 func (s *Store) RecordLinkSample(ctx context.Context, sample LinkSample) error {
 	var latency any
@@ -1602,7 +1627,29 @@ func (s *Store) recomputeDayTx(ctx context.Context, tx *sql.Tx, product, day, no
 		 hourly_official_gap_count=excluded.hourly_official_gap_count,updated_at=excluded.updated_at`,
 		product, day, status, officialCount, localOK, missing, errorCount, processingCount,
 		hourlyOfficial, hourlyOK, officialGap, hourlyGap, now)
-	return err
+	if err != nil {
+		return err
+	}
+	if profile := downloadfilter.ForProduct(sourceID, product); profile != nil {
+		coverage, err := s.coverageDayReader(ctx, tx, productInfo, day, false)
+		if err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(coverageTotals(coverage, false))
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO coverage_day_cache(product_key,day,revision,totals_json,official_state,timeline_mode)
+			VALUES(?,?,?,?,?,?)
+			ON CONFLICT(product_key,day) DO UPDATE SET revision=excluded.revision,
+			 totals_json=excluded.totals_json,official_state=excluded.official_state,timeline_mode=excluded.timeline_mode`,
+			product, day, coverageCacheVersion+cadence+"|"+now, string(encoded), coverage.OfficialState, coverage.Mode)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type Profile struct {

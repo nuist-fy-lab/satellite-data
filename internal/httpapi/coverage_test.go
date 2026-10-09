@@ -58,6 +58,30 @@ func TestCompactCoverageConditionalCompressionAndRefresh(t *testing.T) {
 		handler.ServeHTTP(response, r)
 		return response
 	}
+	firstStarted := time.Now()
+	first := request(urlYear, "", "")
+	if elapsed := time.Since(firstStarted); elapsed >= time.Second {
+		t.Fatalf("materialized year response exceeded 1s: %s", elapsed)
+	}
+	if first.Code != http.StatusOK {
+		t.Fatalf("initial year response: %d", first.Code)
+	}
+	// Official indexing is deliberately scheduled after the initial response:
+	// opening the calendar must never wait behind SQLite's single writer.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		calendar, err := store.Year(ctx, product.ProductKey, 2023)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(calendar.Days) == 365 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background calendar enqueue incomplete: %d days", len(calendar.Days))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	raw := request(urlYear, "", "")
 	if raw.Code != http.StatusOK || raw.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("raw response: %d %v", raw.Code, raw.Header())
@@ -80,8 +104,8 @@ func TestCompactCoverageConditionalCompressionAndRefresh(t *testing.T) {
 	if err := json.Unmarshal(decoded, &payload); err != nil {
 		t.Fatal(err)
 	}
-	// Opening the year now requests low-priority indexing for the remaining
-	// unknown days rather than leaving most of the calendar permanently gray.
+	// Unknown official days are now queued asynchronously, after the first
+	// low-latency response, rather than making the browser wait for a write lock.
 	if payload.Version != 1 || len(payload.Bands) != 16 || len(payload.Days) != 365 {
 		t.Fatalf("year auto-index did not include unknown dates: version=%d bands=%d days=%d", payload.Version, len(payload.Bands), len(payload.Days))
 	}

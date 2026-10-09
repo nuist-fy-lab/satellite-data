@@ -996,6 +996,7 @@ function ensureIndexStream(product, year) {
     try { payload = JSON.parse(event.data); } catch { return; }
     const changed = [];
     if (payload.coverage) {
+	  $('#coverage-status').textContent = payload.pending ? `正在补全 ${payload.pending} 天的波段明细…` : '';
       if (payload.bands?.length) state.coverage.bands = payload.bands;
       changed.push(...applyCoverageYearRows(year, payload.days || []));
       for (const day of payload.removed || []) {
@@ -1032,13 +1033,23 @@ function ensureIndexStream(product, year) {
   });
 }
 
+// Reuse an in-flight year response. Startup previously loaded the identical
+// product/year once when selecting the catalog and again on navigation.
+const coverageYearFlights = new Map();
 async function loadCoverageYear(schedulePoll = true) {
   const product = state.selected.id;
   const year = Number(yearEl.value);
   const seq = ++state.coverage.requestSeq;
   $('#coverage-status').textContent = '读取年历…';
   try {
-    const payload = await json(`/api/coverage/year?product=${encodeURIComponent(product)}&year=${year}`);
+    const requestKey = product + '|' + year;
+    let flight = coverageYearFlights.get(requestKey);
+    if (!flight) {
+      flight = json(`/api/coverage/year?product=${encodeURIComponent(product)}&year=${year}`)
+        .finally(() => coverageYearFlights.delete(requestKey));
+      coverageYearFlights.set(requestKey, flight);
+    }
+    const payload = await flight;
     if (seq !== state.coverage.requestSeq || state.selected?.id !== product || Number(yearEl.value) !== year) return;
     if (payload.v !== 1) throw new Error('不支持的年历数据版本');
     const coverage = state.coverage;
@@ -1055,7 +1066,7 @@ async function loadCoverageYear(schedulePoll = true) {
     }
     if (!coverage.bands.includes(coverage.band)) coverage.band = 0;
     bandEl.value = String(coverage.band);
-    $('#coverage-status').textContent = '';
+    $('#coverage-status').textContent = payload.pending ? `正在补全 ${payload.pending} 天的波段明细…` : '';
     renderCoverageShell();
     renderCalendar();
     if (coverage.view === 'month') loadCoverageMonth();
@@ -1105,7 +1116,11 @@ function paintCoverageCell(cell, day) {
     cell.replaceChildren(...coverage.bands.map(() => document.createElement('i')));
   }
   coverage.bands.forEach((band, index) => {
-    cell.children[index].className = `${coverageStatus(byBand.get(band), row?.[13] || 0, cadence, coverage.time === 'hourly', row?.[14], hasLocal)}${coverage.band && band !== coverage.band ? ' muted' : ''}`;
+    // Cold legacy rows are shown immediately from day_summary, then replaced
+    // with accurate per-band colors as the durable cache is warmed via SSE.
+    const status = row?.[15] === false && row?.[13] === 2
+      ? row[1] : coverageStatus(byBand.get(band), row?.[13] || 0, cadence, coverage.time === 'hourly', row?.[14], hasLocal);
+    cell.children[index].className = `${status}${coverage.band && band !== coverage.band ? ' muted' : ''}`;
   });
 }
 

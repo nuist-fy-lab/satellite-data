@@ -16,6 +16,7 @@ import (
 type indexStreamUpdate struct {
 	Coverage bool     `json:"coverage"`
 	Bands    []int    `json:"bands,omitempty"`
+	Pending  int      `json:"pending,omitempty"`
 	Days     any      `json:"days"`
 	Removed  []string `json:"removed,omitempty"`
 	Active   bool     `json:"active"`
@@ -68,6 +69,10 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 				return false, err
 			}
 			payload.Bands = yearData.Bands
+			payload.Pending = yearData.Pending
+			if yearData.Pending > 0 {
+				active = true
+			}
 			rows := make([][]any, 0)
 			for _, row := range yearData.Days {
 				if len(row) < 11 {

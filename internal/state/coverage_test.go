@@ -156,6 +156,74 @@ func TestBandCoverageCountsAndInvalidation(t *testing.T) {
 	}
 }
 
+func TestCoverageYearDurableSummaryAndProgressiveLegacyWarmup(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	product := model.Product{ProductKey: "goes18:ABI-L1b-RadF", SourceID: "goes18", Cadence: "10m", AreaType: "DISK"}
+	if err := store.UpsertProducts(ctx, product.SourceID, []model.Product{product}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2025, 5, 3, 0, 0, 0, 0, time.UTC)
+	name := "OR_ABI-L1b-RadF-M6C06_G18_cache.nc"
+	granule := model.Granule{ID: "cache", Start: at, Assets: []model.Asset{{Name: name, Size: 10}}}
+	if err := store.SaveOfficialBatch(ctx, WorkBatch{Product: product.ProductKey, Days: []string{"2025-05-03"}}, []model.Granule{granule}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(s *Store, expectedPending int, expectedReady bool) {
+		t.Helper()
+		start := time.Now()
+		year, err := s.BandCoverageYear(ctx, product.ProductKey, 2025)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if took := time.Since(start); took > time.Second {
+			t.Fatalf("year response should not scan assets: %s", took)
+		}
+		if len(year.Days) != 1 || year.Pending != expectedPending || year.Days[0][15] != expectedReady {
+			t.Fatalf("year materialization pending=%d ready=%v: %+v", expectedPending, expectedReady, year)
+		}
+		if expectedReady {
+			band := coverageBand(t, year.Days[0][12].([]BandTotals), 6)
+			if band[1] != 1 || band[2] != 0 {
+				t.Fatalf("lost band totals: %+v", band)
+			}
+		}
+	}
+	check(store, 0, true)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	check(store, 0, true) // Real persistence across daemon restarts.
+	if _, err := store.writer.ExecContext(ctx, "DELETE FROM coverage_day_cache"); err != nil {
+		t.Fatal(err)
+	}
+	check(store, 1, false) // Cold migration still returns promptly.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		year, err := store.BandCoverageYear(ctx, product.ProductKey, 2025)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if year.Pending == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("legacy band cache failed to backfill")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	check(store, 0, true)
+}
+
 func coverageBand(t *testing.T, rows []BandTotals, band int) BandTotals {
 	t.Helper()
 	for _, row := range rows {
