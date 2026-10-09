@@ -3,7 +3,6 @@ package state
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,7 +11,7 @@ import (
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
-	"github.com/nuist-fy-lab/satellite-data/internal/era5"
+	"github.com/nuist-fy-lab/satellite-data/internal/provider/era5"
 )
 
 const downloadGroupsSchema = `
