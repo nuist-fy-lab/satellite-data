@@ -806,7 +806,7 @@ function renderYearGrid(grid, days, year, open) {
     const item = days.get(day);
     const status = item?.indexing && (!item.official_count || item.status === 'unknown') ? 'indexing' : item?.status || 'unknown';
     const cell = document.createElement('i');
-    cell.className = `c ${status}`;
+    cell.className = `c ${status}${days.get(day)?.indexing ? ' indexing' : ''}`;
     cell.dataset.day = day;
     cell.dataset.status = status;
     cell.tabIndex = 0;
@@ -895,8 +895,8 @@ function renderCoverageShell() {
   $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');
   $('#day-coverage').classList.toggle('hidden', !visible || coverage.view !== 'day');
   $('#calendar-help').textContent = visible
-    ? '绿色 完整 · 橙色 未下载 · 黄色斜纹 下载/处理中 · 灰色呼吸 索引中 · 红色 错误 · 斜纹 官方缺时次'
-    : '年历只读取本地持久化索引：绿色=全部官方时次本地完整，蓝色=整点官方时次本地完整；斜杠表示固定时序中存在官方缺时次。';
+    ? '绿色 完整 · 蓝色 整点完整 · 橙色 部分覆盖 · 白色 本地缺失 · 黄色斜纹 处理中 · 红色 错误 · 灰色斜纹 官方无数据 · 灰色 待索引；呼吸表示索引中'
+    : '年历依据本地持久化索引：绿色 全部完整 · 蓝色 整点完整 · 橙色 部分覆盖 · 白色 本地缺失；斜杠表示官方缺次，呼吸表示索引中。';
   $('#calendar-help').classList.toggle('hidden', onDemand);
   document.querySelectorAll('[data-coverage-view]').forEach(button => {
     const active = button.dataset.coverageView === coverage.view;
@@ -1081,7 +1081,7 @@ function paintCoverageCell(cell, day) {
   const row = coverage.yearDays.get(day);
   const byBand = new Map((row?.[12] || []).map(total => [total[0], total]));
   const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
-  cell.className = `c coverage-day${row?.[10] && (row?.[13] === 0 || row?.[13] === 3) ? ' indexing' : ''}${day === coverage.day ? ' selected-day' : ''}`;
+  cell.className = `c coverage-day${row?.[10] ? ' indexing' : ''}${day === coverage.day ? ' selected-day' : ''}`;
   cell.setAttribute('aria-label', dayTip(day));
   if (cell.children.length !== coverage.bands.length) {
     cell.replaceChildren(...coverage.bands.map(() => document.createElement('i')));
@@ -1095,9 +1095,8 @@ function updateCell(day) {
   const cell = gridEl.querySelector(`[data-day="${day}"]`);
   if (!cell) return;
   if (state.coverage.supported) { paintCoverageCell(cell, day); return; }
-  const item = state.dayState.get(day);
-  const status = item?.indexing && (!item.official_count || item.status === 'unknown') ? 'indexing' : item?.status || 'unknown';
-  cell.className = `c ${status}`;
+  const status = state.dayState.get(day)?.status || 'unknown';
+  cell.className = `c ${status}${state.dayState.get(day)?.indexing ? ' indexing' : ''}`;
   cell.dataset.status = status;
   cell.setAttribute('aria-label', dayTip(day));
 }
@@ -1216,7 +1215,7 @@ async function loadSatelliteYears(products, watch) {
         const cell = entry.grid?.querySelector(`[data-day="${day}"]`);
         if (!cell) continue;
         const status = entry.days.get(day)?.status || 'unknown';
-        cell.className = `c ${status}`;
+        cell.className = `c ${status}${entry.days.get(day)?.indexing ? ' indexing' : ''}`;
         cell.dataset.status = status;
         cell.setAttribute('aria-label', dayTip(day, entry.days));
       }
@@ -1295,8 +1294,7 @@ function renderCoverageMonth() {
     const date = `${year}-${String(month).padStart(2, '0')}-${String(dayNumber).padStart(2, '0')}`;
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'month-day';
-    if (indexing && (officialState === 0 || officialState === 3)) button.classList.add('indexing');
+    button.className = `month-day${indexing ? ' indexing' : ''}`;
     button.dataset.day = date;
     const descriptions = coverage.bands.filter(band => !coverage.band || band === coverage.band).map(band => {
       const row = byBand.get(band);
@@ -1317,8 +1315,8 @@ function renderCoverageMonth() {
       if (coverage.band && coverage.band !== band) {
         colors.push(`#e4e8eb ${begin}deg ${end}deg`);
       } else {
-        const color = {complete:'var(--green)', complete_official_gap:'var(--green)', partial:'var(--partial)',
-          error:'var(--red)', processing:'var(--yellow)', missing:'var(--orange)',
+        const color = {complete:'var(--green)', complete_official_gap:'var(--green)', partial:'var(--orange)',
+          error:'var(--red)', processing:'var(--yellow)', missing:'#fff',
           official_missing:'#b5bec4', unknown:'var(--empty)'}[status] || 'var(--empty)';
         colors.push(`${color} ${begin}deg ${end}deg`);
       }

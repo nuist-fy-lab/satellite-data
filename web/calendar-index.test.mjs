@@ -66,6 +66,35 @@ function fixedDay(h) {
     state.coverage.cells = new Map(cells.map(cell=>[cell[0]+':'+cell[1],cell]));`);
 }
 
+test('calendar distinguishes absent, partial, completed and indexing days', async () => {
+  const h = harness();
+  const cases = [
+    [[2, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'missing'],
+    [[2, 12, 3, 0, 0, 0, 0, 0, 0, 0, 0], 'partial'],
+    [[2, 12, 12, 0, 0, 0, 0, 0, 0, 0, 0], 'complete'],
+  ];
+  for (const [row, expected] of cases) {
+    assert.equal(h.context.coverageStatus(row, 2, 5, false, 'grid'), expected);
+  }
+  const [full, partial, missing] = [
+    ['2025-01-01', 'complete', 12, 12, false],
+    ['2025-01-02', 'partial', 12, 3, false],
+    ['2025-01-03', 'missing', 12, 0, true],
+  ].map(([day, status, official_count, local_ok_count, indexing]) => ({day, status, official_count, local_ok_count, indexing}));
+  h.run('state.coverage.supported = false;');
+  h.run('state.dayState = new Map();');
+  for (const item of [full, partial, missing]) h.run(`state.dayState.set(${JSON.stringify(item.day)}, ${JSON.stringify(item)});`);
+  h.context.renderCalendar();
+  assert.equal(h.element('#year-grid').querySelector('[data-day="2025-01-01"]').className, 'c complete');
+  assert.equal(h.element('#year-grid').querySelector('[data-day="2025-01-02"]').className, 'c partial');
+  assert.equal(h.element('#year-grid').querySelector('[data-day="2025-01-03"]').className, 'c missing indexing');
+  const css = await readFile(new URL('./static/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.c\.missing\{background:#fff\}/);
+  assert.match(css, /\.c\.partial\{background:var\(--orange\)\}/);
+  assert.match(css, /\.coverage-year \.c i\.missing[^\n]*background:#fff/);
+  assert.match(css, /\.coverage-year \.c i\.processing[^\n]*var\(--yellow\)/);
+});
+
 test('daily coverage defaults to the entire day and preserves a chosen hour during incremental refresh', async () => {
   const h = harness(); fixedDay(h);
   assert.equal(h.run('state.coverage.hour'), -1);
