@@ -30,15 +30,16 @@ type calendarYear struct {
 // is discovered without a browser visit, even after all orders finish.
 func (s *Store) autoCalendarYears(ctx context.Context, now time.Time) ([]calendarYear, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT product_key,first_year,last_year FROM (
+		SELECT product_key,first_year,last_year,carry_forward FROM (
 		  SELECT collection_id product_key,substr(min(start_ts),1,4) first_year,
-		    substr(max(end_ts),1,4) last_year FROM download_requests GROUP BY collection_id
+		    substr(max(end_ts),1,4) last_year,0 carry_forward
+		    FROM download_requests GROUP BY collection_id
 		  UNION ALL
 		  -- A year that is already substantially tracked continues to
 		  -- receive new days automatically without opening the calendar.
 		  -- Sparse EarthCARE/CloudSat overpasses must NOT spawn an entire
 		  -- year's expensive remote searches for hundreds of products.
-		  SELECT product_key,substr(day,1,4),substr(day,1,4)
+		  SELECT product_key,substr(day,1,4),substr(day,1,4),1
 		    FROM official_days GROUP BY product_key,substr(day,1,4)
 		    HAVING count(*) >= 90
 		) ORDER BY product_key,first_year`)
@@ -50,7 +51,8 @@ func (s *Store) autoCalendarYears(ctx context.Context, now time.Time) ([]calenda
 	current := now.UTC().Year()
 	for rows.Next() {
 		var product, startYear, endYear string
-		if err := rows.Scan(&product, &startYear, &endYear); err != nil {
+		var carryForward int
+		if err := rows.Scan(&product, &startYear, &endYear, &carryForward); err != nil {
 			return nil, err
 		}
 		start, firstErr := strconv.Atoi(startYear)
@@ -66,6 +68,12 @@ func (s *Store) autoCalendarYears(ctx context.Context, now time.Time) ([]calenda
 		}
 		for year := start; year <= end; year++ {
 			unique[calendarYear{product, year}] = struct{}{}
+		}
+		// A well-indexed product remains an active calendar when the UTC
+		// calendar year changes. Otherwise autonomous indexing would quietly
+		// stop on January 1 until somebody submits a new order.
+		if carryForward == 1 && start == end && start == current-1 {
+			unique[calendarYear{product, current}] = struct{}{}
 		}
 	}
 	if err := rows.Err(); err != nil {

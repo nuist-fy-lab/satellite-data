@@ -122,3 +122,40 @@ func TestAutoRecountRepairsStaleDerivedSummaryWithoutRemoteLookup(t *testing.T) 
 		t.Fatalf("unnecessary repeated recount: %d %v", count, err)
 	}
 }
+
+func TestTrackedCalendarContinuesIntoNewUTCYear(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "rollover.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	product := "modis:active"
+	if err := s.UpsertProducts(ctx, "modis", []model.Product{{ProductKey: product, SourceID: "modis"}}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2023, 9, 1, 0, 0, 0, 0, time.UTC)
+	for index := 0; index < 90; index++ {
+		day := start.AddDate(0, 0, index).Format(time.DateOnly)
+		if _, err := s.writer.ExecContext(ctx, `INSERT INTO official_days(product_key,day,state,refreshed_at)
+		VALUES(?,?,?,?)`, product, day, "present", "2023-12-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	years, err := s.autoCalendarYears(ctx, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found2023, found2024 := false, false
+	for _, item := range years {
+		if item.product == product && item.year == 2023 {
+			found2023 = true
+		}
+		if item.product == product && item.year == 2024 {
+			found2024 = true
+		}
+	}
+	if !found2023 || !found2024 {
+		t.Fatalf("UTC new year lost autonomous indexing: %+v", years)
+	}
+}
