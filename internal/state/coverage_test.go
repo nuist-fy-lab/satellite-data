@@ -3,11 +3,52 @@ package state
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 )
+
+func TestCoverageDayQueriesUseProductDayIndexes(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, test := range []struct {
+		query string
+		index string
+	}{
+		{coverageOfficialDayAssetsQuery, "official_assets_day_idx"},
+		{coverageLocalDayAssetsQuery, "local_slots_day_idx"},
+	} {
+		rows, err := store.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+test.query, "goes18:ABI-L1b-RadC", "2025-01-04")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			if strings.Contains(detail, "USING INDEX "+test.index) {
+				found = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		rows.Close()
+		if !found {
+			t.Fatalf("coverage query must use %s rather than scan a whole product", test.index)
+		}
+	}
+}
 
 func TestBandCoverageCountsAndInvalidation(t *testing.T) {
 	ctx := t.Context()

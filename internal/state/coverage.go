@@ -136,6 +136,14 @@ func coverageProfile(product model.Product) (*downloadfilter.Profile, []int, err
 	return profile, bands, nil
 }
 
+// Keep the product/day index explicit: with ORDER BY, SQLite may choose the
+// product-wide primary key and scan millions of assets for every day.
+const coverageOfficialDayAssetsQuery = `SELECT slot_ts,filename FROM official_assets INDEXED BY official_assets_day_idx
+		WHERE product_key=? AND substr(slot_ts,1,10)=? ORDER BY slot_ts,filename`
+
+const coverageLocalDayAssetsQuery = `SELECT slot_ts,filename,state FROM local_slots INDEXED BY local_slots_day_idx
+		WHERE product_key=? AND substr(slot_ts,1,10)=?`
+
 func (s *Store) coverageDay(ctx context.Context, product model.Product, day string) (CoverageDay, error) {
 	profile, bands, err := coverageProfile(product)
 	if err != nil {
@@ -168,8 +176,7 @@ func (s *Store) coverageDay(ctx context.Context, product model.Product, day stri
 
 	// The day expression is indexed. Memory is bounded by one day's assets,
 	// independently of the number of years in the archive.
-	rows, err := s.db.QueryContext(ctx, `SELECT slot_ts,filename FROM official_assets
-		WHERE product_key=? AND substr(slot_ts,1,10)=? ORDER BY slot_ts,filename`, product.ProductKey, day)
+	rows, err := s.db.QueryContext(ctx, coverageOfficialDayAssetsQuery, product.ProductKey, day)
 	if err != nil {
 		return CoverageDay{}, err
 	}
@@ -206,8 +213,7 @@ func (s *Store) coverageDay(ctx context.Context, product model.Product, day stri
 		result.OfficialState = 3
 		return result, nil
 	}
-	rows, err = s.db.QueryContext(ctx, `SELECT slot_ts,filename,state FROM local_slots
-		WHERE product_key=? AND substr(slot_ts,1,10)=?`, product.ProductKey, day)
+	rows, err = s.db.QueryContext(ctx, coverageLocalDayAssetsQuery, product.ProductKey, day)
 	if err != nil {
 		return CoverageDay{}, err
 	}
