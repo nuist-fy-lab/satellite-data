@@ -139,7 +139,7 @@ main.calendar-wide{width:100%}
 .c.partial{background:var(--orange)}
 .c.missing{background:#fff}
 .c.processing{background:repeating-linear-gradient(135deg,var(--yellow) 0 4px,#fff4b8 4px 7px);animation:pulse 1.5s ease-in-out infinite}
-.c.indexing{animation:pulse 1.8s ease-in-out infinite}
+.c.indexing{animation:index-breath 1.9s ease-in-out infinite}
 .c.official_missing{background:repeating-linear-gradient(135deg,#b7bec7 0 3px,#f6f8fa 3px 6px)}
 .c.error{background:var(--red)}
 .c.unknown{background:var(--empty)}
@@ -149,6 +149,7 @@ main.calendar-wide{width:100%}
 .c[data-day]{cursor:pointer}
 .c[data-day]:hover{outline:2px solid #57606a;outline-offset:1px}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.42}}
+@keyframes index-breath{0%,100%{opacity:1}50%{opacity:.32}}
 @media(prefers-reduced-motion:reduce){.c.processing,.c.indexing,.month-day.indexing{animation:none!important}}
 .calendar-card{padding:11px 0 8px;border-top:1px solid #d8dee4}
 #calendar-view{width:100%;max-width:none;font-size:14px}

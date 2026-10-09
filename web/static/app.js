@@ -791,6 +791,11 @@ function renderCalendar() {
   fitYearCalendar();
 }
 
+function calendarBaseStatus(item) {
+  const status = item?.status || 'unknown';
+  return item?.indexing && status === 'missing' && !item.official_count ? 'unknown' : status;
+}
+
 function renderYearGrid(grid, days, year, open) {
   grid.classList.remove('placeholder-grid');
   grid.replaceChildren();
@@ -804,9 +809,9 @@ function renderYearGrid(grid, days, year, open) {
   for (let date = new Date(start); date <= end; date.setUTCDate(date.getUTCDate() + 1)) {
     const day = date.toISOString().slice(0, 10);
     const item = days.get(day);
-    const status = item?.indexing && (!item.official_count || item.status === 'unknown') ? 'indexing' : item?.status || 'unknown';
+    const status = calendarBaseStatus(item);
     const cell = document.createElement('i');
-    cell.className = `c ${status}${days.get(day)?.indexing ? ' indexing' : ''}`;
+    cell.className = `c ${status}${item?.indexing ? ' indexing' : ''}`;
     cell.dataset.day = day;
     cell.dataset.status = status;
     cell.tabIndex = 0;
@@ -1095,7 +1100,7 @@ function updateCell(day) {
   const cell = gridEl.querySelector(`[data-day="${day}"]`);
   if (!cell) return;
   if (state.coverage.supported) { paintCoverageCell(cell, day); return; }
-  const status = state.dayState.get(day)?.status || 'unknown';
+  const status = calendarBaseStatus(state.dayState.get(day));
   cell.className = `c ${status}${state.dayState.get(day)?.indexing ? ' indexing' : ''}`;
   cell.dataset.status = status;
   cell.setAttribute('aria-label', dayTip(day));
@@ -1214,7 +1219,7 @@ async function loadSatelliteYears(products, watch) {
       for (const day of changed) {
         const cell = entry.grid?.querySelector(`[data-day="${day}"]`);
         if (!cell) continue;
-        const status = entry.days.get(day)?.status || 'unknown';
+        const status = calendarBaseStatus(entry.days.get(day));
         cell.className = `c ${status}${entry.days.get(day)?.indexing ? ' indexing' : ''}`;
         cell.dataset.status = status;
         cell.setAttribute('aria-label', dayTip(day, entry.days));

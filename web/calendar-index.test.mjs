@@ -74,7 +74,7 @@ test('calendar distinguishes absent, partial, completed and indexing days', asyn
     [[2, 12, 12, 0, 0, 0, 0, 0, 0, 0, 0], 'complete'],
   ];
   for (const [row, expected] of cases) {
-    assert.equal(h.context.coverageStatus(row, 2, 5, false, 'grid'), expected);
+    assert.equal(h.context.coverageStatus(row, 2, 0, false, 'grid'), expected);
   }
   const [full, partial, missing] = [
     ['2025-01-01', 'complete', 12, 12, false],
@@ -195,7 +195,7 @@ test('all products render pending downloads as processing and unindexed work as 
     ]);`);
   h.context.renderCalendar();
   const grid = h.element('#year-grid');
-  assert.equal(grid.querySelector('[data-day="2025-01-01"]').className, 'c indexing');
+  assert.equal(grid.querySelector('[data-day="2025-01-01"]').className, 'c unknown indexing');
   assert.equal(grid.querySelector('[data-day="2025-01-02"]').className, 'c processing');
   assert.equal(grid.querySelector('[data-day="2025-01-03"]').className, 'c error');
   assert.equal(grid.querySelector('[data-day="2025-01-04"]').className, 'c complete');
