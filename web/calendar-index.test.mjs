@@ -95,6 +95,16 @@ test('calendar distinguishes absent, partial, completed and indexing days', asyn
   assert.match(css, /\.coverage-year \.c i\.processing[^\n]*var\(--yellow\)/);
 });
 
+test('daily band overview does not hide file errors behind missing official slots', () => {
+  const h = harness();
+  h.run(`state.coverage.bands=[2,7]; state.coverage.time='all';
+    state.coverage.dayData={mode:'grid',cadence:60,official_state:2,times:[['2025-06-09T00:00:00Z',0]]};
+    state.coverage.cells=new Map([['0:2',[0,2,1,0,1,0]]]);`);
+  assert.equal(h.context.coverageDayHours(h.run('state.coverage.dayData'))[0].slots[0].status, 'error');
+  h.run(`state.coverage.cells.set('0:2',[0,2,1,0,0,1]);`);
+  assert.equal(h.context.coverageDayHours(h.run('state.coverage.dayData'))[0].slots[0].status, 'processing');
+});
+
 test('daily coverage defaults to the entire day and preserves a chosen hour during incremental refresh', async () => {
   const h = harness(); fixedDay(h);
   assert.equal(h.run('state.coverage.hour'), -1);

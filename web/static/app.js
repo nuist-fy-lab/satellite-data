@@ -1456,7 +1456,7 @@ function coverageDayHours(day) {
     const slots = Array.from({length:state.coverage.time === 'hourly' ? 1 : 60 / day.cadence}, (_, step) => {
       const minute = hour * 60 + step * day.cadence;
       const states = bands.map(band => coverageCellState(day, byMinute.get(minute) || [], band).status);
-      const status = ['unknown','official_missing','error','processing'].find(value => states.includes(value)) ||
+      const status = ['error','processing','unknown','official_missing'].find(value => states.includes(value)) ||
         (states.every(value => value === 'complete') ? 'complete' : states.some(value => value === 'complete' || value === 'partial') ? 'partial' : 'missing');
       return {minute, status};
     });
