@@ -58,6 +58,8 @@ func main() {
 		err = c.downloadList(args[2:])
 	case "download status":
 		err = c.downloadStatus(args[2:])
+	case "download batch-status":
+		err = c.downloadBatchStatus(args[2:])
 	case "download providers":
 		err = c.downloadProviders()
 	case "era5 schema":
@@ -174,6 +176,42 @@ func (c *client) downloadStatus(args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(payload.Download)
 	}
 	printDownload(payload.Download)
+	return nil
+}
+
+func (c *client) downloadBatchStatus(args []string) error {
+	set := flag.NewFlagSet("download batch-status", flag.ContinueOnError)
+	id := set.Int64("id", 0, "parent batch order ID")
+	jsonOutput := set.Bool("json", false, "print JSON")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if *id <= 0 || set.NArg() != 0 {
+		return errors.New("positive --id required")
+	}
+	var response struct {
+		Group struct {
+			ID           int64             `json:"id"`
+			State        string            `json:"state"`
+			Products     int               `json:"products"`
+			AssetsQueued int               `json:"assets_queued"`
+			FilesDone    int               `json:"files_done"`
+			FilesFailed  int               `json:"files_failed"`
+			Downloads    []downloadRequest `json:"downloads"`
+		} `json:"group"`
+	}
+	if err := c.get("/api/v1/downloads/batch/"+strconv.FormatInt(*id, 10), &response); err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(response.Group)
+	}
+	fmt.Printf("批量订单 #%d · %d 产品 · %s · 已完成 %d / 已发现 %d · 失败 %d\n",
+		response.Group.ID, response.Group.Products, response.Group.State,
+		response.Group.FilesDone, response.Group.AssetsQueued, response.Group.FilesFailed)
+	for _, item := range response.Group.Downloads {
+		printDownload(item)
+	}
 	return nil
 }
 
@@ -302,7 +340,8 @@ func usage() {
   satellite query list --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22T09:00:00Z --end 2026-09-22T10:00:00Z [--json]
   satellite download create --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22 --end 2026-09-23 [--json]
   satellite download submit --source goes18 --collection goes18:ABI-L1b-RadF --start 2023-06-01 --end 2023-06-30 --band 6 --hourly [--json]
-  satellite download submit --product SOURCE:PRODUCT --day YYYY-MM-DD [--json]
+  satellite download submit --product SOURCE:PRODUCT --product SOURCE:OTHER --day YYYY-MM-DD [--json]
+  satellite download batch-status --id 1 [--json]
   satellite download submit --product era5:reanalysis-era5-single-levels --start 2024-01-01 --end 2024-01-02 --variable 2m_temperature --area 32.25,-118.75,32,-118.5 [--json]
   satellite download list [--limit 50] [--json]
   satellite download status --id 1 [--json]

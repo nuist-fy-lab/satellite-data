@@ -68,6 +68,9 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/era5/requests/{id}/result", s.era5Result)
 	mux.HandleFunc("GET /api/v1/era5/inventory", s.era5Inventory)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
+	mux.HandleFunc("POST /api/v1/downloads/batch", s.createDownloadGroup)
+	mux.HandleFunc("GET /api/v1/downloads/batch", s.downloadGroups)
+	mux.HandleFunc("GET /api/v1/downloads/batch/{id}", s.downloadGroup)
 	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
 	mux.HandleFunc("GET /api/v1/downloads/updates", s.downloadUpdates)
 	mux.HandleFunc("GET /api/v1/downloads/catalog", s.downloadCatalog)
@@ -763,6 +766,10 @@ func (s *Server) year(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, _, err := s.store.ProductSource(r.Context(), product); err != nil {
 		writeError(w, http.StatusNotFound, errors.New("unknown product"))
+		return
+	}
+	if err := s.store.EnqueueMissingCalendarYear(r.Context(), product, year); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	payload, err := s.store.Year(r.Context(), product, year)

@@ -180,7 +180,30 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 				ETag:         asset.ETag,
 				MediaType:    asset.MediaType,
 			}
-			task, _, err := c.downloader.Enqueue(ctx, spec)
+			var task downloader.Task
+			candidate, available, lookupErr := c.store.FindVerifiedArchiveAsset(ctx,
+				spec.SourceID, spec.CollectionID, spec.GranuleID, spec.AssetID, spec.Name)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if available {
+				var adopted bool
+				task, adopted, err = c.downloader.AdoptVerified(ctx, spec, candidate.Path, candidate.SHA256)
+				if err == nil && adopted {
+					slog.Info("reuse verified local satellite archive",
+						"source", spec.SourceID, "collection", spec.CollectionID, "task", task.ID)
+				}
+				if err != nil {
+					// A stale index is a cache miss, never a reason to fail an
+					// entire order. In particular, never trust filename/size
+					// alone or mark a task completed on the centre side.
+					slog.Warn("verified archive reuse rejected; download normally",
+						"source", spec.SourceID, "filename", spec.Name, "error", err)
+					task, _, err = c.downloader.Enqueue(ctx, spec)
+				}
+			} else {
+				task, _, err = c.downloader.Enqueue(ctx, spec)
+			}
 			if err != nil {
 				return err
 			}
