@@ -66,6 +66,45 @@ function fixedDay(h) {
     state.coverage.cells = new Map(cells.map(cell=>[cell[0]+':'+cell[1],cell]));`);
 }
 
+test('calendar distinguishes absent, partial, completed and indexing days', async () => {
+  const h = harness();
+  const cases = [
+    [[2, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'missing'],
+    [[2, 12, 3, 0, 0, 0, 0, 0, 0, 0, 0], 'partial'],
+    [[2, 12, 12, 0, 0, 0, 0, 0, 0, 0, 0], 'complete'],
+  ];
+  for (const [row, expected] of cases) {
+    assert.equal(h.context.coverageStatus(row, 2, 0, false, 'grid'), expected);
+  }
+  const [full, partial, missing] = [
+    ['2025-01-01', 'complete', 12, 12, false],
+    ['2025-01-02', 'partial', 12, 3, false],
+    ['2025-01-03', 'missing', 12, 0, true],
+  ].map(([day, status, official_count, local_ok_count, indexing]) => ({day, status, official_count, local_ok_count, indexing}));
+  h.run('state.coverage.supported = false;');
+  h.run('state.dayState = new Map();');
+  for (const item of [full, partial, missing]) h.run(`state.dayState.set(${JSON.stringify(item.day)}, ${JSON.stringify(item)});`);
+  h.context.renderCalendar();
+  assert.equal(h.element('#year-grid').querySelector('[data-day="2025-01-01"]').className, 'c complete');
+  assert.equal(h.element('#year-grid').querySelector('[data-day="2025-01-02"]').className, 'c partial');
+  assert.equal(h.element('#year-grid').querySelector('[data-day="2025-01-03"]').className, 'c missing indexing');
+  const css = await readFile(new URL('./static/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.c\.missing\{background:#fff\}/);
+  assert.match(css, /\.c\.partial\{background:var\(--orange\)\}/);
+  assert.match(css, /\.coverage-year \.c i\.missing[^\n]*background:#fff/);
+  assert.match(css, /\.coverage-year \.c i\.processing[^\n]*var\(--yellow\)/);
+});
+
+test('daily band overview does not hide file errors behind missing official slots', () => {
+  const h = harness();
+  h.run(`state.coverage.bands=[2,7]; state.coverage.time='all';
+    state.coverage.dayData={mode:'grid',cadence:60,official_state:2,times:[['2025-06-09T00:00:00Z',0]]};
+    state.coverage.cells=new Map([['0:2',[0,2,1,0,1,0]]]);`);
+  assert.equal(h.context.coverageDayHours(h.run('state.coverage.dayData'))[0].slots[0].status, 'error');
+  h.run(`state.coverage.cells.set('0:2',[0,2,1,0,0,1]);`);
+  assert.equal(h.context.coverageDayHours(h.run('state.coverage.dayData'))[0].slots[0].status, 'processing');
+});
+
 test('daily coverage defaults to the entire day and preserves a chosen hour during incremental refresh', async () => {
   const h = harness(); fixedDay(h);
   assert.equal(h.run('state.coverage.hour'), -1);
@@ -166,7 +205,7 @@ test('all products render pending downloads as processing and unindexed work as 
     ]);`);
   h.context.renderCalendar();
   const grid = h.element('#year-grid');
-  assert.equal(grid.querySelector('[data-day="2025-01-01"]').className, 'c indexing');
+  assert.equal(grid.querySelector('[data-day="2025-01-01"]').className, 'c unknown indexing');
   assert.equal(grid.querySelector('[data-day="2025-01-02"]').className, 'c processing');
   assert.equal(grid.querySelector('[data-day="2025-01-03"]').className, 'c error');
   assert.equal(grid.querySelector('[data-day="2025-01-04"]').className, 'c complete');
