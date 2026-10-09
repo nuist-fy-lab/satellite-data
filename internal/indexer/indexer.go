@@ -190,10 +190,44 @@ func safeJobPath(job string) string {
 
 func (i *Indexer) Run(ctx context.Context) {
 	go i.catalogLoop(ctx)
+	go i.automaticCalendarLoop(ctx)
 	go i.officialLoop(ctx, 0)
 	go i.officialLoop(ctx, 1)
 	if strings.TrimSpace(i.archiveRoot) != "" {
 		go i.localLoop(ctx)
+	}
+}
+
+// Automatic calendar maintenance is an internal, bounded low-priority job,
+// independent from browser requests or ChatGPT cloud tasks. Catalogue and
+// local archive updates already recount affected days immediately; this loop
+// fills any gaps and heals stale derived summaries after process restarts.
+func (i *Indexer) automaticCalendarLoop(ctx context.Context) {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		passCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		result, err := i.store.AutoMaintainCalendar(passCtx, time.Now().UTC())
+		cancel()
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				slog.Warn("automatic calendar indexing/recalculation", "error", err)
+			}
+			timer.Reset(time.Minute)
+			continue
+		}
+		if result.IndexedDaysQueued > 0 || result.CoverageDaysRecounted > 0 {
+			slog.Info("calendar autonomously indexed/recounted",
+				"tracked_years", result.TrackedYears,
+				"days_queued", result.IndexedDaysQueued,
+				"days_recounted", result.CoverageDaysRecounted)
+		}
+		timer.Reset(10 * time.Minute)
 	}
 }
 
