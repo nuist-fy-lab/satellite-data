@@ -80,8 +80,21 @@ func TestCompactCoverageConditionalCompressionAndRefresh(t *testing.T) {
 	if err := json.Unmarshal(decoded, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Version != 1 || len(payload.Bands) != 16 || len(payload.Days) != 5 {
-		t.Fatalf("payload: %+v", payload)
+	// Opening the year now requests low-priority indexing for the remaining
+	// unknown days rather than leaving most of the calendar permanently gray.
+	if payload.Version != 1 || len(payload.Bands) != 16 || len(payload.Days) != 365 {
+		t.Fatalf("year auto-index did not include unknown dates: version=%d bands=%d days=%d", payload.Version, len(payload.Bands), len(payload.Days))
+	}
+	var indexing int
+	for _, day := range payload.Days {
+		if len(day) > 10 {
+			if active, ok := day[10].(float64); ok && active > 0 {
+				indexing++
+			}
+		}
+	}
+	if indexing != 360 {
+		t.Fatalf("expected 360 missing dates queued for indexing, got %d", indexing)
 	}
 	etag := compressed.Header().Get("ETag")
 	if etag == "" || compressed.Header().Get("Cache-Control") != "private, no-cache" {

@@ -71,7 +71,7 @@ func TestCLIRepeatedProductsSubmitOneParentAndQueryStatus(t *testing.T) {
 			}
 			if len(data.Products) != 2 || data.Products[0] != "goes18:ABI-L1b-RadF" ||
 				data.Products[1] != "modis:C123-LAADS" ||
-				data.Start != "2023-05-03" || data.End != "2023-05-03" {
+				data.Start != "2023-05-03" || data.End != "2023-05-04" {
 				t.Errorf("invalid multi-product payload: %+v", data)
 			}
 			_, _ = io.WriteString(w, `{"created":true,"group":{"id":30,"state":"running","products":2,"downloads":[{"id":31},{"id":32}]}}`)
