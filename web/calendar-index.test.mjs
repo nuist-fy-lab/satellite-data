@@ -131,7 +131,7 @@ test('cold yearly materialization paints fast summary then streams precise band 
     [[2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0], [7, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0]], 2, 'grid', true];
   h.run(`applyCoverageYearRows(2025, ${JSON.stringify([hydrated])})`);
   h.context.updateCell('2025-01-01');
-  assert.equal(cell.children[0].className, 'complete');
+  assert.equal(cell.children[0].className, 'complete_official_gap');
   assert.equal(cell.children[1].className, 'partial', 'missing band orange because another band has local data');
 });
 
