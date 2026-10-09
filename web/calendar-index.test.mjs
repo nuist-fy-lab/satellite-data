@@ -95,6 +95,64 @@ test('calendar distinguishes absent, partial, completed and indexing days', asyn
   assert.match(css, /\.coverage-year \.c i\.processing[^\n]*var\(--yellow\)/);
 });
 
+test('multiband days are white only if every band is locally absent', () => {
+  const h = harness();
+  const makeRow = (ordinal, totals) => [ordinal, 'partial', 12, 0, 2, 0, 0, 12, 0, 0, 0, '', totals, 2, 'grid'];
+  const partlySaved = makeRow(0, [
+    [2, 12, 0, 2, 0, 1, 0, 0, 0, 0, 0], // One valid file, no completely covered slots.
+    [7, 12, 0, 2, 0, 0, 0, 0, 0, 0, 0],
+  ]);
+  const fullyAbsent = makeRow(1, [
+    [2, 12, 0, 2, 0, 0, 0, 0, 0, 0, 0],
+    [7, 12, 0, 2, 0, 0, 0, 0, 0, 0, 0],
+  ]);
+  h.run(`applyCoverageYearRows(2025, ${JSON.stringify([partlySaved, fullyAbsent])})`);
+  h.context.renderCoverageYear();
+  const grid = h.element('#year-grid');
+  const partialDay = grid.querySelector('[data-day="2025-01-01"]');
+  const emptyDay = grid.querySelector('[data-day="2025-01-02"]');
+  assert.deepEqual(partialDay.children.map(cell => cell.className), ['partial', 'partial']);
+  assert.deepEqual(emptyDay.children.map(cell => cell.className), ['missing', 'missing']);
+  assert.equal(h.context.coverageStatus(partlySaved[12][1], 2, 5, true, 'grid', true), 'partial',
+    'a missing band remains orange when viewing hourly coverage');
+  assert.match(h.context.dayTip('2025-01-01'), /部分完成/);
+  h.run('state.coverage.band=7');
+  assert.match(h.context.dayTip('2025-01-01'), /C07.*部分完成/);
+});
+
+test('month bands and missing time slots use orange if another band has local data', () => {
+  const h = harness();
+  h.element('#month').value = '5';
+  const part = [2, 12, 0, 2, 0, 1, 0, 0, 0, 0, 0];
+  const absent = [7, 12, 0, 2, 0, 0, 0, 0, 0, 0, 0];
+  const hours = Array.from({length: 24}, (_, hour) => [hour, 2, 0, 0, 0, 0]);
+  h.run(`state.coverage.month = {days: [
+    [1, 2, 0, 'grid', ${JSON.stringify([part, absent])}, ${JSON.stringify(hours)}],
+    [2, 2, 0, 'grid', ${JSON.stringify([[2,12,0,2,0,0,0,0,0,0,0], absent])}, ${JSON.stringify(hours)}]
+  ]}`);
+  h.context.renderCoverageMonth();
+  const grid = h.element('#month-grid');
+  const withData = grid.children[0], withoutData = grid.children[1];
+  assert.match(withData.children[0].style.background, /var\(--orange\)/);
+  assert.doesNotMatch(withData.children[0].style.background, /missing/);
+  assert.equal(withData.children[2].children[0].className, 'month-hour partial');
+  assert.equal(withoutData.children[2].children[0].className, 'month-hour missing');
+});
+
+test('daily missing slots are orange when any band has data that day', () => {
+  const h = harness();
+  h.run(`state.coverage.dayData={mode:'grid',cadence:60,official_state:2,
+    times:[['2025-06-09T00:00:00Z',0],['2025-06-09T01:00:00Z',60]],
+    cells:[[0,2,2,1,0,0],[0,7,1,0,0,0],[1,2,1,0,0,0],[1,7,1,0,0,0]]};
+    state.coverage.cells=new Map(state.coverage.dayData.cells.map(cell=>[cell[0]+':'+cell[1],cell]));`);
+  const day = h.run('state.coverage.dayData');
+  assert.equal(h.context.coverageCellState(day, [0], 7).status, 'partial');
+  assert.equal(h.context.coverageCellState(day, [1], 7).status, 'partial');
+  h.run('state.coverage.dayData.cells[0][3]=0; state.coverage.cells.get("0:2")[3]=0');
+  assert.equal(h.context.coverageCellState(day, [0], 7).status, 'missing');
+  assert.equal(h.context.coverageCellState(day, [1], 7).status, 'missing');
+});
+
 test('daily band overview does not hide file errors behind missing official slots', () => {
   const h = harness();
   h.run(`state.coverage.bands=[2,7]; state.coverage.time='all';
@@ -135,7 +193,7 @@ test('fixed timelines distinguish official gaps, band-specific gaps, local absen
   assert.equal(h.context.coverageCellState(h.run('state.coverage.dayData'), gap.indices, 2).status, 'official_missing');
   h.run('state.coverage.cells.delete("0:7"); state.coverage.cells.get("0:2")[3] = 0;');
   assert.equal(h.context.coverageCellState(h.run('state.coverage.dayData'), [0], 7).status, 'official_missing');
-  assert.equal(h.context.coverageCellState(h.run('state.coverage.dayData'), [0], 2).status, 'missing');
+  assert.equal(h.context.coverageCellState(h.run('state.coverage.dayData'), [0], 2).status, 'partial');
   h.context.renderCoverageDay();
   assert.equal(h.element('#coverage-matrix').children[3].children[181].className, 'matrix-cell band-slot official_missing');
   assert.match(h.element('#coverage-day-summary').textContent, /全天官方缺时次/);
@@ -162,7 +220,7 @@ test('event timelines use actual timestamps including seconds and never invent f
   assert.equal(track.children.length, 2);
   assert.ok(Math.abs(parseFloat(track.children[0].style.left) - 62.5/864) < 1e-8);
   assert.ok(Math.abs(parseFloat(track.children[1].style.left) - 81040/864) < 1e-8);
-  assert.equal(track.children[1].className, 'matrix-cell band-slot missing');
+  assert.equal(track.children[1].className, 'matrix-cell band-slot partial');
 });
 
 test('index SSE stays attached while idle and mutates only changed day cells, including removals', () => {

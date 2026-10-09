@@ -856,7 +856,19 @@ function coverageBandName(band) {
   return `C${String(band).padStart(2, '0')}`;
 }
 
-function coverageStatus(row, officialState, cadence, hourly = false, mode = 'grid') {
+// A missing band/slot is orange whenever any band has valid local data
+// that day. White is reserved for a day with no valid local data at all.
+// BandTotals[2] counts complete slots, while [5] counts partially covered
+// slots (including days with no fully complete slot).
+function coverageTotalsHaveLocal(totals) {
+  return (totals || []).some(row => row[2] > 0 || row[5] > 0);
+}
+
+function coverageDayHasLocal(day) {
+  return (day?.cells || []).some(cell => cell[3] > 0);
+}
+
+function coverageStatus(row, officialState, cadence, hourly = false, mode = 'grid', dayHasLocal = false) {
   if (officialState === 0 || officialState === 3) return 'unknown';
   if (officialState === 1) return 'official_missing';
   if (hourly && mode !== 'grid') return 'unknown';
@@ -869,7 +881,7 @@ function coverageStatus(row, officialState, cadence, hourly = false, mode = 'gri
     const expected = hourly ? 24 : (cadence > 0 ? 1440 / cadence : 0);
     return expected && count < expected ? 'complete_official_gap' : 'complete';
   }
-  return complete || row[hourly ? 6 : 5] ? 'partial' : 'missing';
+  return complete || row[hourly ? 6 : 5] || dayHasLocal ? 'partial' : 'missing';
 }
 
 function renderCoverageShell() {
@@ -900,8 +912,8 @@ function renderCoverageShell() {
   $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');
   $('#day-coverage').classList.toggle('hidden', !visible || coverage.view !== 'day');
   $('#calendar-help').textContent = visible
-    ? '绿色 完整 · 蓝色 整点完整 · 橙色 部分覆盖 · 白色 本地缺失 · 黄色斜纹 处理中 · 红色 错误 · 灰色斜纹 官方无数据 · 灰色 待索引；呼吸表示索引中'
-    : '年历依据本地持久化索引：绿色 全部完整 · 蓝色 整点完整 · 橙色 部分覆盖 · 白色 本地缺失；斜杠表示官方缺次，呼吸表示索引中。';
+    ? '绿色 完整 · 蓝色 整点完整 · 橙色 部分覆盖（包括当天其他波段有数据时的缺失波段）· 白色 整日无本地数据 · 黄色斜纹 处理中 · 红色 错误 · 灰色斜纹 官方无数据 · 灰色 待索引；呼吸表示索引中'
+    : '年历依据本地持久化索引：绿色 全部完整 · 蓝色 整点完整 · 橙色 部分覆盖 · 白色 整日无本地数据；斜杠表示官方缺次，呼吸表示索引中。';
   $('#calendar-help').classList.toggle('hidden', onDemand);
   document.querySelectorAll('[data-coverage-view]').forEach(button => {
     const active = button.dataset.coverageView === coverage.view;
@@ -1085,6 +1097,7 @@ function paintCoverageCell(cell, day) {
   const coverage = state.coverage;
   const row = coverage.yearDays.get(day);
   const byBand = new Map((row?.[12] || []).map(total => [total[0], total]));
+  const hasLocal = coverageTotalsHaveLocal(row?.[12]);
   const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
   cell.className = `c coverage-day${row?.[10] ? ' indexing' : ''}${day === coverage.day ? ' selected-day' : ''}`;
   cell.setAttribute('aria-label', dayTip(day));
@@ -1092,7 +1105,7 @@ function paintCoverageCell(cell, day) {
     cell.replaceChildren(...coverage.bands.map(() => document.createElement('i')));
   }
   coverage.bands.forEach((band, index) => {
-    cell.children[index].className = `${coverageStatus(byBand.get(band), row?.[13] || 0, cadence, coverage.time === 'hourly', row?.[14])}${coverage.band && band !== coverage.band ? ' muted' : ''}`;
+    cell.children[index].className = `${coverageStatus(byBand.get(band), row?.[13] || 0, cadence, coverage.time === 'hourly', row?.[14], hasLocal)}${coverage.band && band !== coverage.band ? ' muted' : ''}`;
   });
 }
 
@@ -1114,7 +1127,8 @@ function dayTip(day, days = state.dayState) {
   const officialState = state.coverage.supported ? state.coverage.yearDays.get(day)?.[13] || 0 :
     item.status === 'official_missing' ? 1 : item.official_count > 0 ? 2 : 0;
   const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
-  const status = band ? coverageStatus(row, officialState, cadence, state.coverage.time === 'hourly', state.coverage.yearDays.get(day)?.[14]) : item.status;
+  const status = band ? coverageStatus(row, officialState, cadence, state.coverage.time === 'hourly', state.coverage.yearDays.get(day)?.[14],
+    coverageTotalsHaveLocal(state.coverage.yearDays.get(day)?.[12])) : item.status;
   const lines = [`${day} · ${band ? coverageBandName(band) + ' · ' : ''}${statusLabels[status] || status} · ${state.displayZone}`];
   if (item.indexing) lines.push('官方索引中');
   if (item.download_count) lines.push(`已选待下载时次 ${item.download_count}`);
@@ -1296,6 +1310,7 @@ function renderCoverageMonth() {
   const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
   for (const [dayNumber, officialState, indexing, mode, totals, hours] of payload.days) {
     const byBand = new Map(totals.map(row => [row[0], row]));
+    const hasLocal = coverageTotalsHaveLocal(totals);
     const date = `${year}-${String(month).padStart(2, '0')}-${String(dayNumber).padStart(2, '0')}`;
     const button = document.createElement('button');
     button.type = 'button';
@@ -1303,7 +1318,7 @@ function renderCoverageMonth() {
     button.dataset.day = date;
     const descriptions = coverage.bands.filter(band => !coverage.band || band === coverage.band).map(band => {
       const row = byBand.get(band);
-      const status = coverageStatus(row, officialState, cadence, coverage.time === 'hourly', mode);
+      const status = coverageStatus(row, officialState, cadence, coverage.time === 'hourly', mode, hasLocal);
       return `${coverageBandName(band)} ${statusLabels[status] || status} ${row?.[coverage.time === 'hourly' ? 4 : 2] || 0}/${row?.[coverage.time === 'hourly' ? 3 : 1] || 0}`;
     });
     button.title = `${date} · UTC${indexing ? ' · 官方索引中' : ''}\n${descriptions.join(' · ')}`;
@@ -1314,7 +1329,7 @@ function renderCoverageMonth() {
     const colors = [];
     for (const [index, band] of coverage.bands.entries()) {
       const row = byBand.get(band);
-      const status = coverageStatus(row, officialState, cadence, coverage.time === 'hourly', mode);
+      const status = coverageStatus(row, officialState, cadence, coverage.time === 'hourly', mode, hasLocal);
       const begin = index * segment;
       const end = begin + segment - 0.6;
       if (coverage.band && coverage.band !== band) {
@@ -1348,7 +1363,7 @@ function renderCoverageMonth() {
       const slot = document.createElement('i');
       const status = indexing && (officialState === 0 || officialState === 3) ? 'indexing' : officialState === 0 || officialState === 3 || (coverage.time === 'hourly' && mode !== 'grid') ? 'unknown' : officialState === 1 ? 'official_missing' :
         errors ? 'error' : processing ? 'processing' : !expected ? 'official_missing' :
-        ok >= expected ? 'complete' : ok || partial ? 'partial' : 'missing';
+        ok >= expected ? 'complete' : ok || partial || hasLocal ? 'partial' : 'missing';
       slot.className = `month-hour ${status}`;
       bar.append(slot);
     }
@@ -1434,19 +1449,20 @@ function coverageDayColumns(day) {
   })).filter(column => hourly ? column.label.endsWith(':00') : state.coverage.hour < 0 || Number(column.label.slice(0, 2)) === state.coverage.hour);
 }
 
-function coverageCellState(day, indices, band) {
+function coverageCellState(day, indices, band, hasLocal = coverageDayHasLocal(day)) {
   const cells = indices.map(index => state.coverage.cells.get(`${index}:${band}`)).filter(Boolean);
   const total = position => cells.reduce((sum, cell) => sum + cell[position], 0);
   const official = total(2), ok = total(3), errors = total(4), processing = total(5);
   const status = day.official_state !== 2 ? day.official_state === 1 ? 'official_missing' : 'unknown' :
     !official ? 'official_missing' : errors ? 'error' : processing ? 'processing' :
-    ok >= official ? 'complete' : ok ? 'partial' : 'missing';
+    ok >= official ? 'complete' : ok || hasLocal ? 'partial' : 'missing';
   return {status, official, ok, indices: cells.map(cell => cell[0])};
 }
 
 function coverageDayHours(day) {
   if (day.mode !== 'grid' || !(day.cadence > 0) || 60 % day.cadence !== 0) return [];
   const bands = state.coverage.band ? [state.coverage.band] : state.coverage.bands;
+  const hasLocal = coverageDayHasLocal(day);
   const byMinute = new Map();
   day.times.forEach(([, minute], index) => {
     if (!byMinute.has(minute)) byMinute.set(minute, []);
@@ -1455,7 +1471,7 @@ function coverageDayHours(day) {
   return Array.from({length:24}, (_, hour) => {
     const slots = Array.from({length:state.coverage.time === 'hourly' ? 1 : 60 / day.cadence}, (_, step) => {
       const minute = hour * 60 + step * day.cadence;
-      const states = bands.map(band => coverageCellState(day, byMinute.get(minute) || [], band).status);
+      const states = bands.map(band => coverageCellState(day, byMinute.get(minute) || [], band, hasLocal).status);
       const status = ['error','processing','unknown','official_missing'].find(value => states.includes(value)) ||
         (states.every(value => value === 'complete') ? 'complete' : states.some(value => value === 'complete' || value === 'partial') ? 'partial' : 'missing');
       return {minute, status};
@@ -1546,13 +1562,14 @@ function renderCoverageDay() {
     fragment.append(header);
   }
   const bands = coverage.band ? [coverage.band] : coverage.bands;
+  const hasLocal = coverageDayHasLocal(day);
   for (const band of bands) {
     const label = document.createElement('span');
     label.className = 'matrix-label';
     label.textContent = coverageBandName(band);
     fragment.append(label);
     for (const column of columns) {
-      const {status, official, ok, indices} = coverageCellState(day, column.indices, band);
+      const {status, official, ok, indices} = coverageCellState(day, column.indices, band, hasLocal);
       const cell = document.createElement('button');
       cell.type = 'button';
       cell.className = `matrix-cell ${status}`;
@@ -1582,6 +1599,7 @@ function renderCoverageTimelines(day, columns) {
   }
   fragment.append(heading, axis);
   const bands = state.coverage.band ? [state.coverage.band] : state.coverage.bands;
+  const hasLocal = coverageDayHasLocal(day);
   const fixed = day.mode === 'grid' && day.cadence > 0 && 1440 % day.cadence === 0;
   matrix.style.minWidth = `${labelWidth + Math.max(744, fixed ? columns.length * (slotWidth + slotGap) - slotGap : 0)}px`;
   for (const band of bands) {
@@ -1593,7 +1611,7 @@ function renderCoverageTimelines(day, columns) {
     track.dataset.band = String(band);
     if (fixed) track.style.gridTemplateColumns = `repeat(${Math.max(1, columns.length)},minmax(${slotWidth}px,1fr))`;
     for (const column of columns) {
-      const {status, official, ok, indices} = coverageCellState(day, column.indices, band);
+      const {status, official, ok, indices} = coverageCellState(day, column.indices, band, hasLocal);
       const cell = document.createElement('button');
       cell.type = 'button';
       cell.className = `matrix-cell band-slot ${status}`;
