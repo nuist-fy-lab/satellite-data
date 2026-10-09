@@ -1161,6 +1161,20 @@ function dayTip(day, days = state.dayState) {
   return lines.join('\n');
 }
 
+// Startup navigation and product selection can request the same year at once.
+// Single-flight avoids duplicate work and duplicate 502 errors.
+const yearFlights = new Map();
+function requestYear(product, year) {
+  const key = product + '|' + year;
+  let flight = yearFlights.get(key);
+  if (!flight) {
+    flight = json('/api/year?product=' + encodeURIComponent(product) + '&year=' + year)
+      .finally(() => yearFlights.delete(key));
+    yearFlights.set(key, flight);
+  }
+  return flight;
+}
+
 async function loadYear(schedulePoll = true) {
   clearTimeout(state.yearPoll);
   if (!state.selected || state.selected.metadata?.availability_mode === 'on-demand') return;
@@ -1180,7 +1194,7 @@ async function loadYear(schedulePoll = true) {
   const product = state.selected.id;
   const year = Number(yearEl.value || defaultYear());
   try {
-    const payload = await json(`/api/year?product=${encodeURIComponent(product)}&year=${year}`);
+    const payload = await requestYear(product, year);
     if (state.selected?.id !== product || Number(yearEl.value) !== year) return;
     state.dayState.clear();
     for (const day of payload.days || []) state.dayState.set(day.day, day);
@@ -1205,7 +1219,7 @@ async function loadSatelliteYears(products, watch) {
   renderCalendar();
   await Promise.all(products.map(async item => {
     try {
-      const payload = await json(`/api/year?product=${encodeURIComponent(item.id)}&year=${year}`);
+      const payload = await requestYear(item.id, year);
       if (seq !== state.calendarSeq || state.selected?.id !== product || Number(yearEl.value) !== year) return;
       const entry = state.satelliteYears.get(item.id);
       const days = entry ? entry.days : state.dayState;

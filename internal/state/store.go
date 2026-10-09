@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"path/filepath"
 	"sort"
@@ -244,6 +245,8 @@ type Store struct {
 	coverageWarmupSlots  chan struct{}
 	coverageWarmupCtx    context.Context
 	coverageWarmupCancel context.CancelFunc
+	calendarEnqueueMu    sync.Mutex
+	calendarEnqueueJobs  map[string]bool
 	scanMu               sync.RWMutex
 	scanRuntime          archiveScanRuntime
 }
@@ -762,6 +765,34 @@ func (s *Store) EnqueueMissingCalendarYear(ctx context.Context, product string, 
 	return err
 }
 
+// QueueMissingCalendarYear never waits for SQLite's writer on the HTTP path.
+// Overlapping navigations of the same year are deduplicated.
+func (s *Store) QueueMissingCalendarYear(product string, year int) {
+	key := fmt.Sprintf("%s|%04d", product, year)
+	s.calendarEnqueueMu.Lock()
+	if s.calendarEnqueueJobs[key] {
+		s.calendarEnqueueMu.Unlock()
+		return
+	}
+	if s.calendarEnqueueJobs == nil {
+		s.calendarEnqueueJobs = make(map[string]bool)
+	}
+	s.calendarEnqueueJobs[key] = true
+	s.calendarEnqueueMu.Unlock()
+	go func() {
+		defer func() {
+			s.calendarEnqueueMu.Lock()
+			delete(s.calendarEnqueueJobs, key)
+			s.calendarEnqueueMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(s.coverageWarmupCtx, 90*time.Second)
+		defer cancel()
+		if err := s.EnqueueMissingCalendarYear(ctx, product, year); err != nil && ctx.Err() == nil {
+			log.Printf("WARN calendar enqueue failed product=%s year=%d error=%v", product, year, err)
+		}
+	}()
+}
+
 func (s *Store) EnqueueRange(ctx context.Context, product string, start, end time.Time, priority int) error {
 	if !end.After(start) {
 		return errors.New("end must be after start")
@@ -1058,6 +1089,14 @@ func (s *Store) Year(ctx context.Context, product string, year int) (YearRespons
 	return YearResponse{Product: product, Year: year, Days: days}, nil
 }
 
+const dayOfficialSlotsQuery = `SELECT slot_ts,granule_id,asset_count,total_size,representative_filename
+    FROM official_slots INDEXED BY official_slots_day_idx
+    WHERE product_key=? AND substr(slot_ts,1,10)=? ORDER BY slot_ts,granule_id`
+
+const dayLocalSlotsQuery = `SELECT slot_ts,filename,size,state,detail,path
+    FROM local_slots INDEXED BY local_slots_day_idx
+    WHERE product_key=? AND substr(slot_ts,1,10)=? ORDER BY slot_ts,filename`
+
 func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, error) {
 	if _, err := time.Parse(time.DateOnly, day); err != nil {
 		return DayResponse{}, errors.New("invalid day")
@@ -1077,9 +1116,7 @@ func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, erro
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return DayResponse{}, err
 	}
-	officialRows, err := s.db.QueryContext(ctx, `
-		SELECT slot_ts,granule_id,asset_count,total_size,representative_filename
-		FROM official_slots WHERE product_key=? AND substr(slot_ts,1,10)=? ORDER BY slot_ts,granule_id`, product, day)
+	officialRows, err := s.db.QueryContext(ctx, dayOfficialSlotsQuery, product, day)
 	if err != nil {
 		return DayResponse{}, err
 	}
@@ -1093,9 +1130,7 @@ func (s *Store) Day(ctx context.Context, product, day string) (DayResponse, erro
 		officialBy[item.SlotTS] = append(officialBy[item.SlotTS], item)
 	}
 	officialRows.Close()
-	localRows, err := s.db.QueryContext(ctx, `
-		SELECT slot_ts,filename,size,state,detail,path FROM local_slots
-		WHERE product_key=? AND substr(slot_ts,1,10)=? ORDER BY slot_ts,filename`, product, day)
+	localRows, err := s.db.QueryContext(ctx, dayLocalSlotsQuery, product, day)
 	if err != nil {
 		return DayResponse{}, err
 	}

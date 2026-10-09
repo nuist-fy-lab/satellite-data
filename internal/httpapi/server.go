@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -758,6 +759,7 @@ func (s *Server) products(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) year(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	product := strings.TrimSpace(r.URL.Query().Get("product"))
 	year, err := strconv.Atoi(r.URL.Query().Get("year"))
 	if err != nil || year < 1970 || year > 2100 {
@@ -768,19 +770,27 @@ func (s *Server) year(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, errors.New("unknown product"))
 		return
 	}
-	if err := s.store.EnqueueMissingCalendarYear(r.Context(), product, year); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	payload, err := s.store.Year(r.Context(), product, year)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Calendar reads must not wait for the single SQLite writer. Already
+	// represented years do not need enqueue work at all.
+	start := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(1, 0, 0)
+	if ceiling := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 1); end.After(ceiling) {
+		end = ceiling
+	}
+	if start.Before(end) && len(payload.Days) < int(end.Sub(start)/(24*time.Hour)) {
+		s.store.QueueMissingCalendarYear(product, year)
+	}
+	w.Header().Set("Server-Timing", fmt.Sprintf("calendar;dur=%.1f", float64(time.Since(started))/float64(time.Millisecond)))
 	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) day(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	product := strings.TrimSpace(r.URL.Query().Get("product"))
 	day := strings.TrimSpace(r.URL.Query().Get("day"))
 	_, err := time.Parse(time.DateOnly, day)
@@ -800,6 +810,7 @@ func (s *Server) day(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	w.Header().Set("Server-Timing", fmt.Sprintf("calendar;dur=%.1f", float64(time.Since(started))/float64(time.Millisecond)))
 	writeJSON(w, http.StatusOK, payload)
 }
 

@@ -145,6 +145,16 @@ test('two startup year loaders share one network request', async () => {
   assert.equal(requests.length, 1);
 });
 
+test('MODIS year requests are deduplicated while in flight', async () => {
+  const h = harness();
+  h.run("payload={product:'modis:C1443536017-LAADS',year:2023,days:[]};");
+  const a = h.context.requestYear('modis:C1443536017-LAADS', 2023);
+  const b = h.context.requestYear('modis:C1443536017-LAADS', 2023);
+  assert.equal(a, b);
+  await Promise.all([a, b]);
+  assert.equal(h.requests.filter(item => item.url.startsWith('/api/year?')).length, 1);
+});
+
 test('month bands and missing time slots use orange if another band has local data', () => {
   const h = harness();
   h.element('#month').value = '5';

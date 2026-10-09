@@ -141,3 +141,62 @@ func TestUnindexedCalendarDayIsReadableDuringSQLiteWriterLock(t *testing.T) {
 		t.Fatalf("read-only day waited on SQLite writer for %s", elapsed)
 	}
 }
+
+func TestMODISYearIsReadableWithoutSQLiteWriterUnderContention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := state.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	product := model.Product{ProductKey: "modis:C1443536017-LAADS", SourceID: "modis", Cadence: "5m"}
+	if err := store.UpsertProducts(ctx, product.SourceID, []model.Product{product}); err != nil {
+		t.Fatal(err)
+	}
+	locker, err := sql.Open("sqlite", path+"?_txlock=immediate&_busy_timeout=1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close()
+	conn, err := locker.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.ExecContext(context.Background(), "ROLLBACK")
+	request := httptest.NewRequest(http.MethodGet, "/api/year?product=modis%3AC1443536017-LAADS&year=2023", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	started := time.Now()
+	New(nil, store).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("year blocked by background indexing writer: %d %s", response.Code, response.Body.String())
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("MODIS calendar read waited for writer lock: %s", elapsed)
+	}
+	if !strings.HasPrefix(response.Header().Get("Server-Timing"), "calendar;dur=") {
+		t.Fatal("year response missing performance timing header")
+	}
+	if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		year, err := store.Year(ctx, product.ProductKey, 2023)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(year.Days) == 365 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background year enqueue did not complete: %d days", len(year.Days))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
