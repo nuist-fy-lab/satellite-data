@@ -165,3 +165,33 @@ func TestTrackedCalendarContinuesIntoNewUTCYear(t *testing.T) {
 		t.Fatalf("UTC new year lost autonomous indexing: %+v", years)
 	}
 }
+
+func TestAutonomousBackfillAdvancesPastEachBoundedBatch(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "backfill.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	product := "modis:full-year"
+	if err := s.UpsertProducts(ctx, "modis", []model.Product{{ProductKey: product, SourceID: "modis"}}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := s.EnqueueDownloadRequest(ctx, "modis", "modis", product, start, start.AddDate(1, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	// New year 2024: previous year's 365 days must be scheduled in bounded
+	// steps. LIMIT is applied AFTER filtering already scheduled work.
+	for _, want := range []int{150, 150, 65, 0} {
+		added, err := s.autoQueueUnknownCalendarYear(ctx, product, 2023,
+			time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), 150)
+		if err != nil || int(added) != want {
+			t.Fatalf("backfill step=%d want=%d err=%v", added, want, err)
+		}
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM official_work WHERE product_key=?", product).Scan(&count); err != nil || count != 365 {
+		t.Fatalf("incomplete background year despite repeated sweeps: count=%d error=%v", count, err)
+	}
+}

@@ -115,8 +115,9 @@ func (s *Store) autoQueueUnknownCalendarYear(ctx context.Context, product string
 		INSERT OR IGNORE INTO official_work(product_key,day,state,priority,requested_at,updated_at)
 		SELECT ?,day,'pending',-20,?,? FROM dates
 		WHERE NOT EXISTS(SELECT 1 FROM official_days d WHERE d.product_key=? AND d.day=dates.day)
+		  AND NOT EXISTS(SELECT 1 FROM official_work w WHERE w.product_key=? AND w.day=dates.day)
 		LIMIT ?`,
-		start.Format(time.DateOnly), end.Format(time.DateOnly), product, stamp, stamp, product, limit)
+		start.Format(time.DateOnly), end.Format(time.DateOnly), product, stamp, stamp, product, product, limit)
 	if err != nil {
 		return 0, err
 	}
