@@ -22,6 +22,8 @@ func TestCoverageDayQueriesUseProductDayIndexes(t *testing.T) {
 	}{
 		{coverageOfficialDayAssetsQuery, "official_assets_day_idx"},
 		{coverageLocalDayAssetsQuery, "local_slots_day_idx"},
+		{dayOfficialSlotsQuery, "official_slots_day_idx"},
+		{dayLocalSlotsQuery, "local_slots_day_idx"},
 	} {
 		rows, err := store.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+test.query, "goes18:ABI-L1b-RadC", "2025-01-04")
 		if err != nil {
