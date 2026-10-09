@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -795,18 +797,27 @@ func (s *Server) day(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, provider.ErrOnDemand)
 		return
 	}
-	if !at.After(time.Now().UTC()) {
-		if err := s.store.EnqueueRange(r.Context(), product, at, at.AddDate(0, 0, 1), 100); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
+	s.enqueueCalendarDay(r, product, at)
 	payload, err := s.store.Day(r.Context(), product, day)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+// Day details are read operations. Index scheduling is best-effort and must
+// not turn an otherwise available calendar response into a gateway timeout
+// while background indexing or archive reconciliation owns the writer.
+func (s *Server) enqueueCalendarDay(r *http.Request, product string, at time.Time) {
+	if at.After(time.Now().UTC()) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 350*time.Millisecond)
+	defer cancel()
+	if err := s.store.EnqueueRange(ctx, product, at, at.AddDate(0, 0, 1), 100); err != nil && r.Context().Err() == nil {
+		slog.Warn("calendar day index enqueue deferred", "product", product, "day", at.Format(time.DateOnly), "error", err)
+	}
 }
 
 func (s *Server) indexRange(w http.ResponseWriter, r *http.Request) {

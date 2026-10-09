@@ -741,6 +741,31 @@ func (s *Store) EnqueueRange(ctx context.Context, product string, start, end tim
 	if !end.After(start) {
 		return errors.New("end must be after start")
 	}
+	// Calendar views mostly revisit already indexed days. Avoid reserving the
+	// single SQLite writer (and waiting behind archive reconciliation) when
+	// every day already has a fresh official index. The write transaction below
+	// still rechecks freshness for callers that actually need to enqueue work.
+	needsWork := false
+	for day := dayFloor(start); day.Before(end); day = day.AddDate(0, 0, 1) {
+		var refreshed string
+		err := s.db.QueryRowContext(ctx, `SELECT refreshed_at FROM official_days WHERE product_key=? AND day=?`,
+			product, day.Format(time.DateOnly)).Scan(&refreshed)
+		if errors.Is(err, sql.ErrNoRows) {
+			needsWork = true
+			break
+		}
+		if err != nil {
+			return err
+		}
+		stamp, err := time.Parse(time.RFC3339Nano, refreshed)
+		if err != nil || time.Since(stamp) >= 24*time.Hour {
+			needsWork = true
+			break
+		}
+	}
+	if !needsWork {
+		return nil
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {

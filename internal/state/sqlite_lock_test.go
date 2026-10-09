@@ -131,6 +131,32 @@ func TestWriterQueueIsCancelableAndDoesNotBlockReaders(t *testing.T) {
 	}
 }
 
+func TestFreshCalendarDayEnqueueDoesNotWaitForBusyWriter(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	day := time.Date(2023, 5, 3, 0, 0, 0, 0, time.UTC)
+	product := "modis:C1443536017-LAADS"
+	if _, err := store.writer.ExecContext(ctx, `INSERT INTO official_days(product_key,day,state,refreshed_at)
+		VALUES(?,?,'present',?)`, product, day.Format(time.DateOnly), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := store.writer.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Rollback()
+	quick, done := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer done()
+	if err := store.EnqueueRange(quick, product, day, day.AddDate(0, 0, 1), 100); err != nil {
+		t.Fatalf("fresh day must not reserve busy writer: %v", err)
+	}
+}
+
 func TestLocalScanStagingDoesNotAcquireMainWriterLock(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

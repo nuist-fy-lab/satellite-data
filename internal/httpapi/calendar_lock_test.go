@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,5 +68,36 @@ func TestCalendarDayWhileIndexerClaimsWork(t *testing.T) {
 	close(failures)
 	for err := range failures {
 		t.Error(err)
+	}
+}
+
+func TestIndexedHistoricalCalendarDayReturnsWithoutReindexing(t *testing.T) {
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	product := model.Product{ProductKey: "modis:C1443536017-LAADS", SourceID: "modis", Cadence: "5m"}
+	if err := store.UpsertProducts(ctx, product.SourceID, []model.Product{product}); err != nil {
+		t.Fatal(err)
+	}
+	day := "2023-05-03"
+	if err := store.SaveOfficialBatch(ctx, state.WorkBatch{Product: product.ProductKey, Days: []string{day}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(nil, store)
+	request := httptest.NewRequest(http.MethodGet, "/api/day?product=modis%3AC1443536017-LAADS&day="+day, nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("day returned %d: %s", response.Code, response.Body.String())
+	}
+	if got := response.Body.String(); !strings.Contains(got, `"day":"2023-05-03"`) {
+		t.Fatalf("unexpected response: %s", got)
+	}
+	if batch, err := store.ClaimBatch(ctx, 1); err != nil || len(batch.Days) != 0 {
+		t.Fatalf("fresh day should not re-enqueue: batch=%v err=%v", batch, err)
 	}
 }
