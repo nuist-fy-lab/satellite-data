@@ -54,7 +54,8 @@ func (s *Server) withPortalAuth(next http.Handler) http.Handler {
 
 func cliRouteAllowed(method, path string) bool {
 	if method == http.MethodPost {
-		return path == "/api/v1/downloads" || path == "/api/index" || path == "/api/v1/era5/requests"
+		return path == "/api/v1/downloads" || path == "/api/v1/downloads/batch" ||
+			path == "/api/index" || path == "/api/v1/era5/requests"
 	}
 	if method != http.MethodGet {
 		return false

@@ -199,6 +199,7 @@
           <label>L 级别<select id="dl-level"></select></label>
           <label>区域<select id="dl-area"></select></label>
           <label>产品<select id="dl-product" required></select></label>
+          <label>附加产品（跨卫星／源）<input id="dl-extra-products" type="text" placeholder="其他产品完整键，逗号分隔；留空为单产品"></label>
           <label>分辨率<select id="dl-resolution"></select></label>
           <label>波段<select id="dl-band"></select></label>
           <label><span id="dl-start-label">开始日期（UTC）</span><input id="dl-start" type="date" required></label>
@@ -240,6 +241,7 @@
         </div>
       </section>
       <section class="download-section"><h2>Provider 传输</h2><div id="download-providers" class="download-list"></div></section>
+      <section class="download-section"><h2>多产品批量订单</h2><div id="download-batches" class="download-list"></div></section>
       <section class="download-section"><h2>下载请求</h2><div id="download-requests" class="download-list"></div>
         <nav id="download-pages" class="download-pagination hidden" aria-label="下载请求分页">
           <span id="download-page-summary" aria-live="polite"></span>

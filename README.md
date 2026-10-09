@@ -15,6 +15,36 @@ chunked and pipelined: each provider has its own discovery loop, assets are
 submitted to the downloader as soon as each chunk is discovered, and every
 downloader provider has independent transfer and verification worker pools.
 A slow provider therefore cannot consume another provider's slots.
+
+### Multi-product batches and three-layer deduplication
+
+One request can group up to 32 products in a shared date window. The centre
+atomically creates a private parent order and independent product orders:
+
+```bash
+satellite download submit --product modis:C1443536017-LAADS \
+  --product goes18:ABI-L1b-RadF --start 2023-05-03 --end 2023-05-10
+satellite download batch-status --id 1
+```
+
+The website accepts comma-separated additional product keys from any source.
+Identical batch submissions from the same owner reuse one parent; different
+users have separate private orders. Across orders, the downloader's stable
+source + collection + granule + asset + filename key ensures one task for the
+same scientific file, with independent per-order progress tracking.
+
+Existing local files are reused **only with verified identity**: the centre
+matches source, official collection, granule and asset against its persisted
+verified archive index, checks the file's path/size/mtime against the current
+inventory and supplies the stored SHA-256. The downloader then hashes the
+actual file again and checks its canonical target path before adopting it
+without any network transfer. Stale/corrupted/mismatching candidates fall
+back to ordinary downloads; active tasks are never overwritten.
+
+Opening a year calendar now queues genuinely unknown official days at low
+priority while preserving completed, running and delayed index jobs. Missing
+MODIS year cells gradually transition from gray to indexed states without
+blocking the download and verification pipelines.
 The centre also paces official catalog/search calls per provider: each source
 starts at a 500 ms interval and at most two concurrent calls. Repeated errors
 lengthen that interval up to 5 seconds and reduce concurrency to one; sustained

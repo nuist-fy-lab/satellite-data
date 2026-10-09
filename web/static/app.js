@@ -2424,12 +2424,19 @@ async function submitDownload(event) {
   button.disabled = true;
   status.textContent = '正在提交…';
   try {
-    const payload = await json('/api/v1/downloads', {
+    const extras = ($('#dl-extra-products').value || '').split(/[,，\n]+/).map(s => s.trim()).filter(Boolean);
+    const products = [product.product_key, ...extras];
+    if (new Set(products).size !== products.length) throw new Error('附加产品不能重复');
+    const batch = products.length > 1;
+    const payload = await json(batch ? '/api/v1/downloads/batch' : '/api/v1/downloads', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({source: product.source_id, collection: product.product_key, ...range,
-        band: Number($('#dl-band').value) || 0, times}),
+      body: JSON.stringify(batch ? {products, ...range, band: Number($('#dl-band').value) || 0, times} :
+        {source: product.source_id, collection: product.product_key, ...range,
+          band: Number($('#dl-band').value) || 0, times}),
     });
-    status.textContent = '已提交 #' + payload.download.id;
+    status.textContent = batch ?
+      (payload.created ? '已创建批量订单 #' : '已去重复用批量订单 #') + payload.group.id :
+      '已提交 #' + payload.download.id;
     loadDownloads(true);
   } catch (error) { status.textContent = '提交失败：' + error.message; }
   finally { button.disabled = false; }
@@ -2440,6 +2447,29 @@ function downloadRate(value) {
   if (rate < 1024) return Math.round(rate) + ' B/s';
   if (rate < 1048576) return (rate / 1024).toFixed(1) + ' KiB/s';
   return (rate / 1048576).toFixed(1) + ' MiB/s';
+}
+
+function renderDownloadBatches(groups) {
+  const holder = $('#download-batches');
+  if (!holder) return;
+  holder.replaceChildren();
+  if (!groups.length) {
+    holder.textContent = '暂无多产品订单';
+    return;
+  }
+  for (const group of groups) {
+    const section = document.createElement('div');
+    section.className = 'download-request';
+    const header = document.createElement('strong');
+    header.textContent = '批量订单 #' + group.id + ' · ' + group.products + ' 个产品 · ' + group.state;
+    const info = document.createElement('div');
+    info.textContent = '已发现 ' + group.assets_queued + ' · 已完成 ' + group.files_done +
+      ' · 失败 ' + group.files_failed + ' · 待认证 ' + group.files_waiting_auth;
+    const products = document.createElement('small');
+    products.textContent = (group.downloads || []).map(item => item.collection_id + ' (' + item.state + ')').join(' / ');
+    section.append(header, info, products);
+    holder.append(section);
+  }
 }
 
 const downloadWindowSeconds = {realtime: 300, '1h': 3600, '3h': 10800, '6h': 21600, '12h': 43200, '1d': 86400, '2d': 172800, '1w': 604800};
@@ -2732,10 +2762,12 @@ async function loadDownloads(schedule = true, forceHistory = false) {
   const cacheFresh = !forceHistory && history.payload?.window === history.window && Date.now() - history.loadedAt < 15_000;
   const historySince = !forceHistory && history.payload?.window === history.window ? incrementalSeriesSince(history.payload, 'providers') : '';
   const requestURL = '/api/v1/downloads?limit=50&page=' + encodeURIComponent(state.downloads.page);
-  const [requests, samples] = await Promise.allSettled([
+  const batchFresh = state.downloads.batchLoadedAt && Date.now() - state.downloads.batchLoadedAt < 15_000;
+  const [requests, samples, batches] = await Promise.allSettled([
     json(requestURL),
     cacheFresh ? Promise.resolve(history.payload) : json('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window) +
       (historySince ? '&since=' + encodeURIComponent(historySince) : '')),
+    batchFresh ? Promise.resolve(null) : json('/api/v1/downloads/batch?limit=10'),
   ]);
   if (ticket !== state.downloads.pollSeq) return;
   state.downloads.requestError = requests.status === 'rejected' ? requests.reason.message : '';
@@ -2747,6 +2779,10 @@ async function loadDownloads(schedule = true, forceHistory = false) {
       loadDownloads(schedule, forceHistory);
       return;
     }
+  }
+  if (batches.status === 'fulfilled' && batches.value) {
+    renderDownloadBatches(batches.value.groups || []);
+    state.downloads.batchLoadedAt = Date.now();
   }
   if (samples.status === 'fulfilled') {
     history.payload = cacheFresh ? samples.value : mergeDownloadHistory(history.payload, samples.value, history.window);

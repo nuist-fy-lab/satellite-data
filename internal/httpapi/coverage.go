@@ -39,6 +39,10 @@ func (s *Server) coverageYear(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid year"))
 		return
 	}
+	if err := s.store.EnqueueMissingCalendarYear(r.Context(), product, year); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	payload, err := s.store.BandCoverageYear(r.Context(), product, year)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

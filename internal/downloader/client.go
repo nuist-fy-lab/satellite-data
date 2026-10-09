@@ -142,6 +142,20 @@ func (c *Client) Enqueue(ctx context.Context, spec TaskSpec) (Task, bool, error)
 	return payload.Task, payload.Created, nil
 }
 
+// AdoptVerified is a fast local Unix-socket request; the downloader itself
+// hashes the file and refuses an incorrect, stale, or wrong-path candidate.
+func (c *Client) AdoptVerified(ctx context.Context, spec TaskSpec, path, digest string) (Task, bool, error) {
+	var response struct {
+		Task    Task `json:"task"`
+		Created bool `json:"created"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/tasks/adopt-verified",
+		map[string]any{"task": spec, "archive_path": path, "sha256": digest}, &response); err != nil {
+		return Task{}, false, err
+	}
+	return response.Task, response.Created, nil
+}
+
 func (c *Client) TaskStatuses(ctx context.Context, ids []int64) ([]Task, error) {
 	var payload struct {
 		Tasks []Task `json:"tasks"`

@@ -83,6 +83,9 @@ func initDownloadSchema(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+	if _, err := db.Exec(downloadGroupsSchema); err != nil {
+		return err
+	}
 	if _, err := db.Exec(era5OrderSchema); err != nil {
 		return err
 	}

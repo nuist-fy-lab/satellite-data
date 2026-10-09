@@ -55,6 +55,46 @@ func TestProductKeysAndDataSelectionForEverySource(t *testing.T) {
 	}
 }
 
+func TestCLIRepeatedProductsSubmitOneParentAndQueryStatus(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/downloads/batch":
+			var data struct {
+				Products []string `json:"products"`
+				Start    string   `json:"start"`
+				End      string   `json:"end"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+				t.Error(err)
+			}
+			if len(data.Products) != 2 || data.Products[0] != "goes18:ABI-L1b-RadF" ||
+				data.Products[1] != "modis:C123-LAADS" ||
+				data.Start != "2023-05-03" || data.End != "2023-05-04" {
+				t.Errorf("invalid multi-product payload: %+v", data)
+			}
+			_, _ = io.WriteString(w, `{"created":true,"group":{"id":30,"state":"running","products":2,"downloads":[{"id":31},{"id":32}]}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/downloads/batch/30":
+			_, _ = io.WriteString(w, `{"group":{"id":30,"state":"running","products":2,"assets_queued":20,"files_done":10,"files_failed":0,"downloads":[{"id":31},{"id":32}]}}`)
+		default:
+			t.Errorf("unexpected split CLI request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := &client{base: server.URL, http: &http.Client{Timeout: time.Second}}
+	if err := client.downloadSubmit([]string{"--product", "goes18:ABI-L1b-RadF",
+		"--product", "modis:C123-LAADS", "--day", "2023-05-03"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.downloadBatchStatus([]string{"--id", "30"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("CLI made %d network calls, wanted one submit and one status", calls)
+	}
+}
+
 func TestQueryUsesOneCentreRequestAndOmitsTransferSecrets(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

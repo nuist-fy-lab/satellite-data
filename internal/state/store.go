@@ -180,6 +180,8 @@ CREATE TABLE IF NOT EXISTS verified_archive_files (
   official_asset TEXT NOT NULL,
   verified_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS verified_archive_identity_idx
+ON verified_archive_files(source_id,official_collection,official_item,official_asset);
 
 CREATE TABLE IF NOT EXISTS archive_scan_status (
   id INTEGER PRIMARY KEY CHECK(id=1),
@@ -319,6 +321,36 @@ type VerifiedArchiveFile struct {
 	Size    int64
 	MtimeNS int64
 	SHA256  string
+}
+
+type ArchiveReuseCandidate struct {
+	Path   string
+	SHA256 string
+	Size   int64
+}
+
+// FindVerifiedArchiveAsset never searches by filename alone. Only the exact
+// provider/collection/granule/asset identity, plus unchanged local scan
+// metadata, is eligible for adoption. The downloader must still hash the
+// actual file again before marking a new task as completed.
+func (s *Store) FindVerifiedArchiveAsset(ctx context.Context, source, collection, item, asset, filename string) (ArchiveReuseCandidate, bool, error) {
+	var found ArchiveReuseCandidate
+	err := s.db.QueryRowContext(ctx, `
+		SELECT v.path,v.sha256,v.size FROM verified_archive_files v
+		JOIN local_files f ON f.path=v.path AND f.state='ok' AND
+		f.size=v.size AND f.mtime_ns=v.mtime_ns
+		WHERE v.source_id=? AND v.official_collection=? AND
+		v.official_item=? AND v.official_asset=? AND f.filename=?
+		ORDER BY v.verified_at DESC LIMIT 1`,
+		source, collection, item, asset, filename).
+		Scan(&found.Path, &found.SHA256, &found.Size)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ArchiveReuseCandidate{}, false, nil
+	}
+	if err != nil {
+		return ArchiveReuseCandidate{}, false, err
+	}
+	return found, true, nil
 }
 
 type ArchiveScanStatus struct {
@@ -676,6 +708,33 @@ func (s *Store) ProductSource(ctx context.Context, product string) (string, mode
 		}
 	}
 	return "", model.Product{}, sql.ErrNoRows
+}
+
+// EnqueueMissingCalendarYear indexes genuine unknown dates for the viewed year,
+// preserving existing, running, and retry-delayed work. Background priority
+// is lower than explicit download/order and day queries.
+func (s *Store) EnqueueMissingCalendarYear(ctx context.Context, product string, year int) error {
+	if year < 1970 || year > 2100 {
+		return errors.New("invalid calendar year")
+	}
+	start := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(1, 0, 0)
+	if ceiling := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 1); end.After(ceiling) {
+		end = ceiling
+	}
+	if !start.Before(end) {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.writer.ExecContext(ctx, `
+		WITH RECURSIVE dates(day) AS (
+		  SELECT ? UNION ALL SELECT date(day,'+1 day') FROM dates WHERE date(day,'+1 day') < ?
+		)
+		INSERT OR IGNORE INTO official_work(product_key,day,state,priority,requested_at,updated_at)
+		SELECT ?,day,'pending',-10,?,? FROM dates
+		WHERE NOT EXISTS(SELECT 1 FROM official_days d WHERE d.product_key=? AND d.day=dates.day)`,
+		start.Format(time.DateOnly), end.Format(time.DateOnly), product, now, now, product)
+	return err
 }
 
 func (s *Store) EnqueueRange(ctx context.Context, product string, start, end time.Time, priority int) error {

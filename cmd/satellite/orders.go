@@ -32,7 +32,8 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 	set := flag.NewFlagSet("download submit", flag.ContinueOnError)
 	source := set.String("source", "", "source ID; inferred from product")
 	collection := set.String("collection", "", "collection ID (compatible alias)")
-	product := set.String("product", "", "complete product key")
+	var products commaValues
+	set.Var(&products, "product", "complete product key; repeatable or comma-separated for a multi-product batch")
 	start := set.String("start", "", "first UTC date")
 	end := set.String("end", "", "last UTC date (inclusive for submit; exclusive for create)")
 	day := set.String("day", "", "one UTC date")
@@ -53,7 +54,17 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 	if set.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
 	}
-	sourceID, key, err := resolveProduct(*source, *collection, *product)
+	if len(products) > 1 && *collection != "" {
+		return errors.New("use repeated --product or --collection, not both")
+	}
+	if len(products) > 1 && *source != "" {
+		return errors.New("multi-product orders infer each source; omit --source")
+	}
+	firstProduct := ""
+	if len(products) > 0 {
+		firstProduct = products[0]
+	}
+	sourceID, key, err := resolveProduct(*source, *collection, firstProduct)
 	if err != nil {
 		return err
 	}
@@ -149,6 +160,43 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 	startValue, endValue := first.Format(time.RFC3339), last.Format(time.RFC3339)
 	if inclusive {
 		startValue, endValue = first.Format(time.DateOnly), last.Format(time.DateOnly)
+	}
+	if len(products) > 1 {
+		keys := make([]string, 0, len(products))
+		for _, product := range products {
+			_, resolved, err := resolveProduct("", "", product)
+			if err != nil {
+				return err
+			}
+			keys = append(keys, resolved)
+		}
+		var response struct {
+			Group struct {
+				ID        int64             `json:"id"`
+				State     string            `json:"state"`
+				Products  int               `json:"products"`
+				Downloads []downloadRequest `json:"downloads"`
+			} `json:"group"`
+			Created bool `json:"created"`
+		}
+		if err := c.post("/api/v1/downloads/batch", map[string]any{
+			"products": keys, "start": startValue, "end": endValue,
+			"band": *band, "times": times, "inputs": inputs,
+		}, &response); err != nil {
+			return err
+		}
+		if response.Group.ID <= 0 || len(response.Group.Downloads) != len(keys) {
+			return errors.New("invalid batch response; inspect download batch status before resubmitting")
+		}
+		if *jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(response)
+		}
+		fmt.Printf("批量订单 #%d · %d 个产品 · 状态 %s · %s\n", response.Group.ID,
+			response.Group.Products, response.Group.State, map[bool]string{true: "已创建", false: "已去重复用"}[response.Created])
+		for _, child := range response.Group.Downloads {
+			printDownload(child)
+		}
+		return nil
 	}
 	var payload struct {
 		Download downloadRequest `json:"download"`
