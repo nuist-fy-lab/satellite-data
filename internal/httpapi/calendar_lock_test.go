@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -99,5 +100,44 @@ func TestIndexedHistoricalCalendarDayReturnsWithoutReindexing(t *testing.T) {
 	}
 	if batch, err := store.ClaimBatch(ctx, 1); err != nil || len(batch.Days) != 0 {
 		t.Fatalf("fresh day should not re-enqueue: batch=%v err=%v", batch, err)
+	}
+}
+
+func TestUnindexedCalendarDayIsReadableDuringSQLiteWriterLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := state.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	product := model.Product{ProductKey: "modis:C1443536017-LAADS", SourceID: "modis", Cadence: "5m"}
+	if err := store.UpsertProducts(ctx, product.SourceID, []model.Product{product}); err != nil {
+		t.Fatal(err)
+	}
+	locker, err := sql.Open("sqlite", path+"?_txlock=immediate&_busy_timeout=1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close()
+	conn, err := locker.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.ExecContext(context.Background(), "ROLLBACK")
+	request := httptest.NewRequest(http.MethodGet, "/api/day?product=modis%3AC1443536017-LAADS&day=2023-05-03", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	started := time.Now()
+	New(nil, store).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read-only day should not block on writer: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("read-only day waited on SQLite writer for %s", elapsed)
 	}
 }
