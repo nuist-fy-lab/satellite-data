@@ -3459,7 +3459,9 @@ async function boot() {
   fillYears();
   fillMonths();
   bind();
-  const healthPromise = health();
+  // The health indicator is not a prerequisite for drawing the calendar.
+  // Waiting for /healthz used to delay navigation even when year data was ready.
+  void health();
   const sourcesPromise = loadSources().catch(error => {
     $('#product-title').textContent = '产品目录读取失败';
     $('#product-meta').textContent = error.message;
@@ -3468,7 +3470,7 @@ async function boot() {
   state.access.user = session.user;
   $('#portal-user').textContent = session.user.username;
   document.querySelectorAll('[data-admin-only]').forEach(node => node.classList.toggle('hidden', session.user.role !== 'admin'));
-  await Promise.allSettled([healthPromise, sourcesPromise]);
+  await sourcesPromise;
   navigateView(viewFromPath(), 'none');
 }
 
