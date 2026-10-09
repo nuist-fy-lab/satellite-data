@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -38,6 +39,7 @@ type CoverageYear struct {
 	Version int   `json:"v"`
 	Year    int   `json:"year"`
 	Bands   []int `json:"bands"`
+	Pending int   `json:"pending,omitempty"`
 	// [ordinal, day status, official, complete, hourlyOfficial, hourlyComplete,
 	//  officialGap, missing, error, processing, indexing, updatedAt, bandTotals,
 	//  officialState, timelineMode]
@@ -73,6 +75,10 @@ type coverageCacheItem struct {
 }
 
 const coverageCacheLimit = 4096
+
+// Durable summaries survive process restarts. A year view should never have to
+// enumerate millions of official assets just to color 365 calendar cells.
+const coverageCacheVersion = "band-v2|"
 
 func (s *Store) cachedCoverage(key coverageKey, revision string) (coverageEntry, bool) {
 	s.coverageMu.Lock()
@@ -144,7 +150,16 @@ const coverageOfficialDayAssetsQuery = `SELECT slot_ts,filename FROM official_as
 const coverageLocalDayAssetsQuery = `SELECT slot_ts,filename,state FROM local_slots INDEXED BY local_slots_day_idx
 		WHERE product_key=? AND substr(slot_ts,1,10)=?`
 
+type coverageReader interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func (s *Store) coverageDay(ctx context.Context, product model.Product, day string) (CoverageDay, error) {
+	return s.coverageDayReader(ctx, s.db, product, day, true)
+}
+
+func (s *Store) coverageDayReader(ctx context.Context, db coverageReader, product model.Product, day string, includeIntent bool) (CoverageDay, error) {
 	profile, bands, err := coverageProfile(product)
 	if err != nil {
 		return CoverageDay{}, err
@@ -152,7 +167,7 @@ func (s *Store) coverageDay(ctx context.Context, product model.Product, day stri
 	result := CoverageDay{Version: 1, Day: day, Bands: bands, Cadence: ProfileFor(product).CadenceMinutes,
 		Mode: "events", Times: make([][2]any, 0), Cells: make([][6]int, 0)}
 	var state string
-	err = s.db.QueryRowContext(ctx, `SELECT state FROM official_days WHERE product_key=? AND day=?`, product.ProductKey, day).Scan(&state)
+	err = db.QueryRowContext(ctx, `SELECT state FROM official_days WHERE product_key=? AND day=?`, product.ProductKey, day).Scan(&state)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return CoverageDay{}, err
 	}
@@ -163,7 +178,7 @@ func (s *Store) coverageDay(ctx context.Context, product model.Product, day stri
 		}
 	}
 	var working int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM official_work WHERE product_key=? AND day=?`, product.ProductKey, day).Scan(&working); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM official_work WHERE product_key=? AND day=?`, product.ProductKey, day).Scan(&working); err != nil {
 		return CoverageDay{}, err
 	}
 	result.Indexing = working > 0
@@ -176,7 +191,7 @@ func (s *Store) coverageDay(ctx context.Context, product model.Product, day stri
 
 	// The day expression is indexed. Memory is bounded by one day's assets,
 	// independently of the number of years in the archive.
-	rows, err := s.db.QueryContext(ctx, coverageOfficialDayAssetsQuery, product.ProductKey, day)
+	rows, err := db.QueryContext(ctx, coverageOfficialDayAssetsQuery, product.ProductKey, day)
 	if err != nil {
 		return CoverageDay{}, err
 	}
@@ -213,7 +228,7 @@ func (s *Store) coverageDay(ctx context.Context, product model.Product, day stri
 		result.OfficialState = 3
 		return result, nil
 	}
-	rows, err = s.db.QueryContext(ctx, coverageLocalDayAssetsQuery, product.ProductKey, day)
+	rows, err = db.QueryContext(ctx, coverageLocalDayAssetsQuery, product.ProductKey, day)
 	if err != nil {
 		return CoverageDay{}, err
 	}
@@ -241,9 +256,12 @@ func (s *Store) coverageDay(ctx context.Context, product model.Product, day stri
 		return CoverageDay{}, err
 	}
 	rows.Close()
-	intent, err := s.calendarIntentForDay(ctx, product.ProductKey, day)
-	if err != nil {
-		return CoverageDay{}, err
+	var intent *calendarDownloadIntent
+	if includeIntent {
+		intent, err = s.calendarIntentForDay(ctx, product.ProductKey, day)
+		if err != nil {
+			return CoverageDay{}, err
+		}
 	}
 	if intent != nil {
 		for key, asset := range assets {
@@ -428,15 +446,60 @@ func (s *Store) BandCoverageYear(ctx context.Context, productKey string, year in
 	if err != nil {
 		return CoverageYear{}, err
 	}
+	// One indexed query for all 365 materialized band summaries, regardless
+	// of how many millions of files the official archive contains.
+	from, to := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).Format(time.DateOnly),
+		time.Date(year+1, time.January, 1, 0, 0, 0, 0, time.UTC).Format(time.DateOnly)
+	cacheRows, err := s.db.QueryContext(ctx, `SELECT day,revision,totals_json,official_state,timeline_mode
+		FROM coverage_day_cache WHERE product_key=? AND day>=? AND day<?`, productKey, from, to)
+	if err != nil {
+		return CoverageYear{}, err
+	}
+	persisted := make(map[string]coverageEntry)
+	for cacheRows.Next() {
+		var day, revision, encoded, mode string
+		var officialState int
+		if err := cacheRows.Scan(&day, &revision, &encoded, &officialState, &mode); err != nil {
+			cacheRows.Close()
+			return CoverageYear{}, err
+		}
+		var totals []BandTotals
+		if err := json.Unmarshal([]byte(encoded), &totals); err != nil {
+			continue
+		}
+		persisted[day] = coverageEntry{revision: revision, totals: totals, officialState: officialState, mode: mode}
+	}
+	if err := cacheRows.Err(); err != nil {
+		cacheRows.Close()
+		return CoverageYear{}, err
+	}
+	cacheRows.Close()
 	result := CoverageYear{Version: 1, Year: year, Bands: bands, Days: make([][]any, 0, len(calendar.Days))}
+	missing := make([]YearDay, 0)
+	fallbackMode := slotaxis.Resolve(product.SourceID, product.ProductKey, product.Cadence).Mode()
 	for _, day := range calendar.Days {
 		at, err := time.Parse(time.DateOnly, day.Day)
 		if err != nil {
 			return CoverageYear{}, err
 		}
-		entry, err := s.cachedCoverageTotals(ctx, product, day)
-		if err != nil {
-			return CoverageYear{}, err
+		entry, ready := persisted[day.Day]
+		if ready && day.UpdatedAt != nil {
+			ready = entry.revision == coverageCacheVersion+product.Cadence+"|"+*day.UpdatedAt
+		} else {
+			ready = false
+		}
+		if !ready {
+			// Never block the year API on cold-file scans. Old days are warmed
+			// asynchronously; SSE fills the precise band colors in place.
+			entry = coverageEntry{totals: []BandTotals{}, mode: fallbackMode}
+			if day.Status == "official_missing" {
+				entry.officialState = 1
+			} else if day.OfficialCount > 0 {
+				entry.officialState = 2
+			}
+			if day.UpdatedAt != nil && day.OfficialCount > 0 {
+				missing = append(missing, day)
+			}
 		}
 		updated := ""
 		if day.UpdatedAt != nil {
@@ -445,7 +508,11 @@ func (s *Store) BandCoverageYear(ctx context.Context, productKey string, year in
 		result.Days = append(result.Days, []any{at.YearDay() - 1, day.Status,
 			day.OfficialCount, day.LocalOKCount, day.HourlyOfficialCount, day.HourlyLocalOKCount,
 			day.OfficialGapCount, day.MissingCount, day.ErrorCount, day.ProcessingCount,
-			day.Indexing, updated, entry.totals, entry.officialState, entry.mode})
+			day.Indexing, updated, entry.totals, entry.officialState, entry.mode, ready})
+	}
+	result.Pending = len(missing)
+	if len(missing) > 0 {
+		s.queueCoverageWarmup(product, year, missing)
 	}
 	return result, nil
 }

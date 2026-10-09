@@ -16,6 +16,7 @@ import (
 type indexStreamUpdate struct {
 	Coverage bool     `json:"coverage"`
 	Bands    []int    `json:"bands,omitempty"`
+	Pending  int      `json:"pending,omitempty"`
 	Days     any      `json:"days"`
 	Removed  []string `json:"removed,omitempty"`
 	Active   bool     `json:"active"`
@@ -44,6 +45,7 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 	previous := map[string][]byte{}
 	first := true
 	lastActive := false
+	warming := false
 
 	emit := func() (bool, error) {
 		if watch {
@@ -68,6 +70,11 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 				return false, err
 			}
 			payload.Bands = yearData.Bands
+			payload.Pending = yearData.Pending
+			warming = yearData.Pending > 0
+			if yearData.Pending > 0 {
+				active = true
+			}
 			rows := make([][]any, 0)
 			for _, row := range yearData.Days {
 				if len(row) < 11 {
@@ -135,7 +142,15 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updates := time.NewTicker(2 * time.Second)
+	// Refresh progressive backfills promptly without permanently polling every
+	// viewer at high frequency once the durable calendar is fully warm.
+	interval := func() time.Duration {
+		if warming {
+			return 500 * time.Millisecond
+		}
+		return 2 * time.Second
+	}
+	updates := time.NewTimer(interval())
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer updates.Stop()
 	defer heartbeat.Stop()
@@ -152,6 +167,7 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 				_, _ = stream.event("complete", map[string]any{"active": false}, false)
 				return
 			}
+			updates.Reset(interval())
 		case <-heartbeat.C:
 			if err := stream.heartbeat(); err != nil {
 				return

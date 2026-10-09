@@ -120,6 +120,31 @@ test('multiband days are white only if every band is locally absent', () => {
   assert.match(h.context.dayTip('2025-01-01'), /C07.*部分完成/);
 });
 
+test('cold yearly materialization paints fast summary then streams precise band colors', () => {
+  const h = harness();
+  const placeholder = [0, 'partial', 1, 0, 1, 0, 0, 1, 0, 0, 0, 'rev', [], 2, 'grid', false];
+  h.run(`applyCoverageYearRows(2025, ${JSON.stringify([placeholder])})`);
+  h.context.renderCoverageYear();
+  const cell = h.element('#year-grid').querySelector('[data-day="2025-01-01"]');
+  assert.ok(cell.children.every(band => band.className === 'partial'), 'fast initial summary should not be white');
+  const hydrated = [0, 'partial', 1, 0, 1, 0, 0, 1, 0, 0, 0, 'rev',
+    [[2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0], [7, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0]], 2, 'grid', true];
+  h.run(`applyCoverageYearRows(2025, ${JSON.stringify([hydrated])})`);
+  h.context.updateCell('2025-01-01');
+  assert.equal(cell.children[0].className, 'complete_official_gap');
+  assert.equal(cell.children[1].className, 'partial', 'missing band orange because another band has local data');
+});
+
+test('two startup year loaders share one network request', async () => {
+  const h = harness();
+  h.run("payload={v:1,year:2025,bands:[2,7],days:[]};");
+  const first = h.context.loadCoverageYear(false);
+  const second = h.context.loadCoverageYear(false);
+  await Promise.all([first, second]);
+  const requests = h.requests.filter(request => request.url.startsWith('/api/coverage/year?'));
+  assert.equal(requests.length, 1);
+});
+
 test('month bands and missing time slots use orange if another band has local data', () => {
   const h = harness();
   h.element('#month').value = '5';

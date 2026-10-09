@@ -3,10 +3,12 @@ package httpapi
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,6 +32,7 @@ func (s *Server) coverageProduct(w http.ResponseWriter, r *http.Request) (string
 }
 
 func (s *Server) coverageYear(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	product, ok := s.coverageProduct(w, r)
 	if !ok {
 		return
@@ -39,16 +42,22 @@ func (s *Server) coverageYear(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid year"))
 		return
 	}
-	if err := s.store.EnqueueMissingCalendarYear(r.Context(), product, year); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	payload, err := s.store.BandCoverageYear(r.Context(), product, year)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	w.Header().Set("Server-Timing", fmt.Sprintf("calendar;dur=%.1f", float64(time.Since(started))/float64(time.Millisecond)))
+	w.Header().Set("X-Calendar-Pending-Days", strconv.Itoa(payload.Pending))
 	writeCoverage(w, r, payload)
+	// Never wait for SQLite's single writer lock on a read-only calendar
+	// request. Enqueue any unknown official days independently after sending
+	// the snapshot; the existing index SSE will display subsequent updates.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		_ = s.store.EnqueueMissingCalendarYear(ctx, product, year)
+	}()
 }
 
 func (s *Server) coverageMonth(w http.ResponseWriter, r *http.Request) {
