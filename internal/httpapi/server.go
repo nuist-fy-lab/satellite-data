@@ -783,7 +783,7 @@ func (s *Server) year(w http.ResponseWriter, r *http.Request) {
 func (s *Server) day(w http.ResponseWriter, r *http.Request) {
 	product := strings.TrimSpace(r.URL.Query().Get("product"))
 	day := strings.TrimSpace(r.URL.Query().Get("day"))
-	at, err := time.Parse(time.DateOnly, day)
+	_, err := time.Parse(time.DateOnly, day)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("invalid day"))
 		return
@@ -794,12 +794,6 @@ func (s *Server) day(w http.ResponseWriter, r *http.Request) {
 	} else if selected.Metadata["availability_mode"] == "on-demand" {
 		writeError(w, http.StatusConflict, provider.ErrOnDemand)
 		return
-	}
-	if !at.After(time.Now().UTC()) {
-		if err := s.store.EnqueueRange(r.Context(), product, at, at.AddDate(0, 0, 1), 100); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
 	}
 	payload, err := s.store.Day(r.Context(), product, day)
 	if err != nil {

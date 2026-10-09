@@ -84,12 +84,6 @@ func (s *Server) coverageDay(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid day"))
 		return
 	}
-	if !at.After(time.Now().UTC()) {
-		if err := s.store.EnqueueRange(r.Context(), product, at, at.AddDate(0, 0, 1), 100); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
 	payload, err := s.store.BandCoverageDay(r.Context(), product, day)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
