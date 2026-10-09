@@ -45,6 +45,18 @@ Opening a year calendar now queues genuinely unknown official days at low
 priority while preserving completed, running and delayed index jobs. Missing
 MODIS year cells gradually transition from gray to indexed states without
 blocking the download and verification pipelines.
+
+The central indexer **also performs automatic calendar maintenance without a
+browser request**: it runs at startup and every 10 minutes, discovers tracked
+product-years from submitted (including historical completed) download orders
+and substantially indexed years, and queues missing UTC days with background
+priority. It respects active official-index work, retry backoff, and a global
+450-day-per-pass queue budget; a sparse set of EarthCARE overpasses is not
+mistaken for an instruction to crawl every day of a year. When the official
+catalogue or local archive changes, affected days are recounted immediately;
+the independent maintenance loop additionally repairs missing or stale
+`day_summary` records in bounded batches after interruptions or upgrades.
+Future days never enter the index queue. No scheduled cloud tasks are used.
 The centre also paces official catalog/search calls per provider: each source
 starts at a 500 ms interval and at most two concurrent calls. Repeated errors
 lengthen that interval up to 5 seconds and reduce concurrency to one; sustained
