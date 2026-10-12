@@ -5,3 +5,23 @@
 /*.db-wal
 *.part
 .DS_Store
+
+# Runtime state and credentials must never be committed.
+.env
+.env.*
+!.env.example
+*.env
+*.env.local
+*.env.production
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.pem
+*.p12
+*.pfx
+*.key
+*.token
+*credentials*.json
+*credentials*.txt
