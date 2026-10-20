@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,6 +54,14 @@ func TestPostgresCompactStateRoundTrip(t *testing.T) {
 		if url != asset.URL || size != asset.Size {
 			t.Fatalf("asset was altered during normalization: %q %d", url, size)
 		}
+	}
+	var storedSuffix sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT url_suffix FROM pg_official_asset_details WHERE filename=?`,
+		"two.hdf").Scan(&storedSuffix); err != nil {
+		t.Fatal(err)
+	}
+	if storedSuffix.Valid {
+		t.Fatalf("canonical URL suffix was redundantly stored: %q", storedSuffix.String)
 	}
 	group, created, err := s.EnqueueDownloadGroup(ctx, "researcher", start, start.AddDate(1, 0, 0),
 		[]GroupProduct{{Source: "modis", Provider: "modis", Collection: product.ProductKey,

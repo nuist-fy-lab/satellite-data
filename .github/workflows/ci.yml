@@ -54,18 +54,27 @@ jobs:
            filename TEXT,url TEXT,size INTEGER,etag TEXT,media_type TEXT);
           """)
           db.executemany("INSERT INTO official_slots VALUES (?,?,?,?,?,?,?)", [
-              ('modis:C1','2006-07-23T21:45:00Z','g1',2,1099511627782,'a.hdf','2026-10-20T01:00:00Z'),
-              ('modis:C1','2006-07-23T21:50:00Z','g2',0,0,'','2026-10-20T01:00:00Z')])
+              ('modis:C1','2006-07-23T21:45:00Z','g1',3,1099511627783,'a.hdf','2026-10-20T01:00:00Z'),
+              ('modis:C1','2006-07-23T21:50:00Z','g2',0,0,'','2026-10-20T01:00:00Z'),
+              ('modis:管道|特殊','2006-07-24T00:00:00Z','g3',1,5,'other.hdf','2026-10-20T01:00:00Z')])
           db.executemany("INSERT INTO official_assets VALUES (?,?,?,?,?,?,?,?)", [
               ('modis:C1','2006-07-23T21:45:00Z','g1','a.hdf','https://cdn.example.org/same/a.hdf',1099511627776,'','hdf'),
               ('modis:C1','2006-07-23T21:45:00Z','g1','b.hdf','https://cdn.example.org/same/b.hdf',6,'etag','hdf'),
-              ('modis:C1','2006-07-23T22:00:00Z','asset-only','测试.hdf','',0,'','')])
+              ('modis:C1','2006-07-23T21:45:00Z','g1','c.hdf','https://cdn.example.org/same/wrong-file.hdf?token=a',1,'','hdf'),
+              ('modis:C1','2006-07-23T22:00:00Z','asset-only','测试.hdf','',0,'',''),
+              ('modis:管道|特殊','2006-07-24T00:00:00Z','g3','other.hdf','https://cdn.example.org/ü/other.hdf',5,'','hdf')])
           db.commit()
           db.close()
           PY
           python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage import
           python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize
           python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage verify
+          # Normalization and reconciliation must be restart-safe.
+          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize
+          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage verify
+          # The two canonical URL suffixes are represented by SQL NULL.
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM pg_official_asset_details WHERE url_suffix IS NULL')" = "3"
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM migration_verified_days')" = "2"
   test:
     runs-on: ubuntu-latest
     steps:
