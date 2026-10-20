@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS pg_official_asset_details (
     ON DELETE CASCADE,
   filename TEXT NOT NULL,
   url_prefix_id BIGINT REFERENCES pg_official_url_prefixes(id),
-  url_suffix TEXT NOT NULL DEFAULT '',
+  -- NULL means the URL's final path component is exactly filename.
+  -- Any other suffix, including the empty string, is stored verbatim.
+  url_suffix TEXT,
   size BIGINT NOT NULL DEFAULT 0,
   etag TEXT NOT NULL DEFAULT '',
   media_type TEXT NOT NULL DEFAULT '',
@@ -62,7 +64,7 @@ JOIN pg_official_granule_keys k ON k.id = s.granule_key;
 
 CREATE OR REPLACE VIEW official_assets AS
 SELECT k.product_key, k.slot_ts, k.granule_id, a.filename,
-       (COALESCE(p.prefix, '') || a.url_suffix) AS url,
+       (COALESCE(p.prefix, '') || COALESCE(a.url_suffix, a.filename)) AS url,
        a.size, a.etag, a.media_type
 FROM pg_official_asset_details a
 JOIN pg_official_granule_keys k ON k.id = a.granule_key

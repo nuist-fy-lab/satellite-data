@@ -1094,6 +1094,10 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 				}
 				if s.postgres {
 					prefix, suffix := splitOfficialURL(asset.URL)
+					var suffixOverride any
+					if suffix != asset.Name {
+						suffixOverride = suffix
+					}
 					prefixID, exists := prefixIDs[prefix]
 					if !exists {
 						err := tx.QueryRowContext(ctx, `INSERT INTO pg_official_url_prefixes(prefix)
@@ -1108,7 +1112,7 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 					}
 					if _, err := tx.ExecContext(ctx, `INSERT INTO pg_official_asset_details
 						(granule_key,filename,url_prefix_id,url_suffix,size,etag,media_type)
-						VALUES(?,?,?,?,?,?,?)`, granuleKey, asset.Name, prefixID, suffix,
+						VALUES(?,?,?,?,?,?,?)`, granuleKey, asset.Name, prefixID, suffixOverride,
 						asset.Size, asset.ETag, asset.MediaType); err != nil {
 						return err
 					}

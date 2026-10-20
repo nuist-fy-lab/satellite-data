@@ -40,7 +40,11 @@ def quote(value):
 
 def psql(argv, statement, stdin=None):
     command = [argv.psql, '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-h',
-               argv.socket, '-d', argv.database, '-c', statement]
+               argv.socket, '-d', argv.database]
+    if stdin is None:
+        command += ['-c', statement]
+    else:
+        command += ['-f', '-']
     process = subprocess.run(command, input=stdin, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
     if process.returncode:
@@ -68,31 +72,33 @@ def copy_table(argv, sqlite, source_name, target_name):
         raise RuntimeError('source table has no columns: ' + source_name)
     statement = 'COPY ' + target + '(' + ','.join(map(quote, columns)) + ') FROM STDIN'
     cursor = sqlite.execute('SELECT ' + ','.join(map(quote, columns)) + ' FROM ' + table)
+    # One COPY session per table, rather than launching psql once per 5,000
+    # rows. SQLite is still read in bounded batches; no table-sized buffer.
+    process = subprocess.Popen(
+        [argv.psql, '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-h',
+         argv.socket, '-d', argv.database, '-c', statement],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     count = 0
-    while True:
-        batch = cursor.fetchmany(5000)
-        if not batch:
-            break
-        process = subprocess.Popen(
-            [argv.psql, '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-h',
-             argv.socket, '-d', argv.database, '-c', statement],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        try:
+    try:
+        while True:
+            batch = cursor.fetchmany(5000)
+            if not batch:
+                break
             for record in batch:
                 line = '\t'.join(copy_escape(value) for value in record) + '\n'
                 process.stdin.write(line.encode('utf-8'))
-            process.stdin.close()
-            process.stdin = None
-            stderr = process.communicate()[1]
-            if process.returncode:
-                raise RuntimeError('COPY failed: ' + stderr.decode('utf-8', 'replace')[-800:])
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait()
-        count += len(batch)
-        if count % 100000 == 0:
-            print('COPY_PROGRESS', source_name, count, flush=True)
+            count += len(batch)
+            if count % 100000 == 0:
+                print('COPY_PROGRESS', source_name, count, flush=True)
+        process.stdin.close()
+        process.stdin = None
+        stderr = process.communicate()[1]
+        if process.returncode:
+            raise RuntimeError('COPY failed: ' + stderr.decode('utf-8', 'replace')[-800:])
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
     return count
 
 
@@ -137,6 +143,91 @@ def copy_source_table(argv, sqlite, name, destination):
           round(time.monotonic() - started, 2), flush=True)
 
 
+def sql_literal(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def official_days(argv):
+    # Hex-encoded names preserve punctuation without depending on psql's
+    # delimiter or the output encoding of a particular terminal.
+    output = psql(argv, """
+SELECT encode(convert_to(product_key,'UTF8'),'hex'),day
+FROM (
+ SELECT product_key,left(slot_ts,10) AS day FROM migration_official_assets
+ UNION
+ SELECT product_key,left(slot_ts,10) AS day FROM migration_official_slots
+) days ORDER BY 1,2;
+""")
+    return [(bytes.fromhex(encoded).decode('utf8'), day)
+            for encoded, day in (line.split('|', 1) for line in output.splitlines())]
+
+
+def prepare_normalization(argv):
+    # Stage tables are unlogged, whereas the normalized target tables remain
+    # durable. Only temporary lookup indexes are built over the stage data.
+    psql(argv, """
+ALTER TABLE pg_official_asset_details ALTER COLUMN url_suffix DROP NOT NULL;
+CREATE OR REPLACE VIEW official_assets AS
+ SELECT k.product_key,k.slot_ts,k.granule_id,a.filename,
+        COALESCE(p.prefix,'') || COALESCE(a.url_suffix,a.filename) AS url,
+        a.size,a.etag,a.media_type
+ FROM pg_official_asset_details a
+ JOIN pg_official_granule_keys k ON k.id=a.granule_key
+ LEFT JOIN pg_official_url_prefixes p ON p.id=a.url_prefix_id;
+CREATE TABLE IF NOT EXISTS migration_normalized_days(
+ product_key TEXT NOT NULL,day TEXT NOT NULL,
+ PRIMARY KEY(product_key,day));
+CREATE INDEX IF NOT EXISTS migration_official_assets_day_idx
+ ON migration_official_assets(product_key,(left(slot_ts,10)));
+CREATE INDEX IF NOT EXISTS migration_official_slots_day_idx
+ ON migration_official_slots(product_key,(left(slot_ts,10)));
+ANALYZE migration_official_assets;
+ANALYZE migration_official_slots;
+""")
+
+
+def normalization_sql(product, day):
+    product, day = sql_literal(product), sql_literal(day)
+    where = "product_key=" + product + " AND left(slot_ts,10)=" + day
+    # All four insertions plus the progress marker commit together. One
+    # interrupted day is therefore restartable without partial results.
+    return """
+INSERT INTO pg_official_granule_keys(product_key,slot_ts,granule_id)
+SELECT product_key,slot_ts,granule_id FROM (
+  SELECT product_key,slot_ts,granule_id FROM migration_official_slots WHERE {where}
+  UNION
+  SELECT product_key,slot_ts,granule_id FROM migration_official_assets WHERE {where}
+) granules ON CONFLICT DO NOTHING;
+INSERT INTO pg_official_slot_details(granule_key,asset_count,total_size,representative_filename,refreshed_at)
+SELECT k.id,s.asset_count,s.total_size,s.representative_filename,s.refreshed_at
+FROM migration_official_slots s
+JOIN pg_official_granule_keys k USING(product_key,slot_ts,granule_id)
+WHERE s.product_key={product} AND left(s.slot_ts,10)={day}
+ON CONFLICT(granule_key) DO NOTHING;
+INSERT INTO pg_official_url_prefixes(prefix)
+SELECT DISTINCT CASE WHEN strpos(reverse(url),'/')>0
+  THEN left(url,length(url)-strpos(reverse(url),'/')+1) ELSE '' END
+FROM migration_official_assets WHERE {where}
+ON CONFLICT(prefix) DO NOTHING;
+INSERT INTO pg_official_asset_details(granule_key,filename,url_prefix_id,url_suffix,size,etag,media_type)
+SELECT k.id,a.filename,p.id,
+       CASE WHEN suffix.suffix=a.filename THEN NULL ELSE suffix.suffix END,
+       a.size,a.etag,a.media_type
+FROM migration_official_assets a
+JOIN pg_official_granule_keys k USING(product_key,slot_ts,granule_id)
+JOIN pg_official_url_prefixes p ON p.prefix =
+ CASE WHEN strpos(reverse(a.url),'/')>0
+  THEN left(a.url,length(a.url)-strpos(reverse(a.url),'/')+1) ELSE '' END
+CROSS JOIN LATERAL (
+ SELECT substring(a.url FROM length(p.prefix)+1) AS suffix
+) suffix
+WHERE a.product_key={product} AND left(a.slot_ts,10)={day}
+ON CONFLICT(granule_key,filename) DO NOTHING;
+INSERT INTO migration_normalized_days(product_key,day) VALUES({product},{day})
+ON CONFLICT DO NOTHING;
+""".format(where=where, product=product, day=day)
+
+
 def normalize_assets(argv):
     for name in ('official_assets', 'official_slots'):
         if not psql(argv, "SELECT source_rows FROM satellite_migration_log WHERE source_table='" + name + "'"):
@@ -144,45 +235,23 @@ def normalize_assets(argv):
     if psql(argv, "SELECT source_rows FROM satellite_migration_log WHERE source_table='normalized_assets'"):
         print('NORMALIZATION_PREVIOUSLY_COMPLETED', flush=True)
         return
-    print('NORMALIZING_FULL_GRANULE_IDENTITIES', flush=True)
-    psql(argv, """
-INSERT INTO pg_official_granule_keys(product_key,slot_ts,granule_id)
-SELECT product_key,slot_ts,granule_id FROM (
- SELECT product_key,slot_ts,granule_id FROM migration_official_slots
- UNION
- SELECT product_key,slot_ts,granule_id FROM migration_official_assets
-) AS source_keys
-ON CONFLICT DO NOTHING;
-""")
-    print('NORMALIZING_SLOT_DETAILS', flush=True)
-    psql(argv, """
-INSERT INTO pg_official_slot_details(granule_key,asset_count,total_size,representative_filename,refreshed_at)
-SELECT k.id,s.asset_count,s.total_size,s.representative_filename,s.refreshed_at
-FROM migration_official_slots s
-JOIN pg_official_granule_keys k USING(product_key,slot_ts,granule_id)
-ON CONFLICT(granule_key) DO NOTHING;
-""")
-    print('NORMALIZING_URL_DICTIONARY', flush=True)
-    psql(argv, """
-INSERT INTO pg_official_url_prefixes(prefix)
-SELECT DISTINCT CASE WHEN strpos(reverse(url),'/')>0
-  THEN left(url,length(url)-strpos(reverse(url),'/')+1) ELSE '' END
-FROM migration_official_assets
-ON CONFLICT(prefix) DO NOTHING;
-""")
-    print('NORMALIZING_FILE_ASSETS', flush=True)
-    psql(argv, """
-INSERT INTO pg_official_asset_details(granule_key,filename,url_prefix_id,url_suffix,size,etag,media_type)
-SELECT k.id,a.filename,p.id,
-       substring(a.url FROM length(p.prefix)+1),
-       a.size,a.etag,a.media_type
-FROM migration_official_assets a
-JOIN pg_official_granule_keys k USING(product_key,slot_ts,granule_id)
-JOIN pg_official_url_prefixes p ON p.prefix =
- CASE WHEN strpos(reverse(a.url),'/')>0
-  THEN left(a.url,length(a.url)-strpos(reverse(a.url),'/')+1) ELSE '' END
-ON CONFLICT(granule_key,filename) DO NOTHING;
-""")
+    print('PREPARING_BOUNDED_NORMALIZATION', flush=True)
+    prepare_normalization(argv)
+    days = official_days(argv)
+    finished = set(psql(argv, """
+SELECT encode(convert_to(product_key,'UTF8'),'hex'),day
+FROM migration_normalized_days;
+""").splitlines())
+    pending = [(product, day) for product, day in days
+               if product.encode('utf8').hex() + '|' + day not in finished]
+    print('NORMALIZATION_DAYS', len(days), 'PENDING', len(pending), flush=True)
+    for i in range(0, len(pending), 8):
+        chunk = pending[i:i+8]
+        statement = 'BEGIN;\n' + '\n'.join(
+            normalization_sql(product, day) for product, day in chunk) + '\nCOMMIT;\n'
+        psql(argv, '', statement.encode('utf8'))
+        if (i+len(chunk)) % 64 == 0 or i+len(chunk) == len(pending):
+            print('NORMALIZATION_PROGRESS', i+len(chunk), '/', len(pending), flush=True)
     # Counts are a first gate. Full row equality is separately enforced by
     # verify_assets before any staging table can be removed.
     original = int(psql(argv, 'SELECT count(*) FROM migration_official_assets'))
@@ -199,32 +268,61 @@ ON CONFLICT(granule_key,filename) DO NOTHING;
 def verify_assets(argv):
     if not psql(argv, "SELECT source_rows FROM satellite_migration_log WHERE source_table='normalized_assets'"):
         raise RuntimeError('no normalized data to compare')
-    print('VERIFYING_ALL_ASSET_FIELDS', flush=True)
-    # This is exact multiset equality over all eight original columns, not
-    # a sampled checksum, and reports any different or missing record.
-    mismatch = psql(argv, """
-SELECT (SELECT count(*) FROM (
- (SELECT product_key,slot_ts,granule_id,filename,url,size,etag,media_type
-  FROM migration_official_assets
-  EXCEPT ALL
-  SELECT product_key,slot_ts,granule_id,filename,url,size,etag,media_type FROM official_assets)
- UNION ALL
- (SELECT product_key,slot_ts,granule_id,filename,url,size,etag,media_type FROM official_assets
-  EXCEPT ALL
-  SELECT product_key,slot_ts,granule_id,filename,url,size,etag,media_type FROM migration_official_assets)
- ) diff) + (SELECT count(*) FROM (
- (SELECT product_key,slot_ts,granule_id,asset_count,total_size,representative_filename,refreshed_at FROM migration_official_slots
-  EXCEPT ALL
-  SELECT product_key,slot_ts,granule_id,asset_count,total_size,representative_filename,refreshed_at FROM official_slots)
- UNION ALL
- (SELECT product_key,slot_ts,granule_id,asset_count,total_size,representative_filename,refreshed_at FROM official_slots
-  EXCEPT ALL
-  SELECT product_key,slot_ts,granule_id,asset_count,total_size,representative_filename,refreshed_at FROM migration_official_slots)
- ) diff);
+    psql(argv, """
+CREATE TABLE IF NOT EXISTS migration_verified_days (
+ product_key TEXT NOT NULL,day TEXT NOT NULL,PRIMARY KEY(product_key,day));
+ANALYZE pg_official_granule_keys;
+ANALYZE pg_official_asset_details;
 """)
-    if int(mismatch):
-        raise RuntimeError('full field-by-field official index reconciliation failed; mismatches=' + mismatch)
-    print('EXACT_INDEX_RECONCILIATION_OK', flush=True)
+    rows = psql(argv, """
+SELECT encode(convert_to(product_key,'UTF8'),'hex'),day
+FROM migration_normalized_days ORDER BY 1,2;
+""").splitlines()
+    checked = set(psql(argv, """
+SELECT encode(convert_to(product_key,'UTF8'),'hex'),day
+FROM migration_verified_days;
+""").splitlines())
+    pending = [line for line in rows if line not in checked]
+    print('RECONCILIATION_DAYS', len(rows), 'PENDING', len(pending), flush=True)
+    for i, line in enumerate(pending, 1):
+        encoded, day = line.split('|', 1)
+        product = bytes.fromhex(encoded).decode('utf8')
+        statement = reconciliation_sql(product, day)
+        result = psql(argv, statement)
+        if result.strip() != '1':
+            raise RuntimeError('complete field-level reconciliation failed for ' +
+                               repr(product) + ' on ' + day)
+        if i % 64 == 0 or i == len(pending):
+            print('RECONCILIATION_PROGRESS', i, '/', len(pending), flush=True)
+    if int(psql(argv, 'SELECT count(*) FROM migration_verified_days')) != len(rows):
+        raise RuntimeError('missing product/day verification checkpoints')
+    print('EXACT_INDEX_RECONCILIATION_OK', len(rows), 'DAYS', flush=True)
+
+
+def reconciliation_sql(product, day):
+    product, day = sql_literal(product), sql_literal(day)
+    asset_fields = 'product_key,slot_ts,granule_id,filename,url,size,etag,media_type'
+    slot_fields = 'product_key,slot_ts,granule_id,asset_count,total_size,representative_filename,refreshed_at'
+    where = 'product_key=' + product + ' AND left(slot_ts,10)=' + day
+    source_assets = 'SELECT ' + asset_fields + ' FROM migration_official_assets WHERE ' + where
+    target_assets = 'SELECT ' + asset_fields + ' FROM official_assets WHERE ' + where
+    source_slots = 'SELECT ' + slot_fields + ' FROM migration_official_slots WHERE ' + where
+    target_slots = 'SELECT ' + slot_fields + ' FROM official_slots WHERE ' + where
+    return """
+WITH asset_missing AS ({source_assets} EXCEPT ALL {target_assets}),
+     asset_extra   AS ({target_assets} EXCEPT ALL {source_assets}),
+     slot_missing  AS ({source_slots} EXCEPT ALL {target_slots}),
+     slot_extra    AS ({target_slots} EXCEPT ALL {source_slots})
+INSERT INTO migration_verified_days(product_key,day)
+SELECT {product},{day} WHERE
+  NOT EXISTS (SELECT 1 FROM asset_missing)
+  AND NOT EXISTS (SELECT 1 FROM asset_extra)
+  AND NOT EXISTS (SELECT 1 FROM slot_missing)
+  AND NOT EXISTS (SELECT 1 FROM slot_extra)
+ON CONFLICT DO NOTHING RETURNING 1;
+""".format(source_assets=source_assets, target_assets=target_assets,
+           source_slots=source_slots, target_slots=target_slots,
+           product=product, day=day)
 
 
 def main():
