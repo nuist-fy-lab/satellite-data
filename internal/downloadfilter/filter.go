@@ -100,8 +100,9 @@ func ForProduct(source, collection string) *Profile {
 // Selection is optional; an empty selection retains the original full-range behavior.
 // Times are UTC scan-start minutes, not the time at which a download begins.
 type Selection struct {
-	Band  int      `json:"band,omitempty"`
-	Times []string `json:"times,omitempty"`
+	Band   int                 `json:"band,omitempty"`
+	Times  []string            `json:"times,omitempty"`
+	Scenes map[string][]string `json:"scenes,omitempty"`
 }
 
 func (s Selection) Normalize(source, collection string) (Selection, error) {
@@ -113,6 +114,38 @@ func (s Selection) Normalize(source, collection string) (Selection, error) {
 		if profile == nil || profile.bandRE[s.Band] == nil {
 			return Selection{}, errors.New("band not supported for this product")
 		}
+	}
+	if len(s.Scenes) > 0 {
+		if len(s.Times) > 0 {
+			return Selection{}, errors.New("use per-day scenes or recurring UTC times, not both")
+		}
+		if len(s.Scenes) > 5000 {
+			return Selection{}, errors.New("scene manifest exceeds 5000 UTC days")
+		}
+		normalized := make(map[string][]string, len(s.Scenes))
+		for day, times := range s.Scenes {
+			parsed, err := time.Parse(time.DateOnly, day)
+			if err != nil || parsed.Format(time.DateOnly) != day || len(times) == 0 {
+				return Selection{}, fmt.Errorf("invalid or empty scene date %q", day)
+			}
+			if len(times) > 288 {
+				return Selection{}, fmt.Errorf("too many scene times on %s", day)
+			}
+			seen := make(map[string]bool, len(times))
+			for _, value := range times {
+				t, err := time.Parse("15:04", value)
+				if err != nil || t.Format("15:04") != value {
+					return Selection{}, fmt.Errorf("invalid scene time %q on %s", value, day)
+				}
+				seen[value] = true
+			}
+			normalized[day] = make([]string, 0, len(seen))
+			for value := range seen {
+				normalized[day] = append(normalized[day], value)
+			}
+			sort.Strings(normalized[day])
+		}
+		s.Scenes = normalized
 	}
 	seen := make(map[string]bool, len(s.Times))
 	for _, value := range s.Times {
@@ -130,6 +163,34 @@ func (s Selection) Normalize(source, collection string) (Selection, error) {
 		sort.Strings(s.Times)
 	}
 	return s, nil
+}
+
+// TimesForDay preserves recurring selection for ordinary requests, and
+// selects only explicitly named scenes for research data manifests.
+func (s Selection) TimesForDay(day string) ([]string, bool) {
+	if len(s.Scenes) == 0 {
+		return s.Times, true
+	}
+	times, ok := s.Scenes[day]
+	return times, ok
+}
+
+// NextSceneDay skips years of unselected observations without remote queries.
+func (s Selection) NextSceneDay(cursor, end time.Time) (time.Time, bool) {
+	if len(s.Scenes) == 0 {
+		return cursor, cursor.Before(end)
+	}
+	var next time.Time
+	for day := range s.Scenes {
+		at, err := time.Parse(time.DateOnly, day)
+		if err != nil || at.Before(cursor.UTC().Truncate(24*time.Hour)) || !at.Before(end) {
+			continue
+		}
+		if next.IsZero() || at.Before(next) {
+			next = at
+		}
+	}
+	return next, !next.IsZero()
 }
 
 func (s Selection) MatchesAsset(source, collection, filename string) bool {

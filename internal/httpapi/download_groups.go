@@ -23,6 +23,7 @@ func (s *Server) createDownloadGroup(w http.ResponseWriter, r *http.Request) {
 		End      string                     `json:"end"`
 		Band     int                        `json:"band"`
 		Times    []string                   `json:"times"`
+		Scenes   map[string][]string        `json:"scenes"`
 		Inputs   map[string]json.RawMessage `json:"inputs"`
 	}
 	if err := decodeRequestJSON(w, r, &req); err != nil {
@@ -62,7 +63,7 @@ func (s *Server) createDownloadGroup(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("unsupported source "+source))
 			return
 		}
-		selection, err := (downloadfilter.Selection{Band: req.Band, Times: req.Times}).Normalize(source, key)
+		selection, err := (downloadfilter.Selection{Band: req.Band, Times: req.Times, Scenes: req.Scenes}).Normalize(source, key)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -83,14 +84,10 @@ func (s *Server) createDownloadGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if created {
-		for _, spec := range specs {
-			if spec.Source != "era5" {
-				// Catalogue indexing never blocks persistent order scheduling.
-				_ = s.store.EnqueueRange(r.Context(), spec.Collection, start, end, 200)
-			}
-		}
-	}
+	// Order discovery is already scheduled by downloadcoord. Previously this
+	// synchronous indexing step held a committed response behind a busy
+	// SQLite writer for >30 seconds, leading reverse proxies to return 502
+	// even though the order was safely persisted.
 	writeJSON(w, http.StatusAccepted, map[string]any{"group": group, "created": created})
 }
 

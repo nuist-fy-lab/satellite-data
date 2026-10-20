@@ -41,6 +41,7 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 	hourly := set.Bool("hourly", false, "select every UTC hour")
 	jsonOutput := set.Bool("json", false, "print JSON")
 	file := set.String("inputs-file", "", "on-demand selection inputs JSON; dates remain centre-owned")
+	scenesFile := set.String("scenes-file", "", "JSON map of UTC date to selected HH:MM times for sparse scene downloads")
 	area := set.String("area", "", "north,west,south,east (on-demand products)")
 	format := set.String("data-format", "", "on-demand data format")
 	var times repeatedTimes
@@ -104,12 +105,28 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 	if *hourly && len(times) > 0 {
 		return errors.New("use --hourly or --time, not both")
 	}
+	var scenes map[string][]string
+	if *scenesFile != "" {
+		if *hourly || len(times) > 0 {
+			return errors.New("use --scenes-file or --time/--hourly")
+		}
+		raw, err := os.ReadFile(*scenesFile)
+		if err != nil || len(raw) > 1<<20 || len(raw) == 0 || json.Unmarshal(raw, &scenes) != nil || len(scenes) == 0 {
+			return errors.New("scenes file must be a nonempty UTC-day map in JSON (max 1 MiB)")
+		}
+		for day := range scenes {
+			at, err := time.Parse(time.DateOnly, day)
+			if err != nil || at.Format(time.DateOnly) != day || at.Before(first) || !at.Before(last) {
+				return fmt.Errorf("scene date %q lies outside the requested UTC interval", day)
+			}
+		}
+	}
 	if *hourly {
 		for hour := 0; hour < 24; hour++ {
 			times = append(times, fmt.Sprintf("%02d:00", hour))
 		}
 	}
-	selection, err := (downloadfilter.Selection{Band: *band, Times: times}).Normalize(sourceID, key)
+	selection, err := (downloadfilter.Selection{Band: *band, Times: times, Scenes: scenes}).Normalize(sourceID, key)
 	if err != nil {
 		return err
 	}
@@ -181,7 +198,7 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 		}
 		if err := c.post("/api/v1/downloads/batch", map[string]any{
 			"products": keys, "start": startValue, "end": endValue,
-			"band": *band, "times": times, "inputs": inputs,
+			"band": *band, "times": selection.Times, "scenes": selection.Scenes, "inputs": inputs,
 		}, &response); err != nil {
 			return err
 		}
@@ -203,7 +220,7 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 	}
 	if err := c.post("/api/v1/downloads", map[string]any{
 		"source": sourceID, "collection": key, "start": startValue, "end": endValue,
-		"band": selection.Band, "times": selection.Times, "inputs": inputs,
+		"band": selection.Band, "times": selection.Times, "scenes": selection.Scenes, "inputs": inputs,
 	}, &payload); err != nil {
 		return err
 	}

@@ -108,15 +108,19 @@ func (s *Store) autoQueueUnknownCalendarYear(ctx context.Context, product string
 		return 0, nil
 	}
 	stamp := now.UTC().Format(time.RFC3339Nano)
-	result, err := s.writer.ExecContext(ctx, `
+	query := `
 		WITH RECURSIVE dates(day) AS (
 		 SELECT ? UNION ALL SELECT date(day,'+1 day') FROM dates WHERE date(day,'+1 day') < ?
 		)
-		INSERT OR IGNORE INTO official_work(product_key,day,state,priority,requested_at,updated_at)
+		INSERT INTO official_work(product_key,day,state,priority,requested_at,updated_at)
 		SELECT ?,day,'pending',-20,?,? FROM dates
 		WHERE NOT EXISTS(SELECT 1 FROM official_days d WHERE d.product_key=? AND d.day=dates.day)
 		  AND NOT EXISTS(SELECT 1 FROM official_work w WHERE w.product_key=? AND w.day=dates.day)
-		LIMIT ?`,
+		LIMIT ? ON CONFLICT DO NOTHING`
+	if s.postgres {
+		query = strings.ReplaceAll(query, "date(day,'+1 day')", "((day::date + 1)::text)")
+	}
+	result, err := s.writer.ExecContext(ctx, query,
 		start.Format(time.DateOnly), end.Format(time.DateOnly), product, stamp, stamp, product, product, limit)
 	if err != nil {
 		return 0, err

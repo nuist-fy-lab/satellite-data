@@ -1,0 +1,78 @@
+package state
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
+	"github.com/nuist-fy-lab/satellite-data/internal/model"
+)
+
+func TestPostgresCompactStateRoundTrip(t *testing.T) {
+	dsn := os.Getenv("SATELLITE_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("a disposable PostgreSQL instance is required")
+	}
+	t.Setenv("SATELLITED_POSTGRES_DSN", dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	s, err := Open(filepath.Join(t.TempDir(), "unused.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if !s.postgres {
+		t.Fatal("expected PostgreSQL, not SQLite")
+	}
+	product := model.Product{ProductKey: "modis:Ctest", SourceID: "modis", DataType: "MYD021KM", Cadence: "5m"}
+	if err := s.UpsertProducts(ctx, "modis", []model.Product{product}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2006, 7, 23, 0, 0, 0, 0, time.UTC)
+	assets := []model.Asset{
+		{ID: "1", Name: "one.hdf", URL: "https://test.example.org/a/b/one.hdf?name=1", Size: 1099511627776},
+		{ID: "2", Name: "two.hdf", URL: "https://test.example.org/a/b/two.hdf", Size: 4},
+		{ID: "3", Name: "three.hdf", URL: "not-a-url", Size: 0},
+	}
+	granule := model.Granule{ID: "g1", SourceID: "modis", CollectionID: product.ProductKey,
+		Start: start.Add(21*time.Hour + 45*time.Minute), Assets: assets}
+	if err := s.SaveOfficialBatch(ctx, WorkBatch{Product: product.ProductKey,
+		Days: []string{"2006-07-23"}}, []model.Granule{granule}); err != nil {
+		t.Fatal(err)
+	}
+	for _, asset := range assets {
+		var url string
+		var size int64
+		if err := s.db.QueryRowContext(ctx, `SELECT url,size FROM official_assets WHERE filename=?`,
+			asset.Name).Scan(&url, &size); err != nil {
+			t.Fatal(err)
+		}
+		if url != asset.URL || size != asset.Size {
+			t.Fatalf("asset was altered during normalization: %q %d", url, size)
+		}
+	}
+	group, created, err := s.EnqueueDownloadGroup(ctx, "researcher", start, start.AddDate(1, 0, 0),
+		[]GroupProduct{{Source: "modis", Provider: "modis", Collection: product.ProductKey,
+			Selection: downloadfilter.Selection{Scenes: map[string][]string{"2006-07-23": {"21:45"}}}}})
+	if err != nil || !created || group.Products != 1 {
+		t.Fatalf("first group %+v created=%v err=%v", group, created, err)
+	}
+	group2, created, err := s.EnqueueDownloadGroup(ctx, "researcher", start, start.AddDate(1, 0, 0),
+		[]GroupProduct{{Source: "modis", Provider: "modis", Collection: product.ProductKey,
+			Selection: downloadfilter.Selection{Scenes: map[string][]string{"2006-07-23": {"21:45"}}}}})
+	if err != nil || created || group2.ID != group.ID {
+		t.Fatalf("idempotent group %+v created=%v err=%v", group2, created, err)
+	}
+	if err := s.SaveOfficialBatch(ctx, WorkBatch{Product: product.ProductKey,
+		Days: []string{"2006-07-23"}}, []model.Granule{granule}); err != nil {
+		t.Fatal(err)
+	}
+	var indexed int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM official_assets WHERE product_key=?`,
+		product.ProductKey).Scan(&indexed); err != nil || indexed != len(assets) {
+		t.Fatalf("repeated index refresh lost or duplicated assets: %d %v", indexed, err)
+	}
+}

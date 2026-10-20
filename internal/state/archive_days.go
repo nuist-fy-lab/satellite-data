@@ -111,8 +111,8 @@ func (s *Store) reconcileGOESArchiveDay(ctx context.Context, day ArchiveDay) (in
 	queued := 0
 	if missing && (refreshed == "" || now.Sub(refreshedAt) >= 24*time.Hour) {
 		// Never reset a running lookup or its failure backoff on each scan.
-		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO official_work(product_key,day,state,priority,requested_at,updated_at)
-			VALUES(?,?,'pending',-5,?,?)`, day.Product, day.Day, stamp, stamp)
+		result, err := tx.ExecContext(ctx, `INSERT INTO official_work(product_key,day,state,priority,requested_at,updated_at)
+			VALUES(?,?,'pending',-5,?,?) ON CONFLICT DO NOTHING`, day.Product, day.Day, stamp, stamp)
 		if err != nil {
 			return 0, 0, err
 		}

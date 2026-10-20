@@ -341,6 +341,7 @@ func usage() {
   satellite download create --source goes18 --collection goes18:ABI-L1b-RadF --start 2026-09-22 --end 2026-09-23 [--json]
   satellite download submit --source goes18 --collection goes18:ABI-L1b-RadF --start 2023-06-01 --end 2023-06-30 --band 6 --hourly [--json]
   satellite download submit --product SOURCE:PRODUCT --product SOURCE:OTHER --day YYYY-MM-DD [--json]
+  satellite download submit --product modis:COLLECTION --product modis:OTHER --start YYYY-MM-DD --end YYYY-MM-DD --scenes-file scenes.json [--json]
   satellite download batch-status --id 1 [--json]
   satellite download submit --product era5:reanalysis-era5-single-levels --start 2024-01-01 --end 2024-01-02 --variable 2m_temperature --area 32.25,-118.75,32,-118.5 [--json]
   satellite download list [--limit 50] [--json]

@@ -9,6 +9,33 @@ permissions:
   contents: read
 
 jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: satellite_test
+          POSTGRES_PASSWORD: ci-disposable-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d satellite_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: false
+      - name: Verify lossless PostgreSQL indexing and idempotent batch submission
+        env:
+          SATELLITE_TEST_POSTGRES_DSN: "host=127.0.0.1 port=5432 user=postgres password=ci-disposable-password dbname=satellite_test sslmode=disable"
+        run: go test ./internal/state -run '^TestPostgresCompactStateRoundTrip$' -count=1 -v
+      - name: Check migration tool parses on Python 3.6
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -m py_compile deploy/migrate-satellite-state.py
   test:
     runs-on: ubuntu-latest
     steps:
@@ -54,7 +81,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, postgres]
     permissions:
       contents: write
     concurrency:
