@@ -35,7 +35,37 @@ jobs:
           SATELLITE_TEST_POSTGRES_DSN: "host=127.0.0.1 port=5432 user=postgres password=ci-disposable-password dbname=satellite_test sslmode=disable"
         run: go test ./internal/state -run '^TestPostgresCompactStateRoundTrip$' -count=1 -v
       - name: Check migration tool parses on Python 3.6
-        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -m py_compile deploy/migrate-satellite-state.py
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -c "import ast; ast.parse(open('deploy/migrate-satellite-state.py').read())"
+      - name: Verify complete SQLite to PostgreSQL import, normalization and reconciliation
+        env:
+          PGUSER: postgres
+          PGPASSWORD: ci-disposable-password
+        run: |
+          createdb -h 127.0.0.1 satellite_migration_test
+          SATELLITED_POSTGRES_DSN="host=127.0.0.1 port=5432 user=postgres password=ci-disposable-password dbname=satellite_migration_test sslmode=disable" \
+            go run ./cmd/satellited -init-state-only
+          python3 - <<'PY'
+          import sqlite3
+          db = sqlite3.connect('/tmp/satellite-migration-fixture.sqlite3')
+          db.executescript("""
+          CREATE TABLE official_slots(product_key TEXT,slot_ts TEXT,granule_id TEXT,
+           asset_count INTEGER,total_size INTEGER,representative_filename TEXT,refreshed_at TEXT);
+          CREATE TABLE official_assets(product_key TEXT,slot_ts TEXT,granule_id TEXT,
+           filename TEXT,url TEXT,size INTEGER,etag TEXT,media_type TEXT);
+          """)
+          db.executemany("INSERT INTO official_slots VALUES (?,?,?,?,?,?,?)", [
+              ('modis:C1','2006-07-23T21:45:00Z','g1',2,1099511627782,'a.hdf','2026-10-20T01:00:00Z'),
+              ('modis:C1','2006-07-23T21:50:00Z','g2',0,0,'','2026-10-20T01:00:00Z')])
+          db.executemany("INSERT INTO official_assets VALUES (?,?,?,?,?,?,?,?)", [
+              ('modis:C1','2006-07-23T21:45:00Z','g1','a.hdf','https://cdn.example.org/same/a.hdf',1099511627776,'','hdf'),
+              ('modis:C1','2006-07-23T21:45:00Z','g1','b.hdf','https://cdn.example.org/same/b.hdf',6,'etag','hdf'),
+              ('modis:C1','2006-07-23T22:00:00Z','asset-only','测试.hdf','',0,'','')])
+          db.commit()
+          db.close()
+          PY
+          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage import
+          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize
+          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage verify
   test:
     runs-on: ubuntu-latest
     steps:

@@ -147,9 +147,11 @@ def normalize_assets(argv):
     print('NORMALIZING_FULL_GRANULE_IDENTITIES', flush=True)
     psql(argv, """
 INSERT INTO pg_official_granule_keys(product_key,slot_ts,granule_id)
-SELECT product_key,slot_ts,granule_id FROM migration_official_slots
-UNION
-SELECT product_key,slot_ts,granule_id FROM migration_official_assets
+SELECT product_key,slot_ts,granule_id FROM (
+ SELECT product_key,slot_ts,granule_id FROM migration_official_slots
+ UNION
+ SELECT product_key,slot_ts,granule_id FROM migration_official_assets
+) AS source_keys
 ON CONFLICT DO NOTHING;
 """)
     print('NORMALIZING_SLOT_DETAILS', flush=True)

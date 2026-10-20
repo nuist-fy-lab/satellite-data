@@ -1056,6 +1056,7 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	prefixIDs := map[string]int64{}
 	for _, day := range batch.Days {
 		if s.postgres {
 			// One delete cascades to every asset and detail. The parent has the
@@ -1093,11 +1094,17 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 				}
 				if s.postgres {
 					prefix, suffix := splitOfficialURL(asset.URL)
-					var prefixID int64
-					if err := tx.QueryRowContext(ctx, `INSERT INTO pg_official_url_prefixes(prefix)
-						VALUES(?) ON CONFLICT(prefix) DO UPDATE SET prefix=excluded.prefix
-						RETURNING id`, prefix).Scan(&prefixID); err != nil {
-						return err
+					prefixID, exists := prefixIDs[prefix]
+					if !exists {
+						err := tx.QueryRowContext(ctx, `INSERT INTO pg_official_url_prefixes(prefix)
+							VALUES(?) ON CONFLICT(prefix) DO NOTHING RETURNING id`, prefix).Scan(&prefixID)
+						if errors.Is(err, sql.ErrNoRows) {
+							err = tx.QueryRowContext(ctx, `SELECT id FROM pg_official_url_prefixes WHERE prefix=?`, prefix).Scan(&prefixID)
+						}
+						if err != nil {
+							return err
+						}
+						prefixIDs[prefix] = prefixID
 					}
 					if _, err := tx.ExecContext(ctx, `INSERT INTO pg_official_asset_details
 						(granule_key,filename,url_prefix_id,url_suffix,size,etag,media_type)
