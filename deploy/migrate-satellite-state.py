@@ -11,6 +11,7 @@ PostgreSQL auth uses an existing local Unix socket/peer identity. No password
 is accepted as a command-line argument.
 """
 import argparse
+import concurrent.futures
 import os
 import re
 import sqlite3
@@ -208,6 +209,7 @@ INSERT INTO pg_official_url_prefixes(prefix)
 SELECT DISTINCT CASE WHEN strpos(reverse(url),'/')>0
   THEN left(url,length(url)-strpos(reverse(url),'/')+1) ELSE '' END
 FROM migration_official_assets WHERE {where}
+ORDER BY 1
 ON CONFLICT(prefix) DO NOTHING;
 INSERT INTO pg_official_asset_details(granule_key,filename,url_prefix_id,url_suffix,size,etag,media_type)
 SELECT k.id,a.filename,p.id,
@@ -228,6 +230,54 @@ ON CONFLICT DO NOTHING;
 """.format(where=where, product=product, day=day)
 
 
+def normalize_day(argv, product, day):
+    # One product/day per transaction: independent workers share no granule
+    # identities. Checkpoint and all inserts commit atomically.
+    statement = ("BEGIN;\nSET LOCAL lock_timeout = '45s';\n" +
+                 normalization_sql(product, day) + "\nCOMMIT;\n")
+    psql(argv, '', statement.encode('utf8'))
+
+
+def normalize_parallel(argv, pending):
+    # Bound both database connections and the number of queued jobs. Ordered
+    # prefix insertion prevents lock-order inversions between unrelated days.
+    # Avoid rerunning a day after success: every successful transaction writes
+    # its own durable migration_normalized_days checkpoint.
+    workers = argv.workers
+    submitted, completed = 0, 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {}
+        it = iter(pending)
+        try:
+            while True:
+                while len(futures) < workers * 2:
+                    try:
+                        product, day = next(it)
+                    except StopIteration:
+                        break
+                    futures[executor.submit(normalize_day, argv, product, day)] = (product, day)
+                    submitted += 1
+                if not futures:
+                    break
+                finished, _ = concurrent.futures.wait(
+                    futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                for future in finished:
+                    product, day = futures.pop(future)
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        raise RuntimeError('normalization failed at ' +
+                                           repr(product) + ' ' + day + ': ' + str(exc))
+                    completed += 1
+                    if completed % 64 == 0 or completed == len(pending):
+                        print('PARALLEL_NORMALIZATION_PROGRESS', completed, '/',
+                              len(pending), 'workers', workers, flush=True)
+        except Exception:
+            for future in futures:
+                future.cancel()
+            raise
+
+
 def normalize_assets(argv):
     for name in ('official_assets', 'official_slots'):
         if not psql(argv, "SELECT source_rows FROM satellite_migration_log WHERE source_table='" + name + "'"):
@@ -245,13 +295,16 @@ FROM migration_normalized_days;
     pending = [(product, day) for product, day in days
                if product.encode('utf8').hex() + '|' + day not in finished]
     print('NORMALIZATION_DAYS', len(days), 'PENDING', len(pending), flush=True)
-    for i in range(0, len(pending), 8):
-        chunk = pending[i:i+8]
-        statement = 'BEGIN;\n' + '\n'.join(
-            normalization_sql(product, day) for product, day in chunk) + '\nCOMMIT;\n'
-        psql(argv, '', statement.encode('utf8'))
-        if (i+len(chunk)) % 64 == 0 or i+len(chunk) == len(pending):
-            print('NORMALIZATION_PROGRESS', i+len(chunk), '/', len(pending), flush=True)
+    if argv.workers > 1:
+        normalize_parallel(argv, pending)
+    else:
+        for i in range(0, len(pending), 8):
+            chunk = pending[i:i+8]
+            statement = 'BEGIN;\n' + '\n'.join(
+                normalization_sql(product, day) for product, day in chunk) + '\nCOMMIT;\n'
+            psql(argv, '', statement.encode('utf8'))
+            if (i+len(chunk)) % 64 == 0 or i+len(chunk) == len(pending):
+                print('NORMALIZATION_PROGRESS', i+len(chunk), '/', len(pending), flush=True)
     # Counts are a first gate. Full row equality is separately enforced by
     # verify_assets before any staging table can be removed.
     original = int(psql(argv, 'SELECT count(*) FROM migration_official_assets'))
@@ -332,7 +385,11 @@ def main():
     parser.add_argument('--socket', default='/var/run/postgresql')
     parser.add_argument('--psql', default=PSQL_DEFAULT)
     parser.add_argument('--stage', choices=('import', 'normalize', 'verify'), required=True)
+    parser.add_argument('--workers', type=int, default=1,
+                        help='parallel PostgreSQL normalization sessions (1-16)')
     args = parser.parse_args()
+    if args.workers < 1 or args.workers > 16:
+        raise SystemExit('--workers must be in the range 1..16')
     if not os.path.isfile(args.sqlite):
         raise SystemExit('SQLite source does not exist')
     if args.database in ('postgres', 'nsmc', 'nsmc_central', 'nsmc_web'):

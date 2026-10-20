@@ -63,18 +63,28 @@ jobs:
               ('modis:C1','2006-07-23T21:45:00Z','g1','c.hdf','https://cdn.example.org/same/wrong-file.hdf?token=a',1,'','hdf'),
               ('modis:C1','2006-07-23T22:00:00Z','asset-only','测试.hdf','',0,'',''),
               ('modis:管道|特殊','2006-07-24T00:00:00Z','g3','other.hdf','https://cdn.example.org/ü/other.hdf',5,'','hdf')])
+          # Multiple independent days share URL prefixes; concurrent
+          # transactions must not deadlock or lose any granule/file fields.
+          from datetime import datetime, timedelta
+          for day in range(8):
+              stamp = (datetime(2006,7,25)+timedelta(days=day)).strftime('%Y-%m-%d')+'T08:00:00Z'
+              db.execute("INSERT INTO official_slots VALUES (?,?,?,?,?,?,?)",
+                         ('concurrent:modis',stamp,'g'+str(day),1,11,'shared.hdf','2026-10-20T01:00:00Z'))
+              db.execute("INSERT INTO official_assets VALUES (?,?,?,?,?,?,?,?)",
+                         ('concurrent:modis',stamp,'g'+str(day),'shared.hdf',
+                          'https://cdn.example.org/same/shared.hdf',11,'','hdf'))
           db.commit()
           db.close()
           PY
           python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage import
-          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize
+          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize --workers 4
           python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage verify
           # Normalization and reconciliation must be restart-safe.
-          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize
+          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize --workers 4
           python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage verify
           # The two canonical URL suffixes are represented by SQL NULL.
-          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM pg_official_asset_details WHERE url_suffix IS NULL')" = "3"
-          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM migration_verified_days')" = "2"
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM pg_official_asset_details WHERE url_suffix IS NULL')" = "11"
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM migration_verified_days')" = "10"
   test:
     runs-on: ubuntu-latest
     steps:
