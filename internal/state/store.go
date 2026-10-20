@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS local_slots (
 );
 CREATE INDEX IF NOT EXISTS local_slots_day_idx ON local_slots(product_key,substr(slot_ts,1,10));
 CREATE INDEX IF NOT EXISTS local_slots_path_idx ON local_slots(path);
+CREATE INDEX IF NOT EXISTS local_slots_ok_product_idx ON local_slots(product_key) WHERE state='ok';
 CREATE INDEX IF NOT EXISTS local_slots_stale_size_errors_idx ON local_slots(product_key,slot_ts)
 WHERE detail='local size differs from official asset';
 
@@ -772,10 +773,13 @@ func (s *Store) Products(ctx context.Context, sourceID string) ([]model.Product,
 	query := `
 		SELECT p.product_key,p.source_id,p.official_id,p.satellite,p.instrument,p.level,p.data_type,p.area_type,p.display_name,
 		       p.resolution,p.cadence,p.version,p.access_tier,p.catalog_source,p.product_count,p.metadata_json,
-		       EXISTS(SELECT 1 FROM local_slots l WHERE l.product_key=p.product_key AND l.state='ok' LIMIT 1),
-		       (SELECT min(substr(slot_ts,1,10)) FROM local_slots l WHERE l.product_key=p.product_key AND l.state='ok'),
-		       (SELECT max(substr(slot_ts,1,10)) FROM local_slots l WHERE l.product_key=p.product_key AND l.state='ok')
-		FROM products p`
+		       COALESCE(l.covered,0),l.first_day,l.last_day
+		FROM products p LEFT JOIN (
+			SELECT product_key,1 AS covered,
+			       min(substr(slot_ts,1,10)) AS first_day,
+			       max(substr(slot_ts,1,10)) AS last_day
+			FROM local_slots WHERE state='ok' GROUP BY product_key
+		) l ON l.product_key=p.product_key`
 	args := []any{}
 	if sourceID != "" {
 		query += " WHERE p.source_id=?"
