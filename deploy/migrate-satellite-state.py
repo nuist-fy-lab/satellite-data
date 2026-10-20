@@ -320,7 +320,25 @@ def normalize_assets(argv):
         return
     print('PREPARING_BOUNDED_NORMALIZATION', flush=True)
     prepare_normalization(argv)
-    days = official_days(argv)
+    if argv.worklist:
+        weights = {}
+        with open(argv.worklist, encoding='utf8') as planned:
+            for entry in planned:
+                encoded, day, weight = entry.rstrip('\n').split('\t')
+                product = bytes.fromhex(encoded).decode('utf8')
+                key = (product, day)
+                if key in weights:
+                    raise RuntimeError('duplicate product/day in worklist: ' + repr(key))
+                weights[key] = int(weight)
+        # The worklist is a complete enumeration of both original SQLite
+        # relations made on Slurm compute. The result is validated by exact
+        # source/target row counts and a later EXCEPT ALL of every field.
+        # Bypass a 26-million-row PostgreSQL GROUP/UNION scan entirely.
+        days = list(weights)
+        print('PREPARED_SOURCE_DAYS', len(days), flush=True)
+    else:
+        # Fallback if no compute-generated worklist is supplied.
+        days = official_days(argv)
     finished = set(psql(argv, """
 SELECT encode(convert_to(product_key,'UTF8'),'hex'),day
 FROM migration_normalized_days;
@@ -328,13 +346,6 @@ FROM migration_normalized_days;
     pending = [(product, day) for product, day in days
                if product.encode('utf8').hex() + '|' + day not in finished]
     if argv.worklist:
-        weights = {}
-        with open(argv.worklist, encoding='utf8') as planned:
-            for entry in planned:
-                encoded, day, weight = entry.rstrip('\n').split('\t')
-                product = bytes.fromhex(encoded).decode('utf8')
-                weights[(product, day)] = int(weight)
-        # Scheduling hint only. Missing entries are retained, not discarded.
         pending.sort(key=lambda item: weights.get(item, 0), reverse=True)
         print('PREPARED_PARALLEL_WORKLIST', len(weights), flush=True)
     print('NORMALIZATION_DAYS', len(days), 'PENDING', len(pending), flush=True)
