@@ -116,22 +116,23 @@ def verify_manifest(args, product, day):
     return assets, slots, data
 
 
-def load_one(args, product, day):
-    assets, slots, data = verify_manifest(args, product, day)
-    # COPY bypasses expensive live indexes, keeping the checkpoint in the
-    # very same transaction for restart after crash/cancellation.
-    statement = r"""
-BEGIN;
-SET LOCAL lock_timeout='60s';
-\copy migration_bulk_assets FROM '{assets}' WITH (FORMAT text)
-\copy migration_bulk_slots FROM '{slots}' WITH (FORMAT text)
-INSERT INTO migration_bulk_loaded_days(product_key,day,asset_rows,slot_rows)
-VALUES({product},{day},{asset_rows},{slot_rows});
-COMMIT;
-""".format(assets=assets, slots=slots, product=lit(product), day=lit(day),
-           asset_rows=int(data['assets']['rows']),
-           slot_rows=int(data['slots']['rows']))
-    pg(args, statement, script=True)
+def load_chunk(args, chunk):
+    # Combine several independently verified COPY files in one transaction.
+    # Reduces PostgreSQL connection setup, WAL commit and metadata contention
+    # while preserving exactly one atomic checkpoint per source day.
+    statements = ["BEGIN;", "SET LOCAL lock_timeout='60s';"]
+    for product, day in chunk:
+        assets, slots, data = verify_manifest(args, product, day)
+        statements.append(r"\copy migration_bulk_assets FROM '{path}' WITH (FORMAT text)".format(path=assets))
+        statements.append(r"\copy migration_bulk_slots FROM '{path}' WITH (FORMAT text)".format(path=slots))
+        statements.append(
+            "INSERT INTO migration_bulk_loaded_days(product_key,day,asset_rows,slot_rows)"
+            " VALUES({product},{day},{assets},{slots});".format(
+                product=lit(product), day=lit(day),
+                assets=int(data['assets']['rows']),
+                slots=int(data['slots']['rows'])))
+    statements.append("COMMIT;")
+    pg(args, '\n'.join(statements), script=True)
 
 
 def load(args):
@@ -141,33 +142,36 @@ def load(args):
 FROM migration_bulk_loaded_days""").splitlines())
     pending = [(product, day) for product, day, _ in days
                if product.encode('utf8').hex() + '|' + day not in finished]
+    chunks = [pending[i:i + args.chunk_days]
+              for i in range(0, len(pending), args.chunk_days)]
     print('SHADOW_COPY_SOURCE_DAYS', len(days),
-          'PENDING', len(pending), 'WORKERS', args.workers, flush=True)
+          'PENDING', len(pending), 'WORKERS', args.workers,
+          'DAYS_PER_TRANSACTION', args.chunk_days, flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
         active = {}
-        it = iter(pending)
+        it = iter(chunks)
         completed = 0
         try:
             while True:
                 while len(active) < args.workers * 2:
                     try:
-                        product, day = next(it)
+                        chunk = next(it)
                     except StopIteration:
                         break
-                    active[pool.submit(load_one, args, product, day)] = (product, day)
+                    active[pool.submit(load_chunk, args, chunk)] = chunk
                 if not active:
                     break
                 done, _ = concurrent.futures.wait(
                     active, return_when=concurrent.futures.FIRST_COMPLETED)
                 for future in done:
-                    product, day = active.pop(future)
+                    chunk = active.pop(future)
                     try:
                         future.result()
                     except Exception as exc:
-                        raise RuntimeError('shadow COPY failed ' +
-                                           repr((product, day)) + ': ' + str(exc))
-                    completed += 1
-                    if completed % 100 == 0 or completed == len(pending):
+                        raise RuntimeError('shadow COPY batch failed ' +
+                                           repr(chunk[0]) + ': ' + str(exc))
+                    completed += len(chunk)
+                    if completed // 100 > (completed - len(chunk)) // 100 or completed == len(pending):
                         print('SHADOW_COPY_PROGRESS', completed, '/',
                               len(pending), flush=True)
         except Exception:
@@ -431,9 +435,13 @@ def main():
     parser.add_argument('--worklist', required=True)
     parser.add_argument('--prepared-dir', required=True)
     parser.add_argument('--workers', type=int, default=3)
+    parser.add_argument('--chunk-days', type=int, default=16,
+                        help='source day COPY files committed together (1-64)')
     args = parser.parse_args()
     if not 1 <= args.workers <= 8:
         raise SystemExit('workers must be between 1 and 8')
+    if not 1 <= args.chunk_days <= 64:
+        raise SystemExit('chunk-days must be between 1 and 64')
     if not os.path.isfile(args.sqlite):
         raise SystemExit('original SQLite source missing')
     stage = {'init':init,'load':load,'build':build,

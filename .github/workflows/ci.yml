@@ -96,7 +96,7 @@ jobs:
           PGUSER: postgres
           PGPASSWORD: ci-disposable-password
         run: |
-          export SHADOW="python3 deploy/migrate-satellite-bulk-shadow.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --worklist /tmp/satellite-migration-plan.tsv --prepared-dir /tmp/satellite-prepared-copy --workers 3"
+          export SHADOW="python3 deploy/migrate-satellite-bulk-shadow.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --worklist /tmp/satellite-migration-plan.tsv --prepared-dir /tmp/satellite-prepared-copy --workers 3 --chunk-days 4"
           $SHADOW --stage init
           $SHADOW --stage load
           # Repeat the load; committed per-day checkpoints must prevent duplicates.
