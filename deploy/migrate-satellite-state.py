@@ -12,6 +12,8 @@ is accepted as a command-line argument.
 """
 import argparse
 import concurrent.futures
+import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -263,11 +265,99 @@ ON CONFLICT DO NOTHING;
 """.format(where=where, product=product, day=day)
 
 
+def prepared_normalization_sql(argv, product, day):
+    """One atomic COPY-and-merge; no URL reverse/split on PostgreSQL."""
+    key = hashlib.sha256((product + '\x00' + day).encode('utf8')).hexdigest()
+    folder = os.path.join(argv.prepared_dir, key[:2])
+    base = os.path.join(folder, key)
+    files = (base + '.assets', base + '.slots')
+    with open(base + '.json', encoding='utf8') as handle:
+        manifest = json.load(handle)
+    original = os.stat(argv.sqlite)
+    if (manifest['product'] != product or manifest['day'] != day or
+            manifest['source']['sqlite_size'] != original.st_size or
+            manifest['source']['sqlite_mtime_ns'] != original.st_mtime_ns):
+        raise RuntimeError('prepared shard source/identity mismatch')
+    for name, path in zip(('assets', 'slots'), files):
+        info = manifest[name]
+        if info['bytes'] != os.path.getsize(path):
+            raise RuntimeError('prepared shard length mismatch: ' + name)
+        checksum = hashlib.sha256()
+        with open(path, 'rb') as handle:
+            for block in iter(lambda: handle.read(4 * 1024 * 1024), b''):
+                checksum.update(block)
+        if checksum.hexdigest() != info['sha256']:
+            raise RuntimeError('prepared shard SHA256 mismatch: ' + name)
+    # Filenames are derived from SHA256, and never interpolate any source
+    # field into the psql meta-command path.
+    for path in files:
+        if not re.fullmatch(r'[/a-zA-Z0-9_.-]+', path):
+            raise RuntimeError('unsafe prepared COPY path')
+    product, day = sql_literal(product), sql_literal(day)
+    return r"""
+BEGIN;
+SET LOCAL lock_timeout='45s';
+CREATE TEMP TABLE prepared_assets (
+ product_key TEXT,slot_ts TEXT,granule_id TEXT,filename TEXT,
+ url_prefix TEXT,url_suffix TEXT,size BIGINT,etag TEXT,media_type TEXT
+) ON COMMIT DROP;
+CREATE TEMP TABLE prepared_slots (
+ product_key TEXT,slot_ts TEXT,granule_id TEXT,
+ asset_count BIGINT,total_size BIGINT,representative_filename TEXT,refreshed_at TEXT
+) ON COMMIT DROP;
+\copy prepared_assets FROM '{assets}' WITH (FORMAT text)
+\copy prepared_slots FROM '{slots}' WITH (FORMAT text)
+DO $validation$
+BEGIN
+ IF (SELECT count(*) FROM prepared_assets) <> {asset_count}
+    OR (SELECT count(*) FROM prepared_slots) <> {slot_count}
+    OR EXISTS (SELECT 1 FROM prepared_assets
+               WHERE product_key IS DISTINCT FROM {product}
+                  OR substr(slot_ts,1,10) IS DISTINCT FROM {day})
+    OR EXISTS (SELECT 1 FROM prepared_slots
+               WHERE product_key IS DISTINCT FROM {product}
+                  OR substr(slot_ts,1,10) IS DISTINCT FROM {day})
+ THEN RAISE EXCEPTION 'prepared COPY row count or identity mismatch';
+ END IF;
+END
+$validation$;
+INSERT INTO pg_official_granule_keys(product_key,slot_ts,granule_id)
+SELECT product_key,slot_ts,granule_id FROM (
+ SELECT product_key,slot_ts,granule_id FROM prepared_assets
+ UNION SELECT product_key,slot_ts,granule_id FROM prepared_slots
+) granules ON CONFLICT DO NOTHING;
+INSERT INTO pg_official_slot_details(
+ granule_key,asset_count,total_size,representative_filename,refreshed_at)
+SELECT k.id,s.asset_count,s.total_size,s.representative_filename,s.refreshed_at
+FROM prepared_slots s
+JOIN pg_official_granule_keys k USING(product_key,slot_ts,granule_id)
+ON CONFLICT(granule_key) DO NOTHING;
+INSERT INTO pg_official_url_prefixes(prefix)
+SELECT DISTINCT url_prefix FROM prepared_assets ORDER BY 1
+ON CONFLICT(prefix) DO NOTHING;
+INSERT INTO pg_official_asset_details(
+ granule_key,filename,url_prefix_id,url_suffix,size,etag,media_type)
+SELECT k.id,a.filename,p.id,a.url_suffix,a.size,a.etag,a.media_type
+FROM prepared_assets a
+JOIN pg_official_granule_keys k USING(product_key,slot_ts,granule_id)
+JOIN pg_official_url_prefixes p ON p.prefix=a.url_prefix
+ON CONFLICT(granule_key,filename) DO NOTHING;
+INSERT INTO migration_normalized_days(product_key,day)
+VALUES({product},{day}) ON CONFLICT DO NOTHING;
+COMMIT;
+""".format(assets=files[0], slots=files[1],
+           asset_count=int(manifest['assets']['rows']),
+           slot_count=int(manifest['slots']['rows']), product=product, day=day)
+
+
 def normalize_day(argv, product, day):
     # One product/day per transaction: independent workers share no granule
     # identities. Checkpoint and all inserts commit atomically.
-    statement = ("BEGIN;\nSET LOCAL lock_timeout = '45s';\n" +
-                 normalization_sql(product, day) + "\nCOMMIT;\n")
+    if argv.prepared_dir:
+        statement = prepared_normalization_sql(argv, product, day)
+    else:
+        statement = ("BEGIN;\nSET LOCAL lock_timeout = '45s';\n" +
+                     normalization_sql(product, day) + "\nCOMMIT;\n")
     psql(argv, '', statement.encode('utf8'))
 
 
@@ -351,6 +441,12 @@ FROM migration_normalized_days;
     print('NORMALIZATION_DAYS', len(days), 'PENDING', len(pending), flush=True)
     if argv.workers > 1:
         normalize_parallel(argv, pending)
+    elif argv.prepared_dir:
+        for i, (product, day) in enumerate(pending, 1):
+            normalize_day(argv, product, day)
+            if i % 64 == 0 or i == len(pending):
+                print('PREPARED_NORMALIZATION_PROGRESS', i, '/', len(pending),
+                      flush=True)
     else:
         for i in range(0, len(pending), 8):
             chunk = pending[i:i+8]
@@ -443,9 +539,13 @@ def main():
                         help='parallel PostgreSQL normalization sessions (1-16)')
     parser.add_argument('--worklist',
                         help='optional computed product/day size hints; never filters records')
+    parser.add_argument('--prepared-dir',
+                        help='verified pre-split COPY shards produced on a compute node')
     args = parser.parse_args()
     if args.workers < 1 or args.workers > 16:
         raise SystemExit('--workers must be in the range 1..16')
+    if args.prepared_dir and not args.worklist:
+        raise SystemExit('--prepared-dir requires a complete --worklist')
     if not os.path.isfile(args.sqlite):
         raise SystemExit('SQLite source does not exist')
     if args.database in ('postgres', 'nsmc', 'nsmc_central', 'nsmc_web'):

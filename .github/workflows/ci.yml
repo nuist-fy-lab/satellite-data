@@ -35,7 +35,7 @@ jobs:
           SATELLITE_TEST_POSTGRES_DSN: "host=127.0.0.1 port=5432 user=postgres password=ci-disposable-password dbname=satellite_test sslmode=disable"
         run: go test ./internal/state -run '^TestPostgresCompactStateRoundTrip$' -count=1 -v
       - name: Check migration tool parses on Python 3.6
-        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -c "import ast; [ast.parse(open(p).read()) for p in ['deploy/migrate-satellite-state.py', 'deploy/plan-normalization.py']]"
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -c "import ast; [ast.parse(open(p).read()) for p in ['deploy/migrate-satellite-state.py', 'deploy/plan-normalization.py', 'deploy/prepare-satellite-copy.py']]"
       - name: Verify complete SQLite to PostgreSQL import, normalization and reconciliation
         env:
           PGUSER: postgres
@@ -79,7 +79,11 @@ jobs:
           python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage import
           python3 deploy/plan-normalization.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --output /tmp/satellite-migration-plan.tsv --workers 4
           test "$(wc -l </tmp/satellite-migration-plan.tsv)" = "10"
-          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize --workers 4 --worklist /tmp/satellite-migration-plan.tsv
+          python3 deploy/prepare-satellite-copy.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --worklist /tmp/satellite-migration-plan.tsv --output-dir /tmp/satellite-prepared-copy --workers 4
+          # Repeated preparation must reuse validated shards without changing data.
+          python3 deploy/prepare-satellite-copy.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --worklist /tmp/satellite-migration-plan.tsv --output-dir /tmp/satellite-prepared-copy --workers 4
+          test "$(find /tmp/satellite-prepared-copy -name '*.json' | wc -l)" = "10"
+          python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize --workers 4 --worklist /tmp/satellite-migration-plan.tsv --prepared-dir /tmp/satellite-prepared-copy
           python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage verify
           # Normalization and reconciliation must be restart-safe.
           python3 deploy/migrate-satellite-state.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --stage normalize --workers 4
