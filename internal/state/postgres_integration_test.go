@@ -32,6 +32,20 @@ func TestPostgresCompactStateRoundTrip(t *testing.T) {
 	if err := s.UpsertProducts(ctx, "modis", []model.Product{product}); err != nil {
 		t.Fatal(err)
 	}
+	products, err := s.Products(ctx, "modis")
+	if err != nil || len(products) != 1 || products[0].LocalCovered {
+		t.Fatalf("PostgreSQL product without local coverage: %+v, %v", products, err)
+	}
+	if _, err := s.writer.ExecContext(ctx, `INSERT INTO local_slots
+		(product_key,slot_ts,path,filename,size,mtime_ns,state,detail,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?)`, product.ProductKey, "2006-07-23T21:45:00Z",
+		"/tmp/pg-coverage-one.hdf", "one.hdf", 4, int64(1), "ok", "", "2026-10-20T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	products, err = s.Products(ctx, "modis")
+	if err != nil || len(products) != 1 || !products[0].LocalCovered {
+		t.Fatalf("PostgreSQL product with local coverage: %+v, %v", products, err)
+	}
 	start := time.Date(2006, 7, 23, 0, 0, 0, 0, time.UTC)
 	assets := []model.Asset{
 		{ID: "1", Name: "one.hdf", URL: "https://test.example.org/a/b/one.hdf?name=1", Size: 1099511627776},

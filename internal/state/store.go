@@ -772,7 +772,7 @@ func (s *Store) Products(ctx context.Context, sourceID string) ([]model.Product,
 	query := `
 		SELECT p.product_key,p.source_id,p.official_id,p.satellite,p.instrument,p.level,p.data_type,p.area_type,p.display_name,
 		       p.resolution,p.cadence,p.version,p.access_tier,p.catalog_source,p.product_count,p.metadata_json,
-		       EXISTS(SELECT 1 FROM local_slots l WHERE l.product_key=p.product_key AND l.state='ok' LIMIT 1),
+		       CASE WHEN EXISTS(SELECT 1 FROM local_slots l WHERE l.product_key=p.product_key AND l.state='ok' LIMIT 1) THEN 1 ELSE 0 END,
 		       (SELECT min(substr(slot_ts,1,10)) FROM local_slots l WHERE l.product_key=p.product_key AND l.state='ok'),
 		       (SELECT max(substr(slot_ts,1,10)) FROM local_slots l WHERE l.product_key=p.product_key AND l.state='ok')
 		FROM products p`
