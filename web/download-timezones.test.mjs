@@ -121,6 +121,52 @@ test('download history shows at most 50 requests and pages through older history
   assert.match(html, /id="download-pages"/);
 });
 
+test('multi-product orders use the NSMC expandable task queue without progress bars', () => {
+  const h = harness();
+  const child = {
+    id: 509, collection_id: 'modis:C1443535037-LAADS', state: 'retry_wait',
+    start: '2015-01-02T00:00:00Z', end: '2015-11-07T00:00:00Z',
+    assets_queued: 6, files_done: 2, files_failed: 0, files_waiting_auth: 0,
+    last_error: 'CMR MODIS search returned HTTP 502',
+  };
+  const group = {
+    id: 43, state: 'running', products: 1, assets_queued: 6, files_done: 2,
+    files_failed: 0, files_waiting_auth: 0, created_at: '2026-10-20T16:00:00Z',
+    downloads: [child],
+  };
+  h.context.renderDownloadBatches([group]);
+  const closed = h.element('#download-batches').innerHTML;
+  assert.match(closed, /download-queue-toggle/);
+  assert.match(closed, /aria-expanded="false"/);
+  assert.match(closed, /批量订单 #43 · 1 个产品/);
+  assert.match(closed, /执行中/);
+  assert.match(closed, /已发现 6 · 已完成 2/);
+  assert.match(closed, /CMR MODIS search returned HTTP 502/);
+  assert.doesNotMatch(closed, /<progress\b|download-progress|progress-bar/);
+  h.run('expandedDownloadBatches.add("batch-43")');
+  h.context.renderDownloadBatches([group]);
+  assert.match(h.element('#download-batches').innerHTML, /download-queue-card expanded/);
+  assert.match(h.element('#download-batches').innerHTML, /aria-expanded="true"/);
+});
+
+test('download request rows show precise sparse scene selections instead of all times', () => {
+  const h = harness({'satellite-data-download-zone': 'BJT'});
+  h.context.applyDownloadPage({downloads:[{
+    id: 408, collection_id: 'modis:C1379758607-LAADS', state: 'pending',
+    start: '2006-06-15T00:00:00Z', end: '2007-01-01T00:00:00Z',
+    selection: {band:0, scenes:{'2006-06-15':['18:45','18:50'], '2006-06-19':['13:25']}},
+    assets_queued: 0, files_done: 0, files_failed: 0, files_waiting_auth: 0,
+  }], page:1, pages:1, total:1});
+  const content = h.element('#download-requests').innerHTML;
+  assert.match(content, /2006-06-15 08:00 BJT/);
+  assert.match(content, /2 天 · 3 个指定时次/);
+  assert.match(content, /等待发现/);
+  assert.doesNotMatch(content, /全部时次|<progress\b/);
+  h.run('expandedDownloadRequests.add("request-408")');
+  h.context.renderDownloadRequests(h.run('state.downloads.requests'));
+  assert.match(h.element('#download-requests').innerHTML, /aria-expanded="true"/);
+});
+
 test('UTC inclusive end date remains a half-open UTC range', () => {
   const h = harness();
   assert.deepEqual(JSON.parse(JSON.stringify(h.context.downloadRange('2026-12-31', '2026-12-31'))), {
