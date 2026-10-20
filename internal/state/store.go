@@ -1085,8 +1085,11 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 			representative := ""
 			var granuleKey int64
 			if s.postgres {
+				// Official feeds may repeat the same granule within a page.
 				if err := tx.QueryRowContext(ctx, `INSERT INTO pg_official_granule_keys(product_key,slot_ts,granule_id)
-					VALUES(?,?,?) RETURNING id`, batch.Product, slot, granule.ID).Scan(&granuleKey); err != nil {
+					VALUES(?,?,?) ON CONFLICT(product_key,slot_ts,granule_id)
+					DO UPDATE SET product_key=excluded.product_key RETURNING id`,
+					batch.Product, slot, granule.ID).Scan(&granuleKey); err != nil {
 					return err
 				}
 			}
@@ -1116,7 +1119,11 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 					}
 					if _, err := tx.ExecContext(ctx, `INSERT INTO pg_official_asset_details
 						(granule_key,filename,url_prefix_id,url_suffix,size,etag,media_type)
-						VALUES(?,?,?,?,?,?,?)`, granuleKey, asset.Name, prefixID, suffixOverride,
+						VALUES(?,?,?,?,?,?,?)
+						ON CONFLICT(granule_key,filename) DO UPDATE SET
+						url_prefix_id=excluded.url_prefix_id,url_suffix=excluded.url_suffix,
+						size=excluded.size,etag=excluded.etag,media_type=excluded.media_type`,
+						granuleKey, asset.Name, prefixID, suffixOverride,
 						asset.Size, asset.ETag, asset.MediaType); err != nil {
 						return err
 					}
@@ -1132,7 +1139,10 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 			if s.postgres {
 				if _, err := tx.ExecContext(ctx, `INSERT INTO pg_official_slot_details
 					(granule_key,asset_count,total_size,representative_filename,refreshed_at)
-					VALUES(?,?,?,?,?)`, granuleKey, len(granule.Assets), totalSize, representative, now); err != nil {
+					VALUES(?,?,?,?,?) ON CONFLICT(granule_key) DO UPDATE SET
+					asset_count=excluded.asset_count,total_size=excluded.total_size,
+					representative_filename=excluded.representative_filename,refreshed_at=excluded.refreshed_at`,
+					granuleKey, len(granule.Assets), totalSize, representative, now); err != nil {
 					return err
 				}
 			} else if _, err := tx.ExecContext(ctx, `
@@ -1425,7 +1435,7 @@ func (s *Store) ReplaceLocalFilesWithWarnings(ctx context.Context, files []Local
 		return false, err
 	}
 	defer conn.Close()
-	if err := stageLocalFiles(ctx, conn, files); err != nil {
+	if err := stageLocalFiles(ctx, conn, files, s.postgres); err != nil {
 		return false, err
 	}
 	tx, err := conn.BeginTx(ctx, nil)
@@ -1557,7 +1567,7 @@ func (s *Store) ReconcileStaleLocalErrors(ctx context.Context) (bool, error) {
 	return true, tx.Commit()
 }
 
-func stageLocalFiles(ctx context.Context, conn *sql.Conn, files []LocalFile) error {
+func stageLocalFiles(ctx context.Context, conn *sql.Conn, files []LocalFile, postgres bool) error {
 	// Only the connection-local TEMP database is written here. Do not reserve
 	// the main writer lock while inserting tens of thousands of scan results.
 	if _, err := conn.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS scanned_local_files (
@@ -1566,7 +1576,11 @@ func stageLocalFiles(ctx context.Context, conn *sql.Conn, files []LocalFile) err
 	)`); err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(ctx, "BEGIN DEFERRED"); err != nil {
+	begin := "BEGIN DEFERRED"
+	if postgres {
+		begin = "BEGIN"
+	}
+	if _, err := conn.ExecContext(ctx, begin); err != nil {
 		return err
 	}
 	defer conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")

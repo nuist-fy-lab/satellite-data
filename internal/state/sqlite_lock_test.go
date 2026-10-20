@@ -180,7 +180,7 @@ func TestLocalScanStagingDoesNotAcquireMainWriterLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := []LocalFile{{Path: "/archive/one", Filename: "one", Size: 1}}
-	if err := stageLocalFiles(ctx, conn, files); err != nil {
+	if err := stageLocalFiles(ctx, conn, files, false); err != nil {
 		t.Fatalf("TEMP-only scan staging acquired main writer lock: %v", err)
 	}
 	var count int
