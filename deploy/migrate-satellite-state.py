@@ -150,13 +150,46 @@ def sql_literal(value):
 
 def official_days(argv):
     # Hex-encoded names preserve punctuation without depending on psql's
-    # delimiter or the output encoding of a particular terminal.
+    # delimiter or the output encoding of a particular terminal. Each stage
+    # table is ordered by (product_key, substr(slot_ts,1,10)). A loose
+    # index walk seeks to the NEXT distinct key rather than scanning and
+    # grouping every one of the ~26 million source rows. Both sides are
+    # walked independently so even orphan assets/days remain included.
     output = psql(argv, """
+WITH RECURSIVE asset_days AS (
+ (SELECT product_key, substr(slot_ts,1,10) AS day
+  FROM migration_official_assets
+  ORDER BY product_key,substr(slot_ts,1,10) LIMIT 1)
+ UNION ALL
+ SELECT next_key.product_key,next_key.day
+ FROM asset_days previous
+ CROSS JOIN LATERAL (
+  SELECT product_key, substr(slot_ts,1,10) AS day
+  FROM migration_official_assets
+  WHERE (product_key,substr(slot_ts,1,10)) >
+        (previous.product_key,previous.day)
+  ORDER BY product_key,substr(slot_ts,1,10) LIMIT 1
+ ) next_key
+), slot_days AS (
+ (SELECT product_key, substr(slot_ts,1,10) AS day
+  FROM migration_official_slots
+  ORDER BY product_key,substr(slot_ts,1,10) LIMIT 1)
+ UNION ALL
+ SELECT next_key.product_key,next_key.day
+ FROM slot_days previous
+ CROSS JOIN LATERAL (
+  SELECT product_key, substr(slot_ts,1,10) AS day
+  FROM migration_official_slots
+  WHERE (product_key,substr(slot_ts,1,10)) >
+        (previous.product_key,previous.day)
+  ORDER BY product_key,substr(slot_ts,1,10) LIMIT 1
+ ) next_key
+)
 SELECT encode(convert_to(product_key,'UTF8'),'hex'),day
 FROM (
- SELECT product_key,substr(slot_ts,1,10) AS day FROM migration_official_assets
+ SELECT product_key,day FROM asset_days
  UNION
- SELECT product_key,substr(slot_ts,1,10) AS day FROM migration_official_slots
+ SELECT product_key,day FROM slot_days
 ) days ORDER BY 1,2;
 """)
     return [(bytes.fromhex(encoded).decode('utf8'), day)
