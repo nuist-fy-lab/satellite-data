@@ -46,6 +46,10 @@ func TestPostgresCompactStateRoundTrip(t *testing.T) {
 	if err != nil || len(products) != 1 || !products[0].LocalCovered {
 		t.Fatalf("PostgreSQL product with local coverage: %+v, %v", products, err)
 	}
+	if products[0].FirstDay == nil || *products[0].FirstDay != "2006-07-23" ||
+		products[0].LastDay == nil || *products[0].LastDay != "2006-07-23" {
+		t.Fatalf("PostgreSQL product local date bounds: %+v", products[0])
+	}
 	start := time.Date(2006, 7, 23, 0, 0, 0, 0, time.UTC)
 	assets := []model.Asset{
 		{ID: "1", Name: "one.hdf", URL: "https://test.example.org/a/b/one.hdf?name=1", Size: 1099511627776},
