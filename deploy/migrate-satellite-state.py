@@ -150,13 +150,46 @@ def sql_literal(value):
 
 def official_days(argv):
     # Hex-encoded names preserve punctuation without depending on psql's
-    # delimiter or the output encoding of a particular terminal.
+    # delimiter or the output encoding of a particular terminal. Each stage
+    # table is ordered by (product_key, substr(slot_ts,1,10)). A loose
+    # index walk seeks to the NEXT distinct key rather than scanning and
+    # grouping every one of the ~26 million source rows. Both sides are
+    # walked independently so even orphan assets/days remain included.
     output = psql(argv, """
+WITH RECURSIVE asset_days AS (
+ (SELECT product_key, substr(slot_ts,1,10) AS day
+  FROM migration_official_assets
+  ORDER BY product_key,substr(slot_ts,1,10) LIMIT 1)
+ UNION ALL
+ SELECT next_key.product_key,next_key.day
+ FROM asset_days previous
+ CROSS JOIN LATERAL (
+  SELECT product_key, substr(slot_ts,1,10) AS day
+  FROM migration_official_assets
+  WHERE (product_key,substr(slot_ts,1,10)) >
+        (previous.product_key,previous.day)
+  ORDER BY product_key,substr(slot_ts,1,10) LIMIT 1
+ ) next_key
+), slot_days AS (
+ (SELECT product_key, substr(slot_ts,1,10) AS day
+  FROM migration_official_slots
+  ORDER BY product_key,substr(slot_ts,1,10) LIMIT 1)
+ UNION ALL
+ SELECT next_key.product_key,next_key.day
+ FROM slot_days previous
+ CROSS JOIN LATERAL (
+  SELECT product_key, substr(slot_ts,1,10) AS day
+  FROM migration_official_slots
+  WHERE (product_key,substr(slot_ts,1,10)) >
+        (previous.product_key,previous.day)
+  ORDER BY product_key,substr(slot_ts,1,10) LIMIT 1
+ ) next_key
+)
 SELECT encode(convert_to(product_key,'UTF8'),'hex'),day
 FROM (
- SELECT product_key,substr(slot_ts,1,10) AS day FROM migration_official_assets
+ SELECT product_key,day FROM asset_days
  UNION
- SELECT product_key,substr(slot_ts,1,10) AS day FROM migration_official_slots
+ SELECT product_key,day FROM slot_days
 ) days ORDER BY 1,2;
 """)
     return [(bytes.fromhex(encoded).decode('utf8'), day)
@@ -287,7 +320,25 @@ def normalize_assets(argv):
         return
     print('PREPARING_BOUNDED_NORMALIZATION', flush=True)
     prepare_normalization(argv)
-    days = official_days(argv)
+    if argv.worklist:
+        weights = {}
+        with open(argv.worklist, encoding='utf8') as planned:
+            for entry in planned:
+                encoded, day, weight = entry.rstrip('\n').split('\t')
+                product = bytes.fromhex(encoded).decode('utf8')
+                key = (product, day)
+                if key in weights:
+                    raise RuntimeError('duplicate product/day in worklist: ' + repr(key))
+                weights[key] = int(weight)
+        # The worklist is a complete enumeration of both original SQLite
+        # relations made on Slurm compute. The result is validated by exact
+        # source/target row counts and a later EXCEPT ALL of every field.
+        # Bypass a 26-million-row PostgreSQL GROUP/UNION scan entirely.
+        days = list(weights)
+        print('PREPARED_SOURCE_DAYS', len(days), flush=True)
+    else:
+        # Fallback if no compute-generated worklist is supplied.
+        days = official_days(argv)
     finished = set(psql(argv, """
 SELECT encode(convert_to(product_key,'UTF8'),'hex'),day
 FROM migration_normalized_days;
@@ -295,13 +346,6 @@ FROM migration_normalized_days;
     pending = [(product, day) for product, day in days
                if product.encode('utf8').hex() + '|' + day not in finished]
     if argv.worklist:
-        weights = {}
-        with open(argv.worklist, encoding='utf8') as planned:
-            for entry in planned:
-                encoded, day, weight = entry.rstrip('\n').split('\t')
-                product = bytes.fromhex(encoded).decode('utf8')
-                weights[(product, day)] = int(weight)
-        # Scheduling hint only. Missing entries are retained, not discarded.
         pending.sort(key=lambda item: weights.get(item, 0), reverse=True)
         print('PREPARED_PARALLEL_WORKLIST', len(weights), flush=True)
     print('NORMALIZATION_DAYS', len(days), 'PENDING', len(pending), flush=True)
