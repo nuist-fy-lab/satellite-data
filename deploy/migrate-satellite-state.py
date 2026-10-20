@@ -294,6 +294,16 @@ FROM migration_normalized_days;
 """).splitlines())
     pending = [(product, day) for product, day in days
                if product.encode('utf8').hex() + '|' + day not in finished]
+    if argv.worklist:
+        weights = {}
+        with open(argv.worklist, encoding='utf8') as planned:
+            for entry in planned:
+                encoded, day, weight = entry.rstrip('\n').split('\t')
+                product = bytes.fromhex(encoded).decode('utf8')
+                weights[(product, day)] = int(weight)
+        # Scheduling hint only. Missing entries are retained, not discarded.
+        pending.sort(key=lambda item: weights.get(item, 0), reverse=True)
+        print('PREPARED_PARALLEL_WORKLIST', len(weights), flush=True)
     print('NORMALIZATION_DAYS', len(days), 'PENDING', len(pending), flush=True)
     if argv.workers > 1:
         normalize_parallel(argv, pending)
@@ -387,6 +397,8 @@ def main():
     parser.add_argument('--stage', choices=('import', 'normalize', 'verify'), required=True)
     parser.add_argument('--workers', type=int, default=1,
                         help='parallel PostgreSQL normalization sessions (1-16)')
+    parser.add_argument('--worklist',
+                        help='optional computed product/day size hints; never filters records')
     args = parser.parse_args()
     if args.workers < 1 or args.workers > 16:
         raise SystemExit('--workers must be in the range 1..16')
