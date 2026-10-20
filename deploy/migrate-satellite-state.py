@@ -153,9 +153,9 @@ def official_days(argv):
     output = psql(argv, """
 SELECT encode(convert_to(product_key,'UTF8'),'hex'),day
 FROM (
- SELECT product_key,left(slot_ts,10) AS day FROM migration_official_assets
+ SELECT product_key,substr(slot_ts,1,10) AS day FROM migration_official_assets
  UNION
- SELECT product_key,left(slot_ts,10) AS day FROM migration_official_slots
+ SELECT product_key,substr(slot_ts,1,10) AS day FROM migration_official_slots
 ) days ORDER BY 1,2;
 """)
     return [(bytes.fromhex(encoded).decode('utf8'), day)
@@ -178,9 +178,9 @@ CREATE TABLE IF NOT EXISTS migration_normalized_days(
  product_key TEXT NOT NULL,day TEXT NOT NULL,
  PRIMARY KEY(product_key,day));
 CREATE INDEX IF NOT EXISTS migration_official_assets_day_idx
- ON migration_official_assets(product_key,(left(slot_ts,10)));
+ ON migration_official_assets(product_key,(substr(slot_ts,1,10)));
 CREATE INDEX IF NOT EXISTS migration_official_slots_day_idx
- ON migration_official_slots(product_key,(left(slot_ts,10)));
+ ON migration_official_slots(product_key,(substr(slot_ts,1,10)));
 ANALYZE migration_official_assets;
 ANALYZE migration_official_slots;
 """)
@@ -188,7 +188,7 @@ ANALYZE migration_official_slots;
 
 def normalization_sql(product, day):
     product, day = sql_literal(product), sql_literal(day)
-    where = "product_key=" + product + " AND left(slot_ts,10)=" + day
+    where = "product_key=" + product + " AND substr(slot_ts,1,10)=" + day
     # All four insertions plus the progress marker commit together. One
     # interrupted day is therefore restartable without partial results.
     return """
@@ -202,7 +202,7 @@ INSERT INTO pg_official_slot_details(granule_key,asset_count,total_size,represen
 SELECT k.id,s.asset_count,s.total_size,s.representative_filename,s.refreshed_at
 FROM migration_official_slots s
 JOIN pg_official_granule_keys k USING(product_key,slot_ts,granule_id)
-WHERE s.product_key={product} AND left(s.slot_ts,10)={day}
+WHERE s.product_key={product} AND substr(s.slot_ts,1,10)={day}
 ON CONFLICT(granule_key) DO NOTHING;
 INSERT INTO pg_official_url_prefixes(prefix)
 SELECT DISTINCT CASE WHEN strpos(reverse(url),'/')>0
@@ -221,7 +221,7 @@ JOIN pg_official_url_prefixes p ON p.prefix =
 CROSS JOIN LATERAL (
  SELECT substring(a.url FROM length(p.prefix)+1) AS suffix
 ) suffix
-WHERE a.product_key={product} AND left(a.slot_ts,10)={day}
+WHERE a.product_key={product} AND substr(a.slot_ts,1,10)={day}
 ON CONFLICT(granule_key,filename) DO NOTHING;
 INSERT INTO migration_normalized_days(product_key,day) VALUES({product},{day})
 ON CONFLICT DO NOTHING;
@@ -303,7 +303,7 @@ def reconciliation_sql(product, day):
     product, day = sql_literal(product), sql_literal(day)
     asset_fields = 'product_key,slot_ts,granule_id,filename,url,size,etag,media_type'
     slot_fields = 'product_key,slot_ts,granule_id,asset_count,total_size,representative_filename,refreshed_at'
-    where = 'product_key=' + product + ' AND left(slot_ts,10)=' + day
+    where = 'product_key=' + product + ' AND substr(slot_ts,1,10)=' + day
     source_assets = 'SELECT ' + asset_fields + ' FROM migration_official_assets WHERE ' + where
     target_assets = 'SELECT ' + asset_fields + ' FROM official_assets WHERE ' + where
     source_slots = 'SELECT ' + slot_fields + ' FROM migration_official_slots WHERE ' + where
