@@ -62,6 +62,26 @@ func TestPostgresCompactStateRoundTrip(t *testing.T) {
 		Days: []string{"2006-07-23"}}, []model.Granule{granule}); err != nil {
 		t.Fatal(err)
 	}
+	// A provider page may repeat the same granule. It must not abort the
+	// entire PostgreSQL index refresh or duplicate its assets.
+	if err := s.SaveOfficialBatch(ctx, WorkBatch{Product: product.ProductKey,
+		Days: []string{"2006-07-23"}}, []model.Granule{granule, granule}); err != nil {
+		t.Fatalf("duplicate granule in one response: %v", err)
+	}
+	var granuleCount, assetCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM pg_official_granule_keys
+		WHERE product_key=?`, product.ProductKey).Scan(&granuleCount); err != nil || granuleCount != 1 {
+		t.Fatalf("duplicate granule was not consolidated: %d %v", granuleCount, err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM official_assets
+		WHERE product_key=?`, product.ProductKey).Scan(&assetCount); err != nil || assetCount != len(assets) {
+		t.Fatalf("duplicate assets were not consolidated: %d %v", assetCount, err)
+	}
+	if _, err := s.ReplaceLocalFilesWithWarnings(ctx,
+		[]LocalFile{{Path: "/tmp/pg-unrelated.hdf", Filename: "unrelated.hdf", Size: 4, State: "ok"}},
+		"postgres-local-scan-regression", nil); err != nil {
+		t.Fatalf("PostgreSQL local archive scan: %v", err)
+	}
 	for _, asset := range assets {
 		var url string
 		var size int64
