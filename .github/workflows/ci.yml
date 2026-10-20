@@ -35,7 +35,7 @@ jobs:
           SATELLITE_TEST_POSTGRES_DSN: "host=127.0.0.1 port=5432 user=postgres password=ci-disposable-password dbname=satellite_test sslmode=disable"
         run: go test ./internal/state -run '^TestPostgresCompactStateRoundTrip$' -count=1 -v
       - name: Check migration tool parses on Python 3.6
-        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -c "import ast; [ast.parse(open(p).read()) for p in ['deploy/migrate-satellite-state.py', 'deploy/plan-normalization.py', 'deploy/prepare-satellite-copy.py']]"
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -c "import ast; [ast.parse(open(p).read()) for p in ['deploy/migrate-satellite-state.py', 'deploy/plan-normalization.py', 'deploy/prepare-satellite-copy.py', 'deploy/migrate-satellite-bulk-shadow.py']]"
       - name: Verify complete SQLite to PostgreSQL import, normalization and reconciliation
         env:
           PGUSER: postgres
@@ -91,6 +91,42 @@ jobs:
           # The two canonical URL suffixes are represented by SQL NULL.
           test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM pg_official_asset_details WHERE url_suffix IS NULL')" = "11"
           test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM migration_verified_days')" = "10"
+      - name: Verify index-after-COPY shadow migration and atomic swap
+        env:
+          PGUSER: postgres
+          PGPASSWORD: ci-disposable-password
+        run: |
+          export SHADOW="python3 deploy/migrate-satellite-bulk-shadow.py --sqlite /tmp/satellite-migration-fixture.sqlite3 --database satellite_migration_test --socket 127.0.0.1 --worklist /tmp/satellite-migration-plan.tsv --prepared-dir /tmp/satellite-prepared-copy --workers 3"
+          $SHADOW --stage init
+          $SHADOW --stage load
+          # Repeat the load; committed per-day checkpoints must prevent duplicates.
+          $SHADOW --stage load
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM migration_bulk_loaded_days')" = "10"
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM migration_bulk_assets')" = "13"
+          $SHADOW --stage build
+          $SHADOW --stage build
+          $SHADOW --stage verify
+          $SHADOW --stage verify
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM migration_bulk_verified_days')" = "10"
+          $SHADOW --stage cutover
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM official_assets')" = "13"
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM official_slots')" = "11"
+          test "$(psql -h 127.0.0.1 -d satellite_migration_test -Atc 'SELECT count(*) FROM pg_official_asset_details_pre_bulk')" = "13"
+          psql -h 127.0.0.1 -d satellite_migration_test -v ON_ERROR_STOP=1 <<'SQL'
+          -- Both directions of the complete post-cutover relation must match.
+          DO $$
+          BEGIN
+            IF EXISTS (SELECT * FROM migration_official_assets EXCEPT ALL SELECT * FROM official_assets)
+            OR EXISTS (SELECT * FROM official_assets EXCEPT ALL SELECT * FROM migration_official_assets)
+            OR EXISTS (SELECT * FROM migration_official_slots EXCEPT ALL SELECT * FROM official_slots)
+            OR EXISTS (SELECT * FROM official_slots EXCEPT ALL SELECT * FROM migration_official_slots)
+            THEN RAISE EXCEPTION 'post-swap source/target field mismatch'; END IF;
+          END $$;
+          -- The new identity sequence must not collide with restored keys.
+          INSERT INTO pg_official_granule_keys(product_key,slot_ts,granule_id)
+          VALUES('new','2000-01-01T00:00:00Z','fresh');
+          INSERT INTO pg_official_url_prefixes(prefix) VALUES('https://fresh.example/');
+          SQL
   test:
     runs-on: ubuntu-latest
     steps:
