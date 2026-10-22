@@ -52,7 +52,7 @@ func TestOneProductOnlyOrderForEveryRegisteredSource(t *testing.T) {
 			if err := s.UpsertProducts(t.Context(), source.ID, []model.Product{{ProductKey: product, SourceID: source.ID}}); err != nil {
 				t.Fatal(err)
 			}
-			body, _ := json.Marshal(map[string]any{"product": product, "start": "2024-01-01", "end": "2024-01-02", "inputs": inputs})
+			body, _ := json.Marshal(map[string]any{"product": product, "start": "2024-01-01", "end": "2024-01-02", "scenes": nil, "inputs": inputs})
 			r := httptest.NewRequest(http.MethodPost, "/api/v1/downloads", strings.NewReader(string(body)))
 			r.Header.Set("Authorization", "Bearer "+key)
 			w := httptest.NewRecorder()
