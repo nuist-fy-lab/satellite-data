@@ -1,404 +1,159 @@
 # Satellite Data
 
-Unified multi-satellite scientific data discovery, download, archive and synchronization service for `nuist-fy-lab`.
+**English** | [简体中文](README.zh-CN.md)
 
-The project deliberately separates provider-specific discovery from transfer.
-The CLI is a thin control client, never a download worker or credential manager.
-The centre's `satellited` owns official catalogues,
-calendar/index state and provider-isolated discovery queues; the separate
-`satellite-data-downloader` service owns resumable transfer, verification,
-staging and archive promotion. Both services are centre-side components; files
-are never fetched or archived by the CLI.
+Unified multi-satellite scientific data discovery, ordering, archive indexing, and synchronization service for [`nuist-fy-lab`](https://github.com/nuist-fy-lab).
 
-The two services communicate over a local Unix socket. Download discovery is
-chunked and pipelined: each provider has its own discovery loop, assets are
-submitted to the downloader as soon as each chunk is discovered, and every
-downloader provider has independent transfer and verification worker pools.
-A slow provider therefore cannot consume another provider's slots.
+## Overview
 
-### Multi-product batches and three-layer deduplication
+`satellite-data` provides a central web portal, HTTP API, and thin CLI (`satellite`) for discovering, ordering, and indexing multi-source earth observation and reanalysis datasets.
 
-One request can group up to 32 products in a shared date window. The centre
-atomically creates a private parent order and independent product orders:
+The system deliberately separates **catalogue discovery & order management** from **bulk data transfer**:
+
+- **`satellited` (this repository)**: Manages official product catalogues, availability calendars, local archive indexing, provider credentials/routes, and persistent acquisition orders.
+- **[`satellite-data-downloader`](https://github.com/nuist-fy-lab/satellite-data-downloader)**: Consumes approved asset tasks over a local Unix socket and handles provider-isolated resumable downloads, checksum verification, staging, and atomic archive promotion.
+- **`satellite` (thin CLI)**: Submits orders and queries catalogue or task status via Bearer API keys—never storing upstream provider credentials or executing transfers locally.
+
+```text
+Browser / satellite CLI
+          │
+          │ HTTPS (Session / CLI API Key)
+          ▼
+     satellited ◄───────────► SQLite (state & archive index)
+          │
+          │ Local Unix Sockets (tasks / routes / completion events)
+          ▼
+satellite-data-downloader ──► Verified Scientific Archive
+```
+
+## Supported Data Sources
+
+All providers use official cloud object stores, STAC/CMR catalogues, or authenticated APIs—avoiding retired FTP endpoints and HTML scraping.
+
+| Source | Products / Instruments | Discovery & Transfer Mechanism |
+| :--- | :--- | :--- |
+| **GOES-16 / 17 / 18 / 19** | ABI L1b / L2 | NOAA NODD object hierarchy (Google Cloud Storage primary) |
+| **Himawari-8 / 9** | AHI Full-Disk / Target | NOAA NODD anonymous S3 |
+| **MODIS (Terra / Aqua)** | Collection 6.1 / 7 L1B & L2 | LAADS API v2 catalogue + token-authenticated resumable HTTPS |
+| **VIIRS (SNPP / NOAA-20 / 21)** | L1B & L2 science products | NASA CMR / LAADS + Earthdata Cloud HTTPS |
+| **MTG (Meteosat-12)** | FCI | EUMETSAT Data Store OpenSearch + OAuth2 |
+| **EarthCARE** | L1 / L2 orbits | ESA MAAP STAC + OIDC-protected HTTPS |
+| **CALIPSO** | CALIOP L1 / L2 | NASA CMR + Earthdata Login ASDC HTTPS |
+| **CloudSat** | 2B-GEOPROF / CPR | CIRA DPC THREDDS catalogue + authenticated HTTPServer |
+| **ERA5 / ERA5-Land** | Hourly & monthly single/pressure levels | Copernicus CDS STAC catalogue + asynchronous subset retrieval |
+
+## Key Capabilities
+
+- **Multi-Product Batch Orders & Three-Layer Deduplication**: Group up to 32 products across a shared date window in a single order. Deduplication operates across identical user submissions, concurrent orders targeting the same upstream asset, and already-archived local files (reused only after verifying path, size, mtime, and SHA-256 against official records).
+- **Automated Availability Calendar & Archive Indexing**: Tracks daily and sub-daily band/slot coverage across fixed-cadence geostationary grids and event-based overpass timelines. Background indexers incrementally reconcile local filesystem changes and upstream availability with adaptive per-provider rate pacing.
+- **Centralized Credential & Route Governance**: Upstream tokens, OAuth2/OIDC credentials, CDS keys, and proxy routes are encrypted at rest inside `satellited` and managed exclusively by administrators.
+- **Unified ERA5 On-Demand Retrieval**: Supports both persistent multi-day/multi-month archive orders (automatically split, polled, verified, and archived) and low-level interactive CDS job inspection.
+
+## CLI Usage
+
+### 1. Configuration
+
+Sign in to the web portal, create a CLI API Key (`satellite_v1_...`), and configure the client:
 
 ```bash
-satellite download submit --product modis:C1443536017-LAADS \
-  --product goes18:ABI-L1b-RadF --start 2023-05-03 --end 2023-05-10
-satellite download batch-status --id 1
-```
-
-The website accepts comma-separated additional product keys from any source.
-Identical batch submissions from the same owner reuse one parent; different
-users have separate private orders. Across orders, the downloader's stable
-source + collection + granule + asset + filename key ensures one task for the
-same scientific file, with independent per-order progress tracking.
-
-Existing local files are reused **only with verified identity**: the centre
-matches source, official collection, granule and asset against its persisted
-verified archive index, checks the file's path/size/mtime against the current
-inventory and supplies the stored SHA-256. The downloader then hashes the
-actual file again and checks its canonical target path before adopting it
-without any network transfer. Stale/corrupted/mismatching candidates fall
-back to ordinary downloads; active tasks are never overwritten.
-
-Opening a year calendar now queues genuinely unknown official days at low
-priority while preserving completed, running and delayed index jobs. Missing
-MODIS year cells gradually transition from gray to indexed states without
-blocking the download and verification pipelines.
-
-The central indexer **also performs automatic calendar maintenance without a
-browser request**: it runs at startup and every 10 minutes, discovers tracked
-product-years from submitted (including historical completed) download orders
-and substantially indexed years, and queues missing UTC days with background
-priority. It respects active official-index work, retry backoff, and a global
-450-day-per-pass queue budget; a sparse set of EarthCARE overpasses is not
-mistaken for an instruction to crawl every day of a year. When the official
-catalogue or local archive changes, affected days are recounted immediately;
-the independent maintenance loop additionally repairs missing or stale
-`day_summary` records in bounded batches after interruptions or upgrades.
-Future days never enter the index queue. No scheduled cloud tasks are used.
-The centre also paces official catalog/search calls per provider: each source
-starts at a 500 ms interval and at most two concurrent calls. Repeated errors
-lengthen that interval up to 5 seconds and reduce concurrency to one; sustained
-success recovers the interval to no less than 200 ms and concurrency to two.
-Persistent official-index and download-discovery failures use bounded jittered
-backoff in addition to this request pacing.
-The main service samples downloader-reported throughput, active transfers,
-adaptive limits and queue depth every 15 seconds for the download-page charts.
-Samples are kept for eight days; missing samples remain gaps, not zero-speed
-observations. `GET /api/v1/monitor/downloads?window=1h` exposes provider-isolated
-history (`realtime`, `1h`, `3h`, `6h`, `12h`, `1d`, `2d`, `1w`). "Active transfers"
-counts running download workers, not the host's TCP sockets.
-The `ci-latest` release retains three generations of binaries: `satellite`
-and `satellited` for the latest build, plus `-prev1-<commit>` and
-`-prev2-<commit>` assets for the two prior builds. Previous assets are
-verified before replacing the release; the oldest generation drops out.
-Cloud builds also upload a two-day Actions artifact so an authenticated CLI
-can publish the same binaries if the workflow token cannot create a Release.
-
-The centre's state and index share one SQLite file, `state.sqlite3` (default:
-`~/.local/state/satellite-data/state.sqlite3`); it is separate from NSMC's
-`index.sqlite3` and from the satellite downloader's database. On an existing
-installation, stop `satellited` before changing `SATELLITED_STATE_DB` from
-`state.db`: make a restorable backup of the database and any `-wal`/`-shm`
-files while stopped, rename the database and any remaining sidecars together
-to `state.sqlite3`, then update the service environment and restart. The daemon
-refuses to create a new `state.sqlite3` beside an unmigrated `state.db`.
-
-### Shared EarthCARE, ERA5 and Himawari archives
-
-On c2ln1 the new EarthCARE archive root is the existing
-`/misc/nuist_data1/public_sharing/EarthCare`; files are written under
-`<product-type>/<YYYYMMDD>/<official-asset-name>`. ERA5 uses the existing
-`/misc/nuist_data1/public_sharing/ERA5` root and writes CDS results under
-`CDS/<dataset>/<YYYY>/<MM>/<DD>/<job-id>/<result-name>`. The remaining
-satellite products still use `.../public_sharing/satellite`.
-
-Configure `SATELLITED_EARTHCARE_ARCHIVE` and `SATELLITED_ERA5_ARCHIVE` on the
-centre and `SATDOWN_EARTHCARE_ARCHIVE_ROOT` and `SATDOWN_ERA5_ARCHIVE_ROOT` on
-the downloader. `SATELLITED_HIMAWARI_ARCHIVE` additionally enables the existing
-`/misc/nuist_data1/public_sharing/Himawari` historical archive. The centre scans
-all configured roots without moving other users'
-historical files. `GET /api/v1/archive/index-status` reports file counts and
-unreadable directories. With `product` and `year`, it also reports that product's
-local file dates, available years and official-index queue state. The calendar
-uses the existing index SSE with `watch=1` to keep scan status live even while
-idle and applies changed dates in place. Daily band coverage opens on a full-day
-UTC timeline: fixed-period products retain official gaps with hatching, while
-event products place markers only at actual timestamps. Shared historical files are indexed as `unverified`
-until an exact official item/asset (EarthCARE) or CDS job/result (ERA5) can be
-matched and the file is hashed. A valid HDF5/NetCDF header is only a format
-check, not proof of official identity. On this installation the separate
-EarthCARE `AC_CLP_2B` directory is owned by another account and is not readable
-by the service; its missing coverage is reported instead of hidden. Prior ERA5
-global and China files have no automatically inferred CDS job identity. New
-archives refuse to overwrite a different file with the same name.
-The Himawari historical root inventories `.bz2` payloads, with a header check
-only; CERES files are not inferred to be NOAA HSD assets. Shared scans exclude
-hidden rollback directories, auxiliary directories, ZIP packages, temporary
-files and corrupt partials. `deploy/normalize-earthcare-packages.py` extracts
-extensionless EarthCARE ZIP packages after CRC/header checks and exact SHA-256
-comparison with any existing payload. It preserves the original ZIP under a
-hidden rollback directory and records each operation in a private journal.
-Historical EarthCARE verification and official-date discovery accept both
-`<product>/<YYYYMMDD>/<filename>` and `<product>/<YYYY>/<MM>/<filename>`.
-The acquisition date in the filename must agree with its directory. After a
-layout migration, run `verify-earthcare-archive.py --repair-layout-evidence`
-with the service's normal database/root/socket options while its timer is
-stopped. This rehashes unique relocated files against existing official SHA-256
-proof, retains the old evidence for audit, and resets obsolete monthly lookup
-failures once. It never marks a file verified solely from its name or size.
-New shared archive subdirectories use setgid and group read/write/execute;
-new files use group read/write. Existing directories keep their own ACLs,
-including inaccessible directories. Completed downloader tasks retain a
-durable archive-verification notification until the centre acknowledges it;
-an inaccessible official catalogue leaves the file unverified for later retry.
-
-GOES archive scans derive product/day identities from NOAA filenames and
-automatically queue missing official catalogue days. Per-day fingerprints
-survive restarts; local or official catalogue changes reconcile slots and
-recompute daily/band coverage, without resetting query retry backoff. An
-unmatched file triggers at most one background catalogue refresh per 24 hours.
-Downloading selected bands appears as partial coverage, not entirely missing;
-it does not imply that all bands are complete.
-
-The download page has independent timezone preferences: task inputs and lists
-default to UTC; transfer charts and sample times default to BJT (UTC+8).
-Dates and selected times are converted to UTC before ordinary download requests
-are submitted. CDS orders retain explicitly labelled whole-UTC-date inputs.
-Both standard and band-aware year calendars fill the satellite timeline section
-width with square cells and proportional gaps, including 54-column leap years.
-Small screens keep readable cells and scroll inside the calendar viewport.
-
-## Current milestone
-
-The first working slice implements anonymous public-cloud discovery for:
-
-| Source | Discovery / transfer | State |
-| --- | --- | --- |
-| GOES-16/17/18/19 | NOAA NODD object hierarchy, Google Cloud Storage primary | implemented |
-| Himawari-8/9 | NOAA NODD anonymous S3 | implemented |
-| MTG / Meteosat-12 FCI | EUMETSAT Data Store OpenSearch + OAuth2 download; MQTT publication subscription / EUMETCast Terrestrial for low latency | discovery implemented; authenticated transfer next |
-| MODIS Terra/Aqua | LAADS API v2 product catalog + `content/details`; LAADS Download Token + resumable HTTPS | implemented |
-| VIIRS Suomi-NPP/NOAA-20/NOAA-21 | NASA CMR/LAADS + LAADS Earthdata Cloud HTTPS | implemented |
-| EarthCARE | ESA MAAP STAC + OIDC-protected HTTPS science assets | discovery implemented |
-| CALIPSO | NASA CMR + Earthdata Login protected ASDC HTTPS | discovery implemented |
-| CloudSat | CIRA DPC THREDDS catalog + authenticated HTTPServer; OPeNDAP for subsets | discovery implemented |
-| ERA5 / ERA5-Land | CDS STAC catalogue + asynchronous authenticated subset requests | catalogue, request UI and API implemented; downloader archive integration pending |
-
-The provider choices intentionally avoid retired FTP endpoints, HTML scraping, and legacy NASA APIs.
-
-## Layout
-
-```text
-cmd/
-  satellite/             thin CLI
-  satellited/            API + embedded web daemon
-internal/
-  app/                   provider wiring
-  httpapi/               JSON API
-  model/                 Source / Collection / Granule / Asset
-  objectstore/           anonymous GCS + S3 listing
-  provider/
-    calipso/
-    cloudsat/
-    earthcare/
-    era5/
-    eumetsat/
-    goes/
-    himawari/
-    laads/
-  transfer/              resumable HTTP transfer core
-web/                      embedded dependency-free UI
-```
-
-## API
-
-The entire production portal requires a web login, including catalogue,
-calendar and monitoring pages. `GET /login` is the portal entry; the same
-HttpOnly session authorizes the credential page without a second password.
-Provider access administration still requires the administrator role.
-Existing NSMC portal usernames/passwords are reused; Satellite Key/session
-tables are isolated and do not change NSMC's active Keys or sessions.
-Operational API calls accept either the portal session or a web-created CLI
-API Key; CLI Keys never grant access to provider credentials/accounts.
-
-```text
-GET /healthz
-GET /api/v1/sources
-GET /api/v1/catalog?source=goes18
-GET /api/v1/search?source=goes18&collection=goes18:ABI-L1b-RadF&start=2026-09-22T09:00:00Z&end=2026-09-22T10:00:00Z
-```
-
-Interactive searches are intentionally limited to seven days. Larger historical requests will be represented as persistent backfill jobs rather than huge synchronous API responses.
-
-### ERA5
-
-ERA5 is ECMWF reanalysis, not satellite observations. The provider reads the
-official CDS STAC metadata for hourly/monthly single levels, pressure levels,
-and ERA5-Land (six collections). Temporal extent is catalogue metadata, not
-proof that every variable/hour has a downloadable file. Calendar indexing and
-ordinary granule searches return HTTP 409 for these on-demand datasets; they
-never submit CDS jobs implicitly or fabricate official file availability.
-
-Selecting ERA5 in the catalogue opens a subset form using the current CDS
-process schema. It requests one UTC day (or one month for monthly products),
-with explicit variables, times, pressure levels, format and bounding box.
-Direct CDS submission and job/result access require an administrator session. CDS jobs
-persist upstream; retain the returned `jobID` to query after a daemon restart.
-The UI retains only the latest job ID, not secrets or signed result URLs.
-There is no automatic retry of a submission with an uncertain outcome.
-
-In Access Credentials, create one ERA5 access profile with a CDS Personal Access
-Token. Previously saved but unbound CDS Tokens appear in the same list as
-"pending binding" and can be attached without re-entering the Secret. A
-profile saves the provider route, proxy policy and any new encrypted credential
-in one transaction; existing shared credentials keep their references.
-Accept the requested dataset licence in that CDS account first. All provider
-credentials, accounts, proxies and authentication now belong to the centre;
-Secrets are encrypted at rest and write-only. The downloader uses private
-centre IPC and no longer has a Vault or token environment fallback. See
-`docs/central-access.md` for coordinated migration and rollback.
-
-```text
-GET  /api/v1/era5/schema?collection=era5:reanalysis-era5-single-levels
-POST /api/v1/era5/requests
-GET  /api/v1/era5/requests/{jobID}
-GET  /api/v1/era5/requests/{jobID}/result
-```
-
-POST takes `{"collection":"era5:reanalysis-era5-single-levels","inputs":{...}}`.
-`inputs` use the official process schema (for example `variable`, `year`,
-`month`, `day`, `time`, `area`, `data_format`, `download_format`). The API sends
-the CDS `inputs` envelope and returns immediately rather than waiting in an
-index worker. Result assets are returned only from CDS job results, with real
-file size and HTTPS location. These low-level job endpoints remain available
-for explicit CDS operations. For a complete automatically archived retrieval,
-submit one persistent order to `/api/v1/downloads` instead. The centre splits
-dates, persists CDS submission checkpoints, polls jobs and enqueues results
-for resumable transfer, verification and archive promotion. ERA5 advertises
-`catalog`, `retrieval` and `download`, not published-granule `search` or `subscription`.
-
-The link monitor includes CDS API TCP reachability. A current c2ln1 network
-snapshot is in `docs/era5-network-2026-09-27.md`.
-
-## CLI
-
-After signing into the portal, create a CLI API Key on its CLI page, then configure the thin
-client with `satellite config set`. It prompts for the centre URL and reads the
-Key without terminal echo. Only the centre URL and CLI Key are saved in
-`~/.config/satellite/config.json` (mode `0600`). The Key is a centre-control
-authorization token, not a provider credential or account. Requests send it as
-`Authorization: Bearer ...`; redirects are not followed. There is no CLI login,
-username/password, provider Token or Vault setup.
-
-```text
 satellite config set
+```
+
+The CLI stores only the server URL and API Key in `~/.config/satellite/config.json` (`0600`). You may also override them in automated environments via `SATELLITE_SERVER` and `SATELLITE_API_KEY` (or custom path `SATELLITE_CONFIG`).
+
+### 2. Browsing Catalogues & Querying Availability
+
+```bash
+# List available sources and search products
 satellite source list
 satellite product list --search temperature --json
 satellite product list --source earthcare --level L2
 satellite product show --product goes18:ABI-L1b-RadF
-satellite catalog list --source goes18
+
+# Query official granules for a single UTC day or an interval (up to 31 days)
+satellite query list --product goes18:ABI-L1b-RadF --day 2024-01-01 --band 6
 satellite query list \
   --source goes18 \
   --collection goes18:ABI-L1b-RadF \
   --start 2026-09-22T09:00:00Z \
   --end 2026-09-22T10:00:00Z
+```
+
+### 3. Submitting & Monitoring Download Orders
+
+Orders are persistent and execute asynchronously on the server; the CLI can disconnect immediately after submission.
+
+```bash
+# Single-product order with band and hourly slot filters
 satellite download submit \
-  --source goes18 --collection goes18:ABI-L1b-RadF \
-  --start 2023-06-01 --end 2023-06-30 --band 6 --hourly
-satellite download status --id 1 --json
-satellite query list --product goes18:ABI-L1b-RadF --day 2024-01-01 --band 6
-satellite download submit --product goes18:ABI-L1b-RadF --day 2024-01-01 --band 6 --hourly
+  --product goes18:ABI-L1b-RadF \
+  --start 2023-06-01 --end 2023-06-30 \
+  --band 6 --hourly
+
+# Multi-product batch order
+satellite download submit \
+  --product modis:C1443536017-LAADS \
+  --product goes18:ABI-L1b-RadF \
+  --start 2023-05-03 --end 2023-05-10
+
+# Unified ERA5 subset order (automatically split by UTC day/month and archived)
 satellite download submit \
   --product era5:reanalysis-era5-single-levels \
   --start 2024-01-01 --end 2024-01-02 \
-  --variable 2m_temperature --area 32.25,118.5,32,118.75
-satellite era5 schema --collection era5:reanalysis-era5-single-levels
-satellite era5 submit \
-  --collection era5:reanalysis-era5-single-levels \
-  --variable 2m_temperature --product-type reanalysis \
-  --year 2024 --month 01 --day 01 --time 00:00 \
-  --area 32.25,-118.75,32,-118.5 \
-  --data-format netcdf --download-format unarchived
-satellite era5 status --id JOB_ID
-satellite era5 result --id JOB_ID
+  --variable 2m_temperature \
+  --area 32.25,118.5,32,118.75
+
+# Check order progress
+satellite download status --id 1 --json
+satellite download batch-status --id 1
 ```
 
-ERA5 submission, status and result commands require an administrator-owned CLI
-API Key. The provider Token remains in the centre; ordinary user Keys cannot
-submit or inspect CDS jobs. For other products or multiple values, pass an
-official CDS `inputs` JSON object via `--inputs-file request.json` instead of
-the convenience flags. A submission is sent **once**; on an interrupted POST,
-check CDS requests before repeating it. `status` polls explicitly and `result`
-prints metadata without exposing the signed result URL. These low-level
-`era5 submit/status/result` commands do not create centre archive orders.
-Use `download submit` above for automatic scheduling and archive completion;
-`download status --id NUMBER` reports that one persistent order.
-Unlike the low-level CDS commands, unified `download submit --product era5:...`
-accepts an ordinary user's CLI Key or portal session. Each new order is bound
-to its submitter; ordinary users can list/read only their own orders, and
-administrators can inspect all orders. Orders created before this ownership
-migration have no owner and remain visible only to administrators.
-The service does not hard-code provider-published rate, volume or concurrency
-quotas as if they were guaranteed for every account; provider throttling is
-separate from local downloader worker limits.
+> **Note**: Low-level CDS inspection commands (`satellite era5 schema|submit|status|result`) are also available for administrator keys when interacting with raw upstream CDS jobs without creating archive orders.
 
-For every source, `product list` (also `catalog list`) browses the centre's stored
-official catalogue, including keys, instruments, levels, versions, date metadata
-and supported bands. Source is optional and inferred from a full
-`--product SOURCE:PRODUCT` key; upstream IDs with additional colons are preserved.
-`product show` prints full selection metadata. `query list` takes one UTC `--day`
-or an exclusive `--start/--end` interval up to 31 days. The centre handles query
-segmentation, deduplication and band filtering; queries never enqueue orders.
-For ERA5, querying without date flags displays the official schema rather than
-inventing published granules.
+## HTTP API Overview
 
-One `download submit` creates a persistent order for any supported product.
-The CLI sends it once and can disconnect immediately. The centre owns discovery,
-batching, retries, credentials and completion monitoring; the separate downloader
-owns transfer, verification and archive promotion. Long orders yield between
-segments so another order on the same provider can progress.
-ERA5 orders accept repeatable/comma-separated `--variable` and `--pressure-level`,
-optional `--area north,west,south,east`, `--time`, and `--data-format`.
-Advanced unified-order `--inputs-file` selections omit year/month/day: the centre
-derives dates from start/end. Hourly products split by UTC day; monthly products
-require complete months and split by month. The centre supplies dataset-aware
-date field types, product type and format defaults. An uncertain CDS POST fails
-the persistent order safely without repeating it; an operator must reconcile
-the existing CDS requests before resubmitting.
+All portal pages and API endpoints require either an authenticated web session (`GET /login`) or a `Bearer` CLI API Key:
 
-`SATELLITE_CONFIG` selects a different private config file. `SATELLITE_SERVER`
-and `SATELLITE_API_KEY` can override the saved centre connection in an existing
-secure environment; never pass a Key as a command argument or paste it into
-shell history. The CLI's scope is download
-task submission, catalogue/task/status queries and ordinary settings changes.
-It has no credential/account commands, Vault, encryption key, provider login,
-or local file-transfer responsibility. Provider status reports configuration status,
-not account or credential references. All provider accounts and Secrets remain
-in the centre and are managed through its protected administration interface.
-Only web sessions can create/list/revoke their own CLI Keys; even an administrator's
-Bearer Key cannot manage provider credentials/accounts or mint more Keys.
-The full Key is returned only once at creation. The centre stores its hash,
-tracks last use and rejects revoked Keys or Keys whose owner is disabled.
-Satellite Keys use `satellite_v1_`; NSMC Keys are not interchangeable. All
-catalogue/calendar/monitoring access and task submissions require a portal
-session or a valid CLI Key. Keys control shared centre tasks;
-this is an operator API, not a multi-tenant per-user archive.
+| Endpoint | Description |
+| :--- | :--- |
+| `GET /healthz` | Service health check |
+| `GET /api/v1/sources` | List configured satellite and reanalysis providers |
+| `GET /api/v1/catalog?source=<id>` | Browse stored official product catalogue |
+| `GET /api/v1/search?...` | Interactive granule search (up to 7-day window) |
+| `POST /api/v1/downloads` | Submit persistent single or multi-product acquisition order |
+| `GET /api/v1/archive/index-status` | Local archive scan status, year coverage, and index queue state |
+| `GET /api/v1/monitor/downloads?window=1h` | Provider-isolated transfer throughput and worker metrics (`realtime` to `1w`) |
+| `GET /api/v1/era5/schema` | Official CDS parameter schema for ERA5 collections |
 
-Ordinary settings, including adding, removing or changing provider proxy routes,
-must be implemented through a centre-owned settings API, not by editing local
-account/Vault data. Proxy authentication is a Secret and remains centre-only;
-CLI settings must not accept or return proxy passwords or credential payloads.
-The current CLI command list above does not yet include proxy settings commands.
+## Repository Layout
 
-`download submit` takes inclusive UTC dates and supports repeatable `--time HH:MM` or `--hourly`.
-The hourly shortcut requests all 24 nominal `HH:00` UTC slots each day.
-`--band` is available only for products with
-a configured band-to-filename profile. A request is persistent and may discover
-and transfer files asynchronously; inspect `download status` before treating it
-as complete. The existing `download create` command retains its exclusive end.
-For fixed-cadence products, requested `HH:MM` is a nominal slot: scan starts
-within an adaptive, bounded offset match that slot, including at UTC date
-boundaries. For non-fixed products, events retain their actual timestamps and
-requested times match only isolated nearby events. The year calendar uses the
-same policy; it exposes actual and nominal times separately and switches to an
-event axis rather than silently snapping scans outside the tolerance. Timing
-policies are configured in `internal/slotaxis/profiles.json`.
-The download page uses the same API with a normalized provider catalogue. Band
-profiles for GOES ABI and Himawari AHI full-disk live in
-`internal/downloadfilter/profiles.json`; other provider metadata
-comes from their existing catalogue adapters. Download transfer and archive
-promotion remain in the separate downloader service.
+```text
+cmd/
+  satellite/             Thin user CLI
+  satellited/            Central API and embedded web daemon
+internal/
+  app/                   Service orchestration and provider wiring
+  httpapi/               REST & SSE endpoints
+  model/                 Source / Collection / Granule / Asset domain models
+  objectstore/           Anonymous GCS and S3 listing clients
+  provider/              Source adapters (calipso, cloudsat, earthcare, era5, eumetsat, goes, himawari, laads)
+  transfer/              HTTP transfer primitives
+web/                     Embedded dependency-free web interface
+deploy/                  Deployment scripts and archive maintenance utilities
+docs/                    Architecture and operations documentation
+```
 
-## Verification policy
+## Deployment & Configuration
 
-Project builds and tests run only in GitHub Actions. Development machines and production data nodes are used for source editing, configuration, deployment and post-deployment health checks, not project builds/tests.
+Builds and tests run in GitHub Actions (`CGO_ENABLED=0`, `GOAMD64=v1` static binaries). Production hosts run `satellited.service` alongside `satellite-data-downloader.service` as user-level `systemd` units.
 
-On the data node, the user-level units are `satellited.service` and
-`satellite-data-downloader.service`. Check the exact unit names with
-`systemctl --user list-unit-files '*satellite*'` before diagnosing a service;
-`systemctl --user show` can report `inactive` for a unit that does not exist.
-There is no `satellite-downloader.service` unit.
+Key environment variables for `satellited`:
 
-Linux deployment artifacts are built with `CGO_ENABLED=0` and `GOAMD64=v1` so the same CI artifact can run on older HPC userspace distributions without inheriting the GitHub runner's glibc requirement.
+| Variable | Purpose | Example / Default |
+| :--- | :--- | :--- |
+| `SATELLITED_STATE_DB` | Central state & index SQLite database | `~/.local/state/satellite-data/state.sqlite3` |
+| `SATELLITE_CENTRAL_SOCKET` | Private IPC socket shared with downloader | `$XDG_RUNTIME_DIR/satellite-data/central.sock` |
+| `SATELLITED_ARCHIVE_ROOT` | General satellite archive root | `/data/archive/satellite` |
+| `SATELLITED_EARTHCARE_ARCHIVE` | Dedicated EarthCARE archive root | `/data/archive/EarthCare` |
+| `SATELLITED_ERA5_ARCHIVE` | Dedicated ERA5 archive root | `/data/archive/ERA5` |
+| `SATELLITED_HIMAWARI_ARCHIVE` | Historical Himawari archive root | `/data/archive/Himawari` |
