@@ -1,349 +1,123 @@
 # Satellite Data Downloader
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+**English** | [简体中文](README.zh-CN.md)
 
-Durable, provider-isolated transfer, verification and archive-promotion service
-for [`nuist-fy-lab/satellite-data`](https://github.com/nuist-fy-lab/satellite-data).
+Durable, provider-isolated transfer, verification, and archive-promotion service for [`nuist-fy-lab/satellite-data`](https://github.com/nuist-fy-lab/satellite-data).
 
-This daemon is intentionally narrow: `satellite-data` owns catalogues, discovery,
-orders, credentials and user-facing APIs; the downloader turns approved asset tasks
-into verified archive files.
+## Overview
 
-## What it does
+`satellite-data-downloader` is the dedicated data-plane daemon paired with `satellite-data`. While `satellite-data` manages catalogues, orders, credentials, and user-facing APIs, this service focuses exclusively on turning approved asset tasks into verified archive files:
 
-- persists download tasks in SQLite before work starts;
-- keeps independent transfer and verification pools per provider;
-- resumes interrupted HTTP transfers;
-- adapts provider concurrency and request pacing under congestion;
-- separates network transfer from integrity verification;
-- atomically promotes verified files into provider archives;
-- refuses to overwrite a different file at an existing archive path;
-- reports durable archive-completion events back to the centre.
-
-It does **not** own catalogue discovery, portal authentication, provider accounts,
-credentials, proxy configuration or the public web UI.
-
-## Architecture
+- Persists download tasks in SQLite before transfer begins;
+- Isolates transfer and verification worker pools per provider;
+- Supports HTTP resumable transfers (`Range` / `If-Range` / `ETag`) and recycles abnormally slow connections without losing partial progress;
+- Decouples network transfer from file integrity verification;
+- Verifies local SHA-256 alongside authoritative upstream checksums (MD5, CRC32C, SHA-256) prior to atomic archive promotion;
+- Refuses to overwrite existing files with different content and delivers durable completion events back to the centre.
 
 ```text
- satellite-data
- discovery + orders + credentials
+ satellite-data (discovery + orders + credentials)
           │
-          │ private Unix sockets
+          │ Private Unix Sockets
           ▼
  ┌─────────────────────────────┐
  │ satellite-data-downloader   │
  │                             │
- │ durable SQLite task queue   │
+ │ Durable SQLite Task Queue   │
  │          │                  │
  │          ▼                  │
- │ provider transfer workers   │
+ │ Provider Transfer Workers   │
  │          │                  │
  │          ▼                  │
- │ provider verify workers     │
+ │ Provider Verify Workers     │
  │          │                  │
  │          ▼                  │
- │ atomic archive promotion    │
+ │ Atomic Archive Promotion    │
  └──────────┬──────────────────┘
             │
-            ├── archive file
-            └── durable completion event ──► satellite-data
+            ├──► Verified Archive File
+            └──► Durable Completion Event ──► satellite-data
 ```
 
-Transfer and verification are separate stages. Once a network transfer is
-checkpointed as `verifying`, that transfer worker can immediately accept another
-task while a provider-local verification worker hashes and promotes the completed
-payload.
+## Provider Isolation & Adaptive Pacing
 
-## Provider isolation
+Each provider operates with its own transfer pool, verification pool, adaptive concurrency, and retry backoff clock so a slow or throttled upstream source never blocks other providers.
 
-Each source has its own transfer pool, verification pool, adaptive concurrency and
-retry clock. A slow or failing provider therefore cannot consume another
-provider's worker slots.
+| Provider | Initial / Max Transfers | Verify Workers | Authoritative Upstream Checksum |Centre Auth Reference |
+| :--- | :---: | :---: | :--- | :--- |
+| **GOES** | 4 / 8 | 2 | MD5 + CRC32C (GCS metadata) | anonymous / centre route |
+| **Himawari-8** | 1 / 1 | 1 | Local SHA-256 | anonymous / centre route |
+| **Himawari-9** | 1 / 1 | 1 | Full-object S3 checksum | anonymous / centre route |
+| **MODIS** | 4 / 8 | 2 | MD5 (NASA CMR UMM-G) | `laads` |
+| **VIIRS** | 4 / 4 | 2 | MD5 (NASA CMR UMM-G) | `laads` |
+| **MTG** | 2 / 2 | 1 | MD5 (EUMETSAT Browse) | `eumetsat` |
+| **EarthCARE** | 2 / 2 | 1 | Local SHA-256 | `earthcare` |
+| **CALIPSO** | 3 / 3 | 2 | MD5 (NASA CMR UMM-G) | `earthdata` |
+| **CloudSat** | 2 / 2 | 2 | Local SHA-256 | `cloudsat` |
+| **ERA5** | 2 / 2 | 2 | Local SHA-256 | `cds` |
 
-| Provider | Initial / max transfers | Verify workers | Centre auth reference |
-| --- | ---: | ---: | --- |
-| GOES | 4 / 8 | 2 | anonymous / centre route |
-| Himawari-8 | 1 / 1 | 1 | anonymous / centre route |
-| Himawari-9 | 1 / 1 | 1 | anonymous / centre route |
-| MODIS | 4 / 4 | 2 | `laads` |
-| VIIRS | 4 / 4 | 2 | `laads` |
-| MTG | 2 / 2 | 1 | `eumetsat` |
-| EarthCARE | 2 / 2 | 1 | `earthcare` |
-| CALIPSO | 3 / 3 | 2 | `earthdata` |
-| CloudSat | 2 / 2 | 2 | `cloudsat` |
-| ERA5 | 2 / 2 | 2 | `cds` |
+### Congestion Control & Retries
 
-Himawari defaults to one transfer and one verifier per satellite because its
-segmented AHI full-disk objects can otherwise dominate shared bandwidth and I/O.
+- **Adaptive Pacing**: Providers start with a 200 ms launch interval. Timeouts or HTTP `408`/`429`/`5xx` responses scale down concurrency and widen the interval up to 5 s; sustained success restores concurrency and narrows the interval down to 100 ms.
+- **Jittered Exponential Backoff**: Transient failures retry with equal-jitter exponential backoff (5 s base up to 10 min cap) while respecting upstream `Retry-After` headers (up to 1 hour). HTTP `404`/`410` responses are verified up to 6 attempts before failing permanently.
+- **Slow-Transfer Recycling**: Evaluates moving-window throughput after a 30 s grace period and recycles stalled connections while preserving validated `.part` files for seamless range resumption.
 
-### Adaptive pacing
+## Access & Security Model
 
-Each provider starts with a 200 ms network-start gap. Repeated timeouts or
-HTTP 408/429/5xx responses reduce adaptive concurrency and can extend the gap up
-to 5 seconds. Sustained success gradually restores concurrency and can reduce the
-gap to 100 ms.
+All upstream credentials, accounts, and proxy policies reside in the `satellite-data` centre. The downloader holds no secrets or credential fallback variables; before each transfer it requests an authorized route over `SATDOWN_CENTRAL_SOCKET`. If no route is currently available, tasks wait in `waiting_auth` and resume automatically once the centre restores access.
 
-`Retry-After` is respected for provider-wide starts, capped at one hour. All
-satellite products use the same durable, equal-jitter exponential backoff for
-download retries: 5s, 10s, 20s, 40s, etc. with a 10-minute capped baseline
-and a randomized delay in [50%, 100%] of that baseline. A server-provided
-`Retry-After` is treated as a minimum, with small extra jitter.
-
-HTTP 404/410 results are rechecked for up to **six actual download attempts**
-before becoming terminal failures. Temporary network errors, 429, 5xx and
-central gateway outages continue retrying with capped backoff. Invalid
-requests (e.g. 400/422) fail immediately; exhausted or unavailable credentials
-use the separate waiting-for-auth flow.
-
-GOES and MODIS start at four transfers and can adapt up to their ceiling of eight.
-Other providers normally start at their configured ceiling. The initial value can
-be overridden with `SATDOWN_<PROVIDER>_INITIAL_TRANSFER_CONCURRENCY`.
-
-### Slow-transfer recycling
-
-GOES enables a low-throughput guard by default. After a 30-second startup grace,
-the downloader evaluates a 30-second moving window. A connection that remains
-abnormally slow for 45 seconds is recycled while preserving its validated
-`.part` file and ETag, so the durable retry resumes with `Range`/`If-Range`
-instead of restarting the object.
-
-The threshold is the greater of 64 KiB/s and 15% of the median rate of the last
-16 normally completed transfers for that provider. Recycling one slow connection
-does not by itself reduce provider-wide adaptive concurrency; congestion handling
-remains a separate signal.
-
-The policy is configurable through:
+## Task Lifecycle & Archive Integrity
 
 ```text
-SATDOWN_<PROVIDER>_LOW_THROUGHPUT_ENABLED
-SATDOWN_<PROVIDER>_LOW_THROUGHPUT_STARTUP_GRACE
-SATDOWN_<PROVIDER>_LOW_THROUGHPUT_WINDOW
-SATDOWN_<PROVIDER>_LOW_THROUGHPUT_SUSTAIN
-SATDOWN_<PROVIDER>_LOW_THROUGHPUT_FLOOR_BPS
-SATDOWN_<PROVIDER>_LOW_THROUGHPUT_BASELINE_FRACTION
+queued ──► downloading ──► verifying ──► complete ──► archive-event outbox
+               │               │
+               ├─► retry       ├─► redownload (on checksum mismatch)
+               └─► waiting_auth└─► verification retry (on path collision)
 ```
 
-## Access model
+1. **Staging & Single-Pass Hashing**: Payloads land in `SATDOWN_DOWNLOAD_ROOT` first. Verification workers compute local SHA-256 and any applicable upstream digests in a single file pass without occupying transfer workers.
+2. **Atomic Promotion**: Verified files are promoted atomically into the target archive root. Pre-existing verified local files matching official identity and SHA-256 can also be adopted across orders without repeating network transfer.
+3. **Historical Checksum Sidecar**: An optional `satellite-checksum-sidecar` daemon audits historical completed archives in read-only mode at low I/O priority (`8 MiB/s` cap) and records official checksum evidence without interfering with live downloads.
 
-All provider credentials, accounts, proxy routes and authentication logic live in
-the `satellite-data` centre.
+## Configuration & Deployment
 
-The downloader has no credential Vault, access database or Secret environment
-fallback. For every transfer it asks the centre for an allowed route over the
-private central Unix socket. The centre-mediated transfer path preserves resume
-headers such as `Range`, `If-Range` and `ETag`.
+See [`deploy/systemd/satellite-data-downloader.env.example`](deploy/systemd/satellite-data-downloader.env.example) for a complete template. Keep Unix sockets on node-local runtime storage (`$XDG_RUNTIME_DIR`) rather than shared network filesystems (NFS/GPFS).
 
-Even nominally anonymous providers still depend on the centre for route policy.
-If no usable route is available, tasks enter `waiting_auth` and are released once
-the centre reports a usable route again.
+### Core Environment Variables
 
-`SATDOWN_CENTRAL_SOCKET` must point to the same socket as
-`SATELLITE_CENTRAL_SOCKET` in the centre service.
-
-For the coordinated credential migration and rollback procedure, see the centre's
-[`docs/central-access.md`](https://github.com/nuist-fy-lab/satellite-data/blob/main/docs/central-access.md).
-
-## Task lifecycle
-
-The durable queue is designed to survive process restarts.
-
-```text
-queued
-  │
-  ▼
-downloading ── temporary failure ──► retry
-  │
-  ├── no usable centre route ─────► waiting_auth
-  │
-  ▼
-verifying
-  │
-  ├── integrity failure ──────────► redownload
-  ├── archive collision ──────────► verification retry
-  │
-  ▼
-complete
-  │
-  ▼
-archive-event outbox
-  │
-  └── retained until satellite-data acknowledges it
-```
-
-HTTP 404/410 responses are retried with jittered exponential backoff up to six
-times before the asset is marked failed. Credential
-and route failures are handled separately from ordinary transient network errors.
-
-## Archive safety
-
-Archive promotion is conservative:
-
-- downloads land in the staging/download root first;
-- verification completes before archive promotion;
-- promotion is atomic where the filesystem permits it;
-- an existing different file at the target path is never silently replaced;
-- integrity failures remove the bad staged payload and schedule a redownload;
-- completed archive events remain in a SQLite outbox until acknowledged by the
-  centre, so a temporary centre outage does not lose completion state.
-
-### Historical checksum audit sidecar
-
-The separate `satellite-checksum-sidecar` process re-audits already completed
-archives without taking a download/verification worker or serializing live
-downloads with historical verification. It reads the downloader's SQLite
-database in **read-only mode** and maintains its own checkpoint, independent
-backoff and mismatch records in
-`~/.local/state/satellite-data-checksum-sidecar/audit.sqlite3`.
-Verified evidence is recorded through the protected downloader Unix socket;
-only checksum evidence on an already-completed task may change, never its
-download state, archive path, original SHA-256, or stored bytes.
-
-By default the sidecar uses one scanner, caps archive reads at 8 MiB/s, spaces
-public metadata requests by at least 500 ms and runs at low CPU/I/O priority
-(see `deploy/systemd/satellite-checksum-sidecar.service`). Metadata outages
-are retried independently. Missing or inconsistent archives are recorded as
-`missing` or `mismatch` for manual investigation: the sidecar never deletes,
-overwrites, or redownloads a historical file. Archives without authoritative
-checksums are still checked against their original local SHA-256 and marked
-`local_only`. No cloud scheduled tasks are used.
-
-### Official checksums and local SHA-256
-
-Local SHA-256 always protects staged caches and archived copies. When the
-provider has a verified public file-level checksum API, independent verification
-workers query official metadata before promoting the file:
-
-| Provider | Authoritative file check | Metadata API |
-| --- | --- | --- |
-| MODIS / VIIRS / CALIPSO | MD5 | NASA CMR UMM-G, matching granule and filename |
-| GOES | MD5 and CRC32C (both checked) | Google Cloud Storage object JSON |
-| MTG | MD5 | EUMETSAT Browse product detail |
-| Himawari-9 | Full-object CRC32 / CRC32C / SHA-1 / SHA-256 as actually returned | S3 HEAD with checksum mode |
-| Himawari-8 / EarthCARE / CloudSat / ERA5 | No confirmed full-file checksum exposed by current data interfaces | Local SHA-256 only, never treating ETags as MD5 |
-
-Metadata lookups use public direct routes and run **only in verification
-workers**, without consuming download connections. Already-queued tasks benefit
-without re-enqueueing. Completion records distinguish `verified` (official
-checksum matched), `local_only` (no available official checksum), and
-`legacy_local_only` (older completed records not retrospectively checked).
-Temporary checksum API outages retry verification without redownloading;
-checksum mismatches block promotion and schedule a clean redownload. SHA-256 and
-all authoritative digests are computed in a single pass over the staged file.
-
-Shared archive roots create group-writable files/directories when configured for
-shared operation. Provider-specific archive roots override the general archive
-root.
-
-## Configuration
-
-The complete non-secret example is in
-[`deploy/systemd/satellite-data-downloader.env.example`](deploy/systemd/satellite-data-downloader.env.example).
-
-### Core paths
-
-| Variable | Purpose | Default / production example |
-| --- | --- | --- |
+| Variable | Purpose | Default / Example |
+| :--- | :--- | :--- |
 | `SATDOWN_SOCKET` | Downloader task API Unix socket | `$XDG_RUNTIME_DIR/satellite-data-downloader/downloader.sock` |
-| `SATDOWN_DB` | Durable queue database | `~/.local/state/satellite-data-downloader/downloader.sqlite3` |
-| `SATDOWN_DOWNLOAD_ROOT` | Staging/download root | `~/.local/state/satellite-data-downloader/delivery` |
-| `SATDOWN_ARCHIVE_ROOT` | General satellite archive root | production: `/misc/nuist_data1/public_sharing/satellite` |
-| `SATDOWN_CENTRAL_SOCKET` | Centre authorization/fetch socket | `$XDG_RUNTIME_DIR/satellite-data/central.sock` |
-| `SATDOWN_ARCHIVE_EVENT_SOCKET` | Completion-event socket | `$XDG_RUNTIME_DIR/satellite-data/archive-events.sock` |
+| `SATDOWN_DB` | Durable SQLite queue database | `~/.local/state/satellite-data-downloader/downloader.sqlite3` |
+| `SATDOWN_DOWNLOAD_ROOT` | Temporary staging directory | `~/.local/state/satellite-data-downloader/delivery` |
+| `SATDOWN_ARCHIVE_ROOT` | Default satellite archive root | `/data/archive/satellite` |
+| `SATDOWN_<PROVIDER>_ARCHIVE_ROOT` | Provider-specific archive root override | `/data/archive/EarthCare`, `/data/archive/ERA5` |
+| `SATDOWN_CENTRAL_SOCKET` | Centre route/authorization socket | `$XDG_RUNTIME_DIR/satellite-data/central.sock` |
+| `SATDOWN_ARCHIVE_EVENT_SOCKET` | Durable completion-event socket | `$XDG_RUNTIME_DIR/satellite-data/archive-events.sock` |
 
-Production also uses provider-specific shared roots where appropriate:
+Per-provider concurrency and timeout overrides follow `SATDOWN_<PROVIDER>_{ENABLED,INITIAL_TRANSFER_CONCURRENCY,TRANSFER_CONCURRENCY,VERIFY_CONCURRENCY,REQUEST_TIMEOUT}`.
 
-```text
-SATDOWN_EARTHCARE_ARCHIVE_ROOT=/misc/nuist_data1/public_sharing/EarthCare
-SATDOWN_ERA5_ARCHIVE_ROOT=/misc/nuist_data1/public_sharing/ERA5
-```
-
-### Provider worker settings
-
-Every provider supports:
-
-```text
-SATDOWN_<PROVIDER>_ENABLED
-SATDOWN_<PROVIDER>_INITIAL_TRANSFER_CONCURRENCY
-SATDOWN_<PROVIDER>_TRANSFER_CONCURRENCY
-SATDOWN_<PROVIDER>_VERIFY_CONCURRENCY
-SATDOWN_<PROVIDER>_REQUEST_TIMEOUT
-SATDOWN_<PROVIDER>_ARCHIVE_ROOT
-```
-
-Concurrency values are bounded to `1..32` by configuration loading.
-
-Runtime configuration is intentionally non-secret. Do not add provider Tokens,
-passwords or proxy passwords to the downloader environment.
-
-## Runtime paths and sockets
-
-When `XDG_RUNTIME_DIR` is available, Unix sockets default there so a shared HOME
-filesystem cannot expose one node's live listener path to another node.
-
-Avoid placing live Unix sockets on GPFS, NFS or another shared filesystem. State
-databases may be durable, but listener paths must remain node-local.
-
-## systemd service
-
-The included user service is:
-
-```text
-deploy/systemd/satellite-data-downloader.service
-```
-
-It loads optional runtime settings from:
-
-```text
-~/.config/satellite-data-downloader/runtime.env
-```
-
-Typical status and log checks:
+### Running with systemd
 
 ```bash
 systemctl --user status satellite-data-downloader.service
 journalctl --user -u satellite-data-downloader.service -n 100 --no-pager
 ```
 
-The service uses `Restart=on-failure`, `NoNewPrivileges=true` and a private
-temporary directory.
-
-## Repository layout
+## Repository Layout
 
 ```text
-cmd/satellite-data-downloader/   daemon entry point
-
+cmd/
+  satellite-data-downloader/   Main downloader daemon
+  satellite-checksum-sidecar/  Low-impact historical checksum auditor
 internal/
-  access/                       centre route/auth client
-  archiveevent/                 durable completion notifications
-  config/                       non-secret runtime configuration
-  model/                        task/status types
-  pipeline/                     provider workers, pacing and retries
-  server/                       private downloader task API
-  store/                        SQLite queue and recovery
-  transfer/                     resumable HTTP + verification/promotion
-
-deploy/systemd/                 user unit + environment example
+  access/                      Centre route & authorization client
+  archiveevent/                Durable completion event outbox
+  config/                      Non-secret runtime configuration loader
+  model/                       Task and lifecycle state models
+  pipeline/                    Provider worker pools, pacing, and retry logic
+  server/                      Private Unix socket task API
+  store/                       SQLite persistence and crash recovery
+  transfer/                    Resumable HTTP client, verifier, and archive promoter
+deploy/systemd/                User systemd units and environment templates
 ```
-
-## Relationship with `satellite-data`
-
-Keep the two repositories conceptually separate:
-
-| `satellite-data` | `satellite-data-downloader` |
-| --- | --- |
-| discovers official assets | transfers approved assets |
-| owns users and API Keys | has no public user authentication |
-| owns provider credentials and proxy routes | consumes centre-authorized routes |
-| schedules persistent acquisition orders | persists individual transfer tasks |
-| indexes archive coverage | verifies and promotes files |
-| exposes portal/API/CLI state | exposes private task/progress state |
-
-The centre may be temporarily unavailable without losing already completed
-downloads: completion notifications remain durable until acknowledged.
-
-## Development and verification
-
-Project builds and tests run in GitHub Actions. Development and production hosts
-are used for source editing, configuration, deployment and runtime health checks,
-not as substitute build/test runners.
