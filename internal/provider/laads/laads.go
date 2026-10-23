@@ -286,7 +286,19 @@ func modisDataLink(links []cmrLink) (cmrLink, bool) {
 		}
 		relative := strings.TrimSuffix(strings.TrimPrefix(link.Href, opendapPrefix), ".html")
 		if relative != "" && !strings.Contains(relative, "..") {
-			return cmrLink{Rel: link.Rel, Type: link.Type, Href: archivePrefix + relative, Title: link.Title}, true
+			// An OPeNDAP service advertises text/html, but its corresponding
+			// LAADS archive object is scientific data. This matters for MODIS C7:
+			// its L1B/geolocation granules are NetCDF rather than C6.1 HDF4.
+			name := path.Base(relative)
+			mediaType := modisMediaType("", name)
+			for _, data := range links {
+				if data.Inherited || !strings.Contains(data.Rel, "/data#") || path.Base(data.Href) != name {
+					continue
+				}
+				mediaType = modisMediaType(data.Type, name)
+				break
+			}
+			return cmrLink{Rel: link.Rel, Type: mediaType, Href: archivePrefix + relative, Title: link.Title}, true
 		}
 	}
 	for _, link := range links {
@@ -379,15 +391,14 @@ func modisResolution(title string) string {
 }
 
 func modisMediaType(linkType, name string) string {
-	if linkType != "" {
-		return linkType
-	}
 	lower := strings.ToLower(name)
 	switch {
 	case strings.HasSuffix(lower, ".nc"):
 		return "application/x-netcdf"
 	case strings.HasSuffix(lower, ".hdf"), strings.HasSuffix(lower, ".h5"):
 		return "application/x-hdf"
+	case linkType != "":
+		return linkType
 	default:
 		return "application/octet-stream"
 	}
