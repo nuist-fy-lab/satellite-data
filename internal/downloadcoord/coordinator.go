@@ -126,9 +126,24 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 	if !chunkEnd.After(request.Cursor) {
 		return c.store.AdvanceDownloadRequest(ctx, request.ID, request.End, 0, nil, true)
 	}
+	var sceneTimes []string
+	if len(request.Selection.Scenes) > 0 {
+		next, found := request.Selection.NextSceneDay(request.Cursor, request.End)
+		if !found {
+			return c.store.AdvanceDownloadRequest(ctx, request.ID, request.End, 0, nil, true)
+		}
+		sceneTimes, _ = request.Selection.TimesForDay(next.Format(time.DateOnly))
+		if next.After(request.Cursor) {
+			return c.store.AdvanceDownloadRequest(ctx, request.ID, next, 0, nil, false)
+		}
+		chunkEnd = next.AddDate(0, 0, 1)
+		if chunkEnd.After(request.End) {
+			chunkEnd = request.End
+		}
+	}
 	axis := slotaxis.Resolve(request.SourceID, request.CollectionID, product.Cadence)
 	searchStart, searchEnd := request.Cursor, chunkEnd
-	if len(request.Selection.Times) > 0 {
+	if len(request.Selection.Times) > 0 || len(request.Selection.Scenes) > 0 {
 		searchStart = searchStart.Add(-axis.Max)
 		searchEnd = searchEnd.Add(axis.Max)
 	}
@@ -157,8 +172,15 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 	selected := 0
 	tolerance := axis.Tolerance(observed)
 	for _, granule := range granules {
-		nominal, match := axis.MatchWithin(granule.Start, request.Selection.Times, observed, tolerance)
+		times := request.Selection.Times
+		if len(request.Selection.Scenes) > 0 {
+			times = sceneTimes
+		}
+		nominal, match := axis.MatchWithin(granule.Start, times, observed, tolerance)
 		if !match || nominal.Before(request.Cursor) || !nominal.Before(chunkEnd) {
+			continue
+		}
+		if len(request.Selection.Scenes) > 0 && nominal.Format(time.DateOnly) != request.Cursor.Format(time.DateOnly) {
 			continue
 		}
 		matched := false

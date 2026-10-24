@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -135,6 +136,9 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 
 	active, err := emit()
 	if err != nil {
+		if r.Context().Err() == nil {
+			slog.Warn("index stream initial snapshot", "product", productKey, "year", year, "error", err)
+		}
 		return
 	}
 	if !active && !watch {
@@ -142,13 +146,13 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refresh progressive backfills promptly without permanently polling every
-	// viewer at high frequency once the durable calendar is fully warm.
+	// A yearly snapshot can involve substantial PostgreSQL work. In particular,
+	// avoid hammering it twice per second per viewer during index warmup.
 	interval := func() time.Duration {
 		if warming {
-			return 500 * time.Millisecond
+			return 2 * time.Second
 		}
-		return 2 * time.Second
+		return 5 * time.Second
 	}
 	updates := time.NewTimer(interval())
 	heartbeat := time.NewTicker(15 * time.Second)
@@ -161,6 +165,9 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 		case <-updates.C:
 			active, err := emit()
 			if err != nil {
+				if r.Context().Err() == nil {
+					slog.Warn("index stream refresh", "product", productKey, "year", year, "error", err)
+				}
 				return
 			}
 			if !active && !watch {
