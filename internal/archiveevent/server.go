@@ -29,7 +29,7 @@ func Run(ctx context.Context, socket string, record func(context.Context, Event)
 	if socket == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(socket), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return err
 	}
 	listener, err := listen(socket)
@@ -92,7 +92,7 @@ func listen(socket string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(socket, 0o660); err != nil {
+	if err := os.Chmod(socket, 0o600); err != nil {
 		_ = listener.Close()
 		return nil, err
 	}

@@ -68,6 +68,55 @@ func TestSelectedDownloadCatalogAndSubmission(t *testing.T) {
 	}
 }
 
+func TestSingleProductGOESSparseSceneSubmission(t *testing.T) {
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const collection = "goes18:ABI-L1b-RadC"
+	if err := store.UpsertProducts(t.Context(), "goes18", []model.Product{{
+		ProductKey: collection, SourceID: "goes18", DataType: "ABI-L1b-RadC", AreaType: "CONUS",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := app.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(registry, store)
+
+	for _, tc := range []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{"CLI null scenes", `{"source":"goes18","collection":"goes18:ABI-L1b-RadC","start":"2025-06-07","end":"2025-06-08","band":3,"times":["18:00"],"scenes":null,"inputs":{}}`, http.StatusAccepted},
+		{"sparse scenes", `{"source":"goes18","collection":"goes18:ABI-L1b-RadC","start":"2025-06-07","end":"2025-06-09","band":7,"scenes":{"2025-06-07":["18:00","18:00"],"2025-06-08":["00:00"]},"inputs":{}}`, http.StatusAccepted},
+		{"out of range scene", `{"source":"goes18","collection":"goes18:ABI-L1b-RadC","start":"2025-06-07","end":"2025-06-09","band":7,"scenes":{"2025-06-09":["00:00"]},"inputs":{}}`, http.StatusBadRequest},
+		{"conflicting time selection", `{"source":"goes18","collection":"goes18:ABI-L1b-RadC","start":"2025-06-07","end":"2025-06-09","band":7,"times":["18:00"],"scenes":{"2025-06-07":["18:00"]},"inputs":{}}`, http.StatusBadRequest},
+		{"invalid scene minute", `{"source":"goes18","collection":"goes18:ABI-L1b-RadC","start":"2025-06-07","end":"2025-06-09","band":7,"scenes":{"2025-06-07":["24:00"]},"inputs":{}}`, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := httptest.NewRecorder()
+			handler.ServeHTTP(resp, httptest.NewRequest(http.MethodPost, "/api/v1/downloads", strings.NewReader(tc.body)))
+			if resp.Code != tc.status {
+				t.Fatalf("status=%d want=%d body=%s", resp.Code, tc.status, resp.Body.String())
+			}
+		})
+	}
+	requests, err := store.DownloadRequests(t.Context(), 10)
+	if err != nil || len(requests) != 2 {
+		t.Fatalf("requests=%+v err=%v", requests, err)
+	}
+	if requests[0].Selection.Band != 7 || len(requests[0].Selection.Scenes) != 2 ||
+		len(requests[0].Selection.Scenes["2025-06-07"]) != 1 ||
+		requests[0].Selection.Scenes["2025-06-07"][0] != "18:00" ||
+		requests[1].Selection.Band != 3 || len(requests[1].Selection.Times) != 1 {
+		t.Fatalf("incorrect persisted selections: %+v", requests)
+	}
+}
+
 func TestDownloadHistoryHTTPPaginatesInBatchesOfFifty(t *testing.T) {
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
 	if err != nil {

@@ -127,7 +127,7 @@ func runConfigSet(args []string) error {
 		if err != nil && err != io.EOF {
 			return errors.New("cannot read CLI API key")
 		}
-		key = line
+		key = strings.TrimSpace(line)
 	}
 	if err := saveCLIConfig(configPath(), cliConfig{Server: server, APIKey: key}); err != nil {
 		return err

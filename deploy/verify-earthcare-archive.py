@@ -286,7 +286,8 @@ def record(db, path, name, size, mtime, digest, collection, item, url, root, man
             raise ValueError("indexed file changed before recording")
         if official_asset(db, path, name, size, root) != (collection, item, url):
             raise ValueError("official reference changed before recording")
-        if os.path.commonpath((os.path.realpath(path), root)) != root:
+        real_root = os.path.realpath(root)
+        if os.path.commonpath((os.path.realpath(path), real_root)) != real_root:
             raise ValueError("file resolves outside archive root")
         current = os.stat(path, follow_symlinks=False)
         if not stat.S_ISREG(current.st_mode) or (current.st_size, current.st_mtime_ns) != (size, mtime):

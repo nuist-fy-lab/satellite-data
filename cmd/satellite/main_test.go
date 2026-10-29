@@ -51,6 +51,28 @@ func TestDownloadProvidersOmitsAccessDetails(t *testing.T) {
 			t.Fatalf("CLI exposes access detail %q", forbidden)
 		}
 	}
+	if err := c.downloadProviders("unexpected-arg"); err == nil {
+		t.Fatal("accepted unexpected positional argument")
+	}
+	if _, err := output.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if err := output.Truncate(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.downloadProviders("--json"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	jsonBytes, err := io.ReadAll(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(jsonBytes), `"source_id":"goes18"`) || strings.Contains(string(jsonBytes), "internal-account-ref") {
+		t.Fatalf("unexpected JSON output: %s", jsonBytes)
+	}
 }
 
 func TestDownloadSubmitInclusiveDates(t *testing.T) {

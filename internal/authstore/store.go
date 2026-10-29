@@ -237,6 +237,10 @@ func (s *Store) VerifyPassword(ctx context.Context, username, password string) (
 		 FROM users WHERE username=? COLLATE NOCASE`, strings.TrimSpace(username),
 	).Scan(&user.ID, &user.Username, &user.Role, &disabled, &user.CreatedAt, &salt, &expected, &iterations)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			_ = pbkdf2SHA256([]byte(password), make([]byte, passwordSaltBytes), passwordIterations, passwordKeyBytes)
+			return User{}, errors.New("invalid credentials")
+		}
 		return User{}, err
 	}
 	if disabled != 0 {

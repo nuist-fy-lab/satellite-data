@@ -505,6 +505,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		End        string                     `json:"end"`
 		Band       int                        `json:"band"`
 		Times      []string                   `json:"times"`
+		Scenes     map[string][]string        `json:"scenes"`
 		Inputs     map[string]json.RawMessage `json:"inputs"`
 	}
 	if err := decoder.Decode(&payload); err != nil {
@@ -543,6 +544,10 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if payload.Source == "era5" {
+		if len(payload.Scenes) > 0 {
+			writeError(w, http.StatusBadRequest, errors.New("per-day scenes are only supported by archived products"))
+			return
+		}
 		if payload.Band != 0 {
 			writeError(w, http.StatusBadRequest, errors.New("ERA5 uses variables, not --band"))
 			return
@@ -579,10 +584,17 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("source does not have a downloader pipeline"))
 		return
 	}
-	selection, err := (downloadfilter.Selection{Band: payload.Band, Times: payload.Times}).Normalize(payload.Source, payload.Collection)
+	selection, err := (downloadfilter.Selection{Band: payload.Band, Times: payload.Times, Scenes: payload.Scenes}).Normalize(payload.Source, payload.Collection)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	for day := range selection.Scenes {
+		at, _ := time.Parse(time.DateOnly, day) // Normalize has already validated each date.
+		if at.Before(start) || !at.Before(end) {
+			writeError(w, http.StatusBadRequest, errors.New("scene date lies outside the requested UTC interval"))
+			return
+		}
 	}
 	request, err := s.store.EnqueueSelectedDownloadRequestOwned(r.Context(), user.ID, payload.Source, providerID, payload.Collection, start, end, selection)
 	if err != nil {
@@ -823,8 +835,8 @@ func (s *Server) indexRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	end, err := time.Parse(time.DateOnly, strings.TrimSpace(values.Get("end")))
-	if err != nil || !end.After(start) {
-		writeError(w, http.StatusBadRequest, errors.New("invalid end day"))
+	if err != nil || !end.After(start) || start.Year() < 1940 || end.Sub(start) > 366*24*time.Hour {
+		writeError(w, http.StatusBadRequest, errors.New("invalid or excessive date range (max 366 days)"))
 		return
 	}
 	if _, selected, err := s.store.ProductSource(r.Context(), product); err != nil {

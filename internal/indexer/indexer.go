@@ -73,15 +73,22 @@ func (i *Indexer) RecordArchiveEvent(ctx context.Context, event archiveevent.Eve
 		return err
 	}
 	root := i.archiveRoot
-	if event.SourceID == "earthcare" || event.SourceID == "era5" {
-		index := 0
-		if event.SourceID == "era5" {
-			index = 1
+	switch event.SourceID {
+	case "earthcare":
+		if i.sharedRoots[0] != "" {
+			root = i.sharedRoots[0]
 		}
-		if i.sharedRoots[index] == "" {
-			return errors.New("shared archive root is not configured")
+	case "era5":
+		if i.sharedRoots[1] != "" {
+			root = i.sharedRoots[1]
 		}
-		root = i.sharedRoots[index]
+	case "himawari8", "himawari9":
+		if i.sharedRoots[2] != "" {
+			if rel, relErr := filepath.Rel(i.sharedRoots[2], path); relErr == nil && rel != "." && rel != ".." &&
+				!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+				root = i.sharedRoots[2]
+			}
+		}
 	}
 	rel, err := filepath.Rel(root, path)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {

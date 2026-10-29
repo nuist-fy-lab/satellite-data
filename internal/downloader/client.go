@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	dataplanemodel "github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 )
 
 type Client struct {
@@ -18,20 +20,7 @@ type Client struct {
 	http   *http.Client
 }
 
-type TaskSpec struct {
-	Key          string `json:"key,omitempty"`
-	SourceID     string `json:"source_id"`
-	CollectionID string `json:"collection_id"`
-	GranuleID    string `json:"granule_id"`
-	AssetID      string `json:"asset_id"`
-	Name         string `json:"name"`
-	URL          string `json:"url"`
-	AuthRef      string `json:"auth_ref,omitempty"`
-	RelativeDir  string `json:"relative_dir"`
-	Size         int64  `json:"size,omitempty"`
-	ETag         string `json:"etag,omitempty"`
-	MediaType    string `json:"media_type,omitempty"`
-}
+type TaskSpec = dataplanemodel.TaskSpec
 
 type Task struct {
 	ID           int64  `json:"id"`
@@ -45,18 +34,7 @@ type Task struct {
 	LastError    string `json:"last_error,omitempty"`
 }
 
-type ProviderStatus struct {
-	SourceID            string         `json:"source_id"`
-	Enabled             bool           `json:"enabled"`
-	TransferConcurrency int            `json:"transfer_concurrency"`
-	VerifyConcurrency   int            `json:"verify_concurrency"`
-	AdaptiveConcurrency int            `json:"adaptive_concurrency"`
-	ActiveTransfers     int            `json:"active_transfers"`
-	BytesPerSecond      float64        `json:"bytes_per_second"`
-	AuthRef             string         `json:"auth_ref,omitempty"`
-	AuthConfigured      bool           `json:"auth_configured"`
-	States              map[string]int `json:"states"`
-}
+type ProviderStatus = dataplanemodel.ProviderStatus
 
 type Credential struct {
 	Storage         string `json:"storage,omitempty"`

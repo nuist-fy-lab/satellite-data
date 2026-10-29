@@ -3,7 +3,51 @@ package downloadfilter
 import (
 	"reflect"
 	"testing"
+	"time"
 )
+
+func TestSparseResearchScenesPreserveExactObservations(t *testing.T) {
+	selection, err := (Selection{Scenes: map[string][]string{
+		"2006-07-23": {"21:45", "21:45", "21:50"},
+		"2020-02-29": {"09:30"},
+	}}).Normalize("modis", "modis:C1379758607-LAADS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := selection.Scenes["2006-07-23"]; !reflect.DeepEqual(got, []string{"21:45", "21:50"}) {
+		t.Fatalf("lost or duplicated exact research scenes: %v", got)
+	}
+	start := time.Date(2006, 7, 23, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
+	day, ok := selection.NextSceneDay(start, end)
+	if !ok || !day.Equal(start) {
+		t.Fatalf("first scene day=%s ok=%v", day, ok)
+	}
+	day, ok = selection.NextSceneDay(start.AddDate(0, 0, 1), end)
+	if !ok || day.Format(time.DateOnly) != "2020-02-29" {
+		t.Fatalf("leap-day scene lost: day=%s ok=%v", day, ok)
+	}
+	day, ok = selection.NextSceneDay(day.AddDate(0, 0, 1), end)
+	if ok || !day.IsZero() {
+		t.Fatalf("invented extra research scene: day=%s ok=%v", day, ok)
+	}
+	if _, present := selection.TimesForDay("2010-01-01"); present {
+		t.Fatal("unlisted research day was selected")
+	}
+}
+
+func TestSparseResearchSceneValidation(t *testing.T) {
+	for _, selection := range []Selection{
+		{Times: []string{"00:00"}, Scenes: map[string][]string{"2020-02-29": {"00:05"}}},
+		{Scenes: map[string][]string{"2020-02-30": {"00:05"}}},
+		{Scenes: map[string][]string{"2020-02-29": {"24:00"}}},
+		{Scenes: map[string][]string{"2020-02-29": {}}},
+	} {
+		if _, err := selection.Normalize("modis", "modis:C1379758607-LAADS"); err == nil {
+			t.Fatalf("accepted invalid research selection: %+v", selection)
+		}
+	}
+}
 
 func TestGOESBandAndHourlySelection(t *testing.T) {
 	profile := ForProduct("goes18", "goes18:ABI-L1b-RadF")

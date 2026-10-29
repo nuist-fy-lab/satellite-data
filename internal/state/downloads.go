@@ -159,15 +159,11 @@ func (s *Store) EnqueueSelectedDownloadRequestOwned(ctx context.Context, ownerUs
 		return DownloadRequest{}, err
 	}
 	now := time.Now().UTC()
-	result, err := s.writer.ExecContext(ctx, `
+	id, err := s.insertID(ctx, s.writer, `
 		INSERT INTO download_requests(
 		 owner_user_id,source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,'pending',?,?)`,
 		ownerUserID, sourceID, providerID, collectionID, formatTime(start), formatTime(end), formatTime(start), string(encoded), formatTime(now), formatTime(now))
-	if err != nil {
-		return DownloadRequest{}, err
-	}
-	id, err := result.LastInsertId()
 	if err != nil {
 		return DownloadRequest{}, err
 	}
@@ -229,8 +225,8 @@ func (s *Store) AdvanceDownloadRequest(ctx context.Context, id int64, nextCursor
 	added := 0
 	for _, ref := range refs {
 		result, err := tx.ExecContext(ctx, `
-			INSERT OR IGNORE INTO download_request_tasks(request_id,downloader_task_id,task_key,filename)
-			VALUES(?,?,?,?)`, id, ref.ID, ref.Key, ref.Filename)
+			INSERT INTO download_request_tasks(request_id,downloader_task_id,task_key,filename)
+			VALUES(?,?,?,?) ON CONFLICT DO NOTHING`, id, ref.ID, ref.Key, ref.Filename)
 		if err != nil {
 			return err
 		}

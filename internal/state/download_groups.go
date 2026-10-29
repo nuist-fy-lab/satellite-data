@@ -99,7 +99,12 @@ func (s *Store) EnqueueDownloadGroup(ctx context.Context, owner string, start, e
 			return DownloadGroup{}, false, err
 		}
 	} else {
-		groupID, err = result.LastInsertId()
+		if s.postgres {
+			err = tx.QueryRowContext(ctx, `SELECT id FROM download_groups WHERE owner_user_id=? AND fingerprint=?`,
+				owner, hex.EncodeToString(fingerprint[:])).Scan(&groupID)
+		} else {
+			groupID, err = result.LastInsertId()
+		}
 		if err != nil {
 			return DownloadGroup{}, false, err
 		}
@@ -108,16 +113,12 @@ func (s *Store) EnqueueDownloadGroup(ctx context.Context, owner string, start, e
 			if err != nil {
 				return DownloadGroup{}, false, err
 			}
-			created, err := tx.ExecContext(ctx, `
+			id, err := s.insertID(ctx, tx, `
 				INSERT INTO download_requests(owner_user_id,source_id,provider_id,collection_id,
 				start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at)
 				VALUES(?,?,?,?,?,?,?,?,'pending',?,?)`,
 				owner, spec.Source, spec.Provider, spec.Collection,
 				formatTime(start), formatTime(end), formatTime(start), string(selection), now, now)
-			if err != nil {
-				return DownloadGroup{}, false, err
-			}
-			id, err := created.LastInsertId()
 			if err != nil {
 				return DownloadGroup{}, false, err
 			}

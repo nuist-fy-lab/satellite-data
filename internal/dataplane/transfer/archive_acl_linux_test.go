@@ -1,9 +1,6 @@
 package transfer
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,10 +8,10 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/nuist-fy-lab/satellite-data/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 )
 
-func TestDownloadInheritsDefaultArchiveACL(t *testing.T) {
+func TestSharedPromotionInheritsDefaultACL(t *testing.T) {
 	if _, err := exec.LookPath("setfacl"); err != nil {
 		if os.Getenv("CI") == "true" {
 			t.Fatal("CI must install ACL tools")
@@ -31,12 +28,12 @@ func TestDownloadInheritsDefaultArchiveACL(t *testing.T) {
 	}
 	oldMask := syscall.Umask(0o077)
 	t.Cleanup(func() { syscall.Umask(oldMask) })
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("satellite archive bytes"))
-	}))
-	defer server.Close()
-	dir := filepath.Join(root, "source", "2026", "09")
-	result, err := NewHTTP(server.Client()).Download(context.Background(), model.Asset{Name: "file.nc", URL: server.URL}, dir)
+	stage := filepath.Join(t.TempDir(), "source.nc")
+	if err := os.WriteFile(stage, []byte("verified satellite bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: 17, TaskSpec: model.TaskSpec{Name: "file.nc", RelativeDir: "ERA5/2026/09/job-17"}, StagingPath: stage}
+	result, err := Promote(task, root, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,8 +41,8 @@ func TestDownloadInheritsDefaultArchiveACL(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o664 {
 		t.Fatalf("archive file must be group writable and public readable: %v (%v)", info, err)
 	}
-	for path := dir; path != root; path = filepath.Dir(path) {
-		info, err := os.Stat(path)
+	for dir := filepath.Dir(result.Path); dir != root; dir = filepath.Dir(dir) {
+		info, err := os.Stat(dir)
 		if err != nil || info.Mode().Perm() != 0o775 || info.Mode()&os.ModeSetgid == 0 {
 			t.Fatalf("archive directory must inherit setgid and shared access: %v (%v)", info, err)
 		}

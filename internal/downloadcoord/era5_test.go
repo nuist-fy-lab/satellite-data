@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -48,7 +49,12 @@ func (*fakeCDS) Result(_ context.Context, id string) (model.Asset, error) {
 
 func fakeTransferClient(t *testing.T) (*downloader.Client, *sync.Mutex, *[]downloader.TaskSpec) {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "downloader.sock")
+	sockDir, err := os.MkdirTemp("/tmp", "sat-era5-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	socket := filepath.Join(sockDir, "downloader.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)

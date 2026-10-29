@@ -130,11 +130,7 @@ func (s *Store) EnqueueERA5OrderOwned(ctx context.Context, ownerUserID, collecti
 	}
 	defer tx.Rollback()
 	now := formatTime(time.Now())
-	result, err := tx.ExecContext(ctx, `INSERT INTO download_requests(owner_user_id,source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at) VALUES(?,'era5','era5',?,?,?,?,'{}','pending',?,?)`, ownerUserID, collection, formatTime(start), formatTime(end), formatTime(start), now, now)
-	if err != nil {
-		return DownloadRequest{}, err
-	}
-	id, err := result.LastInsertId()
+	id, err := s.insertID(ctx, tx, `INSERT INTO download_requests(owner_user_id,source_id,provider_id,collection_id,start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at) VALUES(?,'era5','era5',?,?,?,?,'{}','pending',?,?)`, ownerUserID, collection, formatTime(start), formatTime(end), formatTime(start), now, now)
 	if err != nil {
 		return DownloadRequest{}, err
 	}

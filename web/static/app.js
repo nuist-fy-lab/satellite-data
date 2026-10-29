@@ -102,7 +102,8 @@ function esc(value) {
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function setSidebar(expanded, persist = false) {
@@ -2499,27 +2500,95 @@ function downloadRate(value) {
   return (rate / 1048576).toFixed(1) + ' MiB/s';
 }
 
+// Match the compact, expandable task queue on the NSMC downloads page.
+// Expansion is retained across the regular three-second refresh.
+const expandedDownloadBatches = new Set();
+const expandedDownloadRequests = new Set();
+function downloadQueueStage(value) {
+  if (value === 'running') return ['执行中', 'active'];
+  if (value === 'waiting_auth') return ['等待授权', 'wait'];
+  if (value === 'done') return ['已完成', 'done'];
+  if (value === 'failed') return ['失败', 'bad'];
+  if (value === 'retry_wait' || value === 'verify_wait') return [downloadStates[value], 'wait'];
+  return [downloadStates[value] || value || '未知', value === 'pending' ? '' : 'active'];
+}
+
+function downloadQueueCounts(item) {
+  const parts = [
+    '已发现 ' + (Number(item.assets_queued) || 0),
+    '已完成 ' + (Number(item.files_done) || 0),
+  ];
+  if (Number(item.files_failed) > 0) parts.push('失败 ' + item.files_failed);
+  if (Number(item.files_waiting_auth) > 0) parts.push('待认证 ' + item.files_waiting_auth);
+  return parts.join(' · ');
+}
+
+function downloadQueueTimeSelection(item) {
+  const days = Object.keys(item.selection?.scenes || {});
+  if (days.length) {
+    const slots = days.reduce((count, day) => count + (item.selection.scenes[day]?.length || 0), 0);
+    return days.length + ' 天 · ' + slots + ' 个指定时次';
+  }
+  if (item.selection?.times?.length) return item.selection.times.length + ' 个时次/天';
+  return '全部时次';
+}
+
+function downloadQueueCard(key, stage, title, period, summary, content, expanded) {
+  return '<div class="download-queue-card' + (expanded ? ' expanded' : '') + '" data-queue-key="' + esc(key) + '">' +
+    '<button class="download-queue-toggle" type="button" aria-expanded="' + expanded + '">' +
+    '<span class="download-queue-chevron" aria-hidden="true">›</span>' +
+    '<span class="download-queue-stage ' + esc(stage[1]) + '">' + esc(stage[0]) + '</span>' +
+    '<span class="download-queue-title">' + esc(title) + '</span>' +
+    '<span class="download-queue-period">' + esc(period) + '</span>' +
+    '<span class="download-queue-summary">' + esc(summary) + '</span></button>' +
+    '<div class="download-queue-details">' + content + '</div></div>';
+}
+
+function bindDownloadQueue(holder, expandedIDs) {
+  holder.onclick = event => {
+    const toggle = event.target.closest('.download-queue-toggle');
+    if (!toggle || !holder.contains(toggle)) return;
+    const card = toggle.closest('.download-queue-card');
+    const key = card?.dataset.queueKey;
+    if (!key) return;
+    const expanded = !card.classList.contains('expanded');
+    card.classList.toggle('expanded', expanded);
+    toggle.setAttribute('aria-expanded', String(expanded));
+    if (expanded) expandedIDs.add(key);
+    else expandedIDs.delete(key);
+  };
+}
+
 function renderDownloadBatches(groups) {
   const holder = $('#download-batches');
   if (!holder) return;
-  holder.replaceChildren();
   if (!groups.length) {
     holder.textContent = '暂无多产品订单';
     return;
   }
-  for (const group of groups) {
-    const section = document.createElement('div');
-    section.className = 'download-request';
-    const header = document.createElement('strong');
-    header.textContent = '批量订单 #' + group.id + ' · ' + group.products + ' 个产品 · ' + group.state;
-    const info = document.createElement('div');
-    info.textContent = '已发现 ' + group.assets_queued + ' · 已完成 ' + group.files_done +
-      ' · 失败 ' + group.files_failed + ' · 待认证 ' + group.files_waiting_auth;
-    const products = document.createElement('small');
-    products.textContent = (group.downloads || []).map(item => item.collection_id + ' (' + item.state + ')').join(' / ');
-    section.append(header, info, products);
-    holder.append(section);
-  }
+  holder.innerHTML = groups.map(group => {
+    const children = group.downloads || [];
+    const first = children[0];
+    const period = first ? downloadTimestamp(first.start, state.downloads.displayZone) + ' → ' +
+      downloadTimestamp(first.end, state.downloads.displayZone) : '—';
+    const details = '<div class="download-queue-detail-title">批量订单 #' + esc(group.id) + '</div>' +
+      '<div class="download-queue-meta">' + esc(period) + ' · 创建于 ' +
+      esc(downloadTimestamp(group.created_at, state.downloads.displayZone)) + '</div>' +
+      '<div class="download-queue-metrics">' + esc(downloadQueueCounts(group)) +
+      ' · ' + esc(group.products) + ' 个产品</div>' +
+      '<div class="download-queue-children">' + children.map(item => {
+        const stage = downloadQueueStage(item.state);
+        return '<div class="download-queue-child"><code>' + esc(item.collection_id) + '</code>' +
+          '<span class="download-queue-stage ' + esc(stage[1]) + '">' + esc(stage[0]) + '</span>' +
+          '<span class="download-queue-child-count">' + esc(downloadQueueCounts(item)) + '</span>' +
+          (item.last_error ? '<div class="download-queue-error">' + esc(item.last_error) + '</div>' : '') +
+          '</div>';
+      }).join('') + '</div>';
+    return downloadQueueCard('batch-' + group.id, downloadQueueStage(group.state),
+      '批量订单 #' + group.id + ' · ' + group.products + ' 个产品',
+      period, downloadQueueCounts(group), details, expandedDownloadBatches.has('batch-' + group.id));
+  }).join('');
+  bindDownloadQueue(holder, expandedDownloadBatches);
 }
 
 const downloadWindowSeconds = {realtime: 300, '1h': 3600, '3h': 10800, '6h': 21600, '12h': 43200, '1d': 86400, '2d': 172800, '1w': 604800};
@@ -2716,14 +2785,24 @@ function renderDownloadProviders(statuses, liveAvailable = true) {
 }
 
 function renderDownloadRequests(items) {
-  $('#download-requests').innerHTML = items.slice(0, 50).map(item => '<div class="download-request">' +
-    '<strong>#' + esc(item.id) + ' · ' + esc(item.collection_id) + '</strong>' +
-    '<span>' + esc(downloadStates[item.state] || item.state) + ' · ' + esc(item.files_done) + '/' + esc(item.assets_queued) + ' 文件</span>' +
-    '<span>' + esc(downloadTimestamp(item.start, state.downloads.displayZone)) + ' - ' + esc(downloadTimestamp(item.end, state.downloads.displayZone)) + ' · ' +
-    esc(item.band ? `C${String(item.band).padStart(2, '0')}` : '全波段') + ' · ' +
-    esc(item.times_count ? item.times_count + ' 时次/天' : '全部时次') + '</span>' +
-    (item.last_error ? '<small title="' + esc(item.last_error) + '">' + esc(item.last_error) + '</small>' : '') +
-    '</div>').join('') || '<div class="pool-empty">暂无下载任务</div>';
+  const holder = $('#download-requests');
+  holder.innerHTML = items.slice(0, 50).map(item => {
+    const period = downloadTimestamp(item.start, state.downloads.displayZone) + ' → ' +
+      downloadTimestamp(item.end, state.downloads.displayZone);
+    const details = '<div class="download-queue-detail-title">#' + esc(item.id) + ' · ' +
+      esc(item.collection_id) + '</div>' +
+      '<div class="download-queue-meta">' + esc(downloadTimestamp(item.start, state.downloads.displayZone)) +
+      ' → ' + esc(downloadTimestamp(item.end, state.downloads.displayZone)) +
+      ' · ' + esc(downloadQueueTimeSelection(item)) +
+      ' · ' + esc(item.selection?.band ? `C${String(item.selection.band).padStart(2, '0')}` : '全波段') + '</div>' +
+      '<div class="download-queue-metrics">' + esc(downloadQueueCounts(item)) +
+      ' · 已识别时次 ' + esc(item.granules_discovered || 0) + '</div>' +
+      (item.last_error ? '<div class="download-queue-error">' + esc(item.last_error) + '</div>' : '');
+    return downloadQueueCard('request-' + item.id, downloadQueueStage(item.state),
+      '#' + item.id + ' · ' + item.collection_id, period, downloadQueueCounts(item),
+      details, expandedDownloadRequests.has('request-' + item.id));
+  }).join('') || '<div class="pool-empty">暂无下载任务</div>';
+  bindDownloadQueue(holder, expandedDownloadRequests);
   const {page, pages, total} = state.downloads;
   const pager = $('#download-pages');
   pager.classList.toggle('hidden', total <= 50);

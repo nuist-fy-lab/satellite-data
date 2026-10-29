@@ -1,9 +1,12 @@
 /dist/
+/verify/
+/release/
 /_artifacts/
 /*.db
 /*.db-shm
 /*.db-wal
 *.part
+*.downloaded.json
 .DS_Store
 
 # Runtime state and credentials must never be committed.
