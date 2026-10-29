@@ -4,12 +4,198 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run every module and rebuild all release assets
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      go: ${{ steps.plan.outputs.go }}
+      web: ${{ steps.plan.outputs.web }}
+      deploy: ${{ steps.plan.outputs.deploy }}
+      deployment: ${{ steps.plan.outputs.deployment }}
+      postgres: ${{ steps.plan.outputs.postgres }}
+      release: ${{ steps.plan.outputs.release }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check CI selection and release regression tests
+        run: |
+          python3 -m unittest discover -s deploy/ci/tests -v
+          bash -n deploy/publish-ci-release.sh
+      - name: Select affected modules
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FULL: ${{ inputs.full || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == pull_request ]]; then
+            base="$(git merge-base "$BASE_SHA" "$SOURCE_SHA")"
+          else
+            # Use the last published bundle, including changes from skipped/failed runs.
+            base="$(python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, 'deploy/ci')
+          import release
+          previous = release.metadata(os.environ['GITHUB_REPOSITORY'], 'ci-latest')
+          print(previous['target_commitish'] if previous else '')
+          PY
+            )"
+          fi
+          args=()
+          if [[ "$FULL" == true ]]; then args+=(--full); fi
+          python3 deploy/ci/plan.py --base "$base" --head "$SOURCE_SHA" "${args[@]}"
+
+  modules:
+    name: Module / ${{ matrix.module }}
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: false
+      - name: Install ACL tools for archive inheritance checks
+        if: contains(matrix.packages, './internal/dataplane/transfer')
+        run: sudo apt-get update && sudo apt-get install -y acl
+      - name: Format, vet, test and race-check affected module dependencies
+        env:
+          PACKAGES: ${{ toJSON(matrix.packages) }}
+          RACE_PACKAGES: ${{ toJSON(matrix.race_packages) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["PACKAGES"])))')
+          test -z "$(gofmt -l "${packages[@]}")"
+          go vet "${packages[@]}"
+          go test "${packages[@]}"
+          mapfile -t race < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["RACE_PACKAGES"])) ,end="")')
+          if ((${#race[@]})); then go test -race "${race[@]}"; fi
+      - name: Build affected Linux binary
+        if: matrix.binary != ''
+        env:
+          BINARY: ${{ matrix.binary }}
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+          GOAMD64: v1
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags='-s -w' -o "dist/$BINARY" "./cmd/$BINARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: matrix.binary != ''
+        with:
+          name: ci-build-${{ github.run_id }}-${{ matrix.module }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check web JavaScript syntax and behavior
+        run: |
+          for file in web/static/*.js web/*.mjs; do node --check "$file"; done
+          node --test web/era5.test.mjs web/download-timezones.test.mjs web/calendar-index.test.mjs web/catalog-inventory.test.mjs
+      - name: Validate portal styles and HTML
+        run: |
+          npm install --prefix "$RUNNER_TEMP/satellite-web" --no-save --ignore-scripts css-tree@3.1.0 parse5@7.2.1
+          NODE_PATH="$RUNNER_TEMP/satellite-web/node_modules" node --test web/style.test.mjs
+      - uses: browser-actions/setup-firefox@2ddc1281882c66dd6a359947714eed0a4b91afc1
+        id: firefox
+        with:
+          firefox-version: 'latest-esr'
+      - uses: browser-actions/setup-geckodriver@fac5b0424c584257f32cf12c5eb4ba86014c34f8
+        with:
+          token: ${{ github.token }}
+      - name: Check desktop and mobile layouts in cloud Firefox
+        env:
+          FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/satellite-visual" --no-save --ignore-scripts selenium-webdriver@4.35.0
+          NODE_PATH="$RUNNER_TEMP/satellite-visual/node_modules" node web/visual-check.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-visual-${{ github.run_id }}
+          path: dist/visual/*.png
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Test historical EarthCARE verification and normalization
+        run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
+      - name: Check historical verifier on production Python 3.6
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -m unittest discover -s deploy/tests -p 'test_verify_earthcare_archive.py'
+      - name: Verify user units and c2ln1 host guards
+        run: |
+          systemd-analyze verify deploy/systemd/earthcare-verification.service deploy/systemd/earthcare-verification.timer
+          for conf in deploy/systemd/c2ln1/*.conf; do
+            grep -qx 'ConditionHost=c2ln1' "$conf"
+          done
+          for svc in satellited satellite-data-downloader satellite-checksum-sidecar; do
+            grep -qx 'Environment=SATELLITE_REQUIRE_HOST=c2ln1' "deploy/systemd/c2ln1/${svc}.conf"
+          done
+      - name: Package deployment configuration and maintenance tools
+        if: needs.changes.outputs.deployment == 'true'
+        run: |
+          mkdir -p dist
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -czf dist/deployment.tar.gz deploy/systemd deploy/*.py deploy/*.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: needs.changes.outputs.deployment == 'true'
+        with:
+          name: ci-build-${{ github.run_id }}-deployment
+          path: dist/deployment.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   postgres:
+    needs: changes
+    if: needs.changes.outputs.postgres == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -127,61 +313,38 @@ jobs:
           VALUES('new','2000-01-01T00:00:00Z','fresh');
           INSERT INTO pg_official_url_prefixes(prefix) VALUES('https://fresh.example/');
           SQL
+  # This check always completes, including documentation-only PRs.
   test:
+    name: test
+    if: always()
+    needs: [changes, modules, web, deploy, postgres]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.6'
-          cache: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - name: Check formatting
-        run: test -z "$(gofmt -l .)"
-      - name: Check web JavaScript syntax
+      - name: Require every selected check to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          node --check web/static/app.js
-          node --check web/static/login.js
-          node --check web/static/catalog.js
-          node --check web/static/era5-inventory.js
-          node --check web/visual-check.mjs
-      - name: Test request controls and timezones without a browser
-        run: node --test web/era5.test.mjs web/download-timezones.test.mjs web/calendar-index.test.mjs web/catalog-inventory.test.mjs
-      - name: Test historical EarthCARE verification controls
-        run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
-      - name: Check historical verifier on production Python 3.6
-        run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -m unittest discover -s deploy/tests -p 'test_verify_earthcare_archive.py'
-      - name: Verify EarthCARE user units and c2ln1 host guards
-        run: |
-          systemd-analyze verify deploy/systemd/earthcare-verification.service deploy/systemd/earthcare-verification.timer
-          for conf in deploy/systemd/c2ln1/*.conf; do
-            grep -qx 'ConditionHost=c2ln1' "$conf"
-          done
-          for svc in satellited satellite-data-downloader satellite-checksum-sidecar; do
-            grep -qx 'Environment=SATELLITE_REQUIRE_HOST=c2ln1' "deploy/systemd/c2ln1/${svc}.conf"
-          done
-      - name: Validate portal styles and HTML without a browser
-        run: |
-          npm install --prefix "$RUNNER_TEMP/satellite-web" --no-save --ignore-scripts css-tree@3.1.0 parse5@7.2.1
-          NODE_PATH="$RUNNER_TEMP/satellite-web/node_modules" node --test web/style.test.mjs
-      - name: Vet
-        run: go vet ./...
-      - name: Install ACL tools for archive inheritance checks
-        run: sudo apt-get update && sudo apt-get install -y acl
-      - name: Test
-        run: go test ./...
-      - name: Race-check persistent orders, centre dispatch, and dataplane pipeline
-        run: go test -race ./internal/state ./internal/downloadcoord ./internal/httpapi ./internal/central ./internal/dataplane/access ./internal/dataplane/store ./internal/dataplane/server ./internal/dataplane/transfer ./internal/dataplane/pipeline
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          assert needs['changes']['result'] == 'success', 'Module selection failed'
+          flags = needs['changes']['outputs']
+          for job, flag in [('modules', 'go'), ('web', 'web'), ('deploy', 'deploy'), ('postgres', 'postgres')]:
+              expected = 'success' if flags[flag] == 'true' else 'skipped'
+              assert needs[job]['result'] == expected, (job, needs[job]['result'], expected)
+          PY
 
   build:
+    needs: [changes, test]
+    if: >-
+      always() && !cancelled() && needs.test.result == 'success' &&
+      needs.changes.outputs.release == 'true' &&
+      ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name != 'pull_request' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
-    needs: [test, postgres]
     permissions:
       contents: write
+      actions: read
     concurrency:
       group: ci-release-${{ github.ref }}
       cancel-in-progress: false
@@ -189,69 +352,21 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-go@v6
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          go-version: '1.26.6'
-          cache: false
-      - name: Build control plane, dataplane, sidecar, and CLI
-        env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: amd64
-          GOAMD64: v1
-        run: |
-          mkdir -p dist
-          go build -trimpath -ldflags='-s -w' -o dist/satellited ./cmd/satellited
-          go build -trimpath -ldflags='-s -w' -o dist/satellite ./cmd/satellite
-          go build -trimpath -ldflags='-s -w' -o dist/satellite-data-downloader ./cmd/satellite-data-downloader
-          go build -trimpath -ldflags='-s -w' -o dist/satellite-checksum-sidecar ./cmd/satellite-checksum-sidecar
-          cp deploy/verify-earthcare-archive.py dist/verify-earthcare-archive.py
-          cp deploy/normalize-earthcare-packages.py dist/normalize-earthcare-packages.py
-          cp deploy/systemd/earthcare-verification.service deploy/systemd/earthcare-verification.timer dist/
-      - name: Record cloud build digests
-        run: |
-          cd dist
-          sha256sum satellite satellited satellite-data-downloader satellite-checksum-sidecar verify-earthcare-archive.py normalize-earthcare-packages.py earthcare-verification.service earthcare-verification.timer > SHA256SUMS
-      - uses: actions/setup-node@v4
+          pattern: ci-build-${{ github.run_id }}-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        if: needs.changes.outputs.web == 'true'
         with:
-          node-version: '24'
-      - uses: browser-actions/setup-firefox@2ddc1281882c66dd6a359947714eed0a4b91afc1
-        id: firefox
-        with:
-          firefox-version: 'latest-esr'
-      - uses: browser-actions/setup-geckodriver@fac5b0424c584257f32cf12c5eb4ba86014c34f8
-        with:
-          token: ${{ github.token }}
-      - name: Check desktop and mobile layouts in cloud Firefox
-        env:
-          FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
-        run: |
-          npm install --prefix "$RUNNER_TEMP/satellite-visual" --no-save --ignore-scripts selenium-webdriver@4.35.0
-          NODE_PATH="$RUNNER_TEMP/satellite-visual/node_modules" node web/visual-check.mjs
-      - name: Publish and verify PR binaries
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+          name: ci-visual-${{ github.run_id }}
+          path: dist
+      - name: Publish and read back cloud-verified module assets
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          tag="ci-pr-${PR_NUMBER}-${SOURCE_SHA:0:12}"
-          gh release create "$tag" dist/satellite dist/satellited dist/satellite-data-downloader dist/satellite-checksum-sidecar dist/verify-earthcare-archive.py dist/normalize-earthcare-packages.py dist/earthcare-verification.service dist/earthcare-verification.timer --repo "$GITHUB_REPOSITORY" \
-            --target "$SOURCE_SHA" --title "CI PR ${PR_NUMBER} ${SOURCE_SHA:0:12}" \
-            --notes "Cloud-verified PR binaries for $SOURCE_SHA" --prerelease
-          gh release upload "$tag" dist/visual/*.png --repo "$GITHUB_REPOSITORY"
-          mkdir -p verify
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir verify
-          target="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .target_commitish)"
-          [[ "$target" == "$SOURCE_SHA" ]]
-          for name in satellite satellited satellite-data-downloader satellite-checksum-sidecar verify-earthcare-archive.py normalize-earthcare-packages.py earthcare-verification.service earthcare-verification.timer; do
-            cmp "dist/$name" "verify/$name"
-            expected="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq ".assets[] | select(.name==\"$name\") | .digest")"
-            [[ "$expected" == "sha256:$(sha256sum "verify/$name" | cut -d' ' -f1)" ]]
-          done
-      - name: Publish rolling CI binaries
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: bash deploy/publish-ci-release.sh

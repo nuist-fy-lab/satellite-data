@@ -153,7 +153,9 @@ docs/                          架构与运维说明文档
 
 ## 部署与配置
 
-项目通过 GitHub Actions 编译全部四个静态二进制文件（`CGO_ENABLED=0`，`GOAMD64=v1`：`satellite`、`satellited`、`satellite-data-downloader`、`satellite-checksum-sidecar`）并原子发布至 `ci-latest`。在共享 GPFS `$HOME` 的集群环境中，生产服务通过 `systemd --user` 运行在 `c2ln1` 节点，并同时由 `ConditionHost=c2ln1`（`deploy/systemd/c2ln1/*.conf`）与进程级 `SATELLITE_REQUIRE_HOST=c2ln1` 双重限制仅允许在 `c2ln1` 启动。
+项目通过 GitHub Actions 按改动涉及的模块测试并构建静态二进制（`CGO_ENABLED=0`，`GOAMD64=v1`）。`ci-latest` 始终包含全部四个二进制及 `deployment.tar.gz`；未受影响的产物经过摘要与依赖检查后复用，实际构建来源记录在 `build-manifest.json`。模块触发规则、发布校验与手动全量构建见 [模块化 CI/CD](docs/ci-cd.md)。旧 [satellite-data-downloader 仓库](https://github.com/nuist-fy-lab/satellite-data-downloader) 已归档，后续开发与发布统一使用本单仓。
+
+在共享 GPFS `$HOME` 的集群环境中，生产服务通过 `systemd --user` 运行在 `c2ln1` 节点，并同时由 `ConditionHost=c2ln1`（`deploy/systemd/c2ln1/*.conf`）与进程级 `SATELLITE_REQUIRE_HOST=c2ln1` 双重限制仅允许在 `c2ln1` 启动。
 
 `satellited` 核心环境变量：
 

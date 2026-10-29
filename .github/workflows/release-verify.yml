@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_sha:
-        description: Commit SHA expected for ci-latest (defaults to this workflow ref)
+        description: Expected ci-latest bundle SHA (blank accepts its published target)
         required: false
         type: string
 
@@ -15,48 +15,12 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Check rolling release provenance and assets
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check rolling release provenance, inherited inputs and all asset digests
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_SHA: ${{ inputs.expected_sha || github.sha }}
-        run: |
-          set -euo pipefail
-          mkdir release
-          gh release download ci-latest --repo "$GITHUB_REPOSITORY" --dir release
-          target="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq '.target_commitish')"
-          [[ "$target" == "$EXPECTED_SHA" ]] || { echo "Release targets unexpected commit" >&2; exit 1; }
-          assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/ci-latest" --jq '.assets[] | [.name, .digest] | @tsv')"
-          declare -A slot_commit=() slot_satellite=() slot_satellited=() slot_downloader=() slot_sidecar=()
-          count=0
-          while IFS=$'\t' read -r name digest; do
-            ((count+=1))
-            [[ "$digest" == "sha256:$(sha256sum "release/$name" | cut -d' ' -f1)" ]] || { echo "Invalid asset digest: $name" >&2; exit 1; }
-            if [[ "$name" =~ ^(satellite|satellited|satellite-data-downloader|satellite-checksum-sidecar)$ ]]; then
-              base="${BASH_REMATCH[1]}"
-              slot=0
-            elif [[ "$name" =~ ^(satellite|satellited|satellite-data-downloader|satellite-checksum-sidecar)-prev([12])-([0-9a-f]{12})$ ]]; then
-              base="${BASH_REMATCH[1]}"
-              slot="${BASH_REMATCH[2]}"
-              commit="${BASH_REMATCH[3]}"
-              [[ -z "${slot_commit[$slot]:-}" || "${slot_commit[$slot]}" == "$commit" ]] || { echo "Mixed commits in history slot" >&2; exit 1; }
-              slot_commit[$slot]="$commit"
-            else
-              echo "Unexpected asset: $name" >&2
-              exit 1
-            fi
-            case "$base" in
-              satellite) slot_satellite[$slot]=1 ;;
-              satellited) slot_satellited[$slot]=1 ;;
-              satellite-data-downloader) slot_downloader[$slot]=1 ;;
-              satellite-checksum-sidecar) slot_sidecar[$slot]=1 ;;
-            esac
-          done <<< "$assets"
-          ((count >= 4 && count <= 12 && count % 2 == 0)) || { echo "Unexpected release asset count: $count" >&2; exit 1; }
-          for slot in 0 1 2; do
-            [[ "${slot_satellite[$slot]:-0}" == "${slot_satellited[$slot]:-0}" ]] || { echo "Incomplete control-plane pair in slot $slot" >&2; exit 1; }
-            [[ "${slot_downloader[$slot]:-0}" == "${slot_sidecar[$slot]:-0}" ]] || { echo "Incomplete dataplane pair in slot $slot" >&2; exit 1; }
-            if [[ "${slot_downloader[$slot]:-0}" == 1 ]]; then
-              [[ "${slot_satellite[$slot]:-0}" == 1 ]] || { echo "Orphaned dataplane pair in slot $slot" >&2; exit 1; }
-            fi
-          done
-          [[ "${slot_satellite[0]:-0}" == 1 && "${slot_downloader[0]:-0}" == 1 ]] || { echo "Missing latest monorepo binaries" >&2; exit 1; }
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: python3 deploy/ci/release.py verify --expected-sha "$EXPECTED_SHA"
