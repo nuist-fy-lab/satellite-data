@@ -114,6 +114,7 @@ class DiffTests(unittest.TestCase):
             git("init", "-q")
             git("config", "user.name", "CI fixture")
             git("config", "user.email", "ci@example.invalid")
+            git("config", "commit.gpgsign", "false")
             (root / "go.mod").write_text("module example.invalid/satellite\n")
             (root / "cmd/satellited").mkdir(parents=True)
             source = root / "cmd/satellited/main.go"
@@ -134,6 +135,36 @@ class DiffTests(unittest.TestCase):
             self.assertEqual({m["module"] for m in cumulative["matrix"]["include"]}, {"control"})
             self.assertFalse(event_only["release"])
             self.assertTrue(all(fallback[k] for k in ("go", "web", "deploy", "postgres", "release")))
+
+    def test_graph_uses_requested_commit_even_after_imports_change(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL).decode().strip()
+
+            git("init", "-q")
+            git("config", "user.name", "CI fixture")
+            git("config", "user.email", "ci@example.invalid")
+            git("config", "commit.gpgsign", "false")
+            (root / "go.mod").write_text("module example.invalid/satellite\n")
+            (root / "cmd/satellited").mkdir(parents=True)
+            (root / "internal/helper").mkdir(parents=True)
+            source = root / "cmd/satellited/main.go"
+            helper = root / "internal/helper/helper.go"
+            source.write_text('package main\nimport `example.invalid/satellite/internal/helper`\n')
+            helper.write_text("package helper\n")
+            git("add", ".")
+            git("commit", "-qm", "initial")
+            base = git("rev-parse", "HEAD")
+            helper.write_text("package helper\n// change\n")
+            git("commit", "-qam", "helper change")
+            target = git("rev-parse", "HEAD")
+            source.write_text("package main\n// no longer imports helper\n")
+            git("commit", "-qam", "later graph change")
+            with patch.object(plan, "ROOT", root):
+                result = plan.plan(base, target)
+            self.assertEqual({m["module"] for m in result["matrix"]["include"]}, {"control"})
 
 
 if __name__ == "__main__":

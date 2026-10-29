@@ -2,6 +2,7 @@
 """Select CI modules from local Go imports and the complete unpublished diff."""
 
 import argparse
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -31,16 +32,50 @@ def git(*args):
     return subprocess.check_output(["git", *args], cwd=ROOT)
 
 
-def dependency_graph(root):
-    module = re.search(r"^module\s+(\S+)", (root / "go.mod").read_text(), re.M)[1]
+def graph_from_sources(sources):
+    module = re.search(r"^module\s+(\S+)", sources["go.mod"], re.M)[1]
     imports = re.compile(r'["`]' + re.escape(module) + r'/([^"`\s]+)["`]')
     graph = {}
     # Include tests and every build tag: selection is conservative across platforms.
+    for name, source in sources.items():
+        if name.endswith(".go"):
+            package = Path(name).parent.as_posix()
+            graph.setdefault(package, set()).update(imports.findall(source))
+    return graph
+
+
+def dependency_graph(root):
+    sources = {"go.mod": (root / "go.mod").read_text()}
     for directory in ("cmd", "internal", "web"):
         for path in (root / directory).rglob("*.go"):
-            package = path.parent.relative_to(root).as_posix()
-            graph.setdefault(package, set()).update(imports.findall(path.read_text()))
-    return graph
+            sources[path.relative_to(root).as_posix()] = path.read_text()
+    return graph_from_sources(sources)
+
+
+@lru_cache(maxsize=8)
+def revision_graph(root, revision):
+    # Read object IDs in one batch: this also works for an old release target
+    # after main has changed its imports, without modifying the checkout.
+    tree = subprocess.check_output([
+        "git", "ls-tree", "-r", "-z", revision, "--", "go.mod", "cmd", "internal", "web",
+    ], cwd=root)
+    files = []
+    for record in tree.split(b"\0"):
+        if record:
+            metadata, name = record.split(b"\t", 1)
+            if name == b"go.mod" or name.endswith(b".go"):
+                files.append((name.decode(), metadata.split()[2]))
+    objects = subprocess.check_output(
+        ["git", "cat-file", "--batch"], cwd=root,
+        input=b"".join(object_id + b"\n" for _, object_id in files),
+    )
+    sources, offset = {}, 0
+    for name, _ in files:
+        end = objects.index(b"\n", offset)
+        size = int(objects[offset:end].split()[2])
+        sources[name] = objects[end + 1:end + 1 + size].decode()
+        offset = end + size + 2
+    return graph_from_sources(sources)
 
 
 def closure(graph, package):
@@ -129,7 +164,9 @@ def plan(base, head, force=False):
     else:
         paths = git("diff", "--no-renames", "--name-only", "-z", base, head).decode().split("\0")
         paths = [p for p in paths if p]
-    result = select(paths, dependency_graph(ROOT), force)
+    # Resolve symbolic refs before caching the dependency graph.
+    revision = git("rev-parse", "--verify", head + "^{commit}").decode().strip()
+    result = select(paths, revision_graph(ROOT, revision), force)
     result.update(base=base, head=head, paths=paths)
     return result
 
