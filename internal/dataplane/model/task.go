@@ -22,6 +22,8 @@ type Task struct {
 	TaskSpec
 	State                     string    `json:"state"`
 	Attempts                  int       `json:"attempts"`
+	Missing404Count           int       `json:"missing_404_count,omitempty"`
+	First404At                time.Time `json:"first_404_at,omitempty"`
 	NextAttemptAt             time.Time `json:"next_attempt_at,omitempty"`
 	ObservedSize              int64     `json:"observed_size,omitempty"`
 	SHA256                    string    `json:"sha256,omitempty"`

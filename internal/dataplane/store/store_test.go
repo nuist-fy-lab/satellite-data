@@ -12,6 +12,75 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 )
 
+func TestMissing404EvidencePersistsAndResets(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _, err := s.Enqueue(ctx, model.TaskSpec{Key: "missing", SourceID: "modis", Name: "file", URL: "https://example.invalid/file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := func() model.Task {
+		t.Helper()
+		if _, err := s.db.Exec(`UPDATE tasks SET next_attempt_ns=0 WHERE id=?`, item.ID); err != nil {
+			t.Fatal(err)
+		}
+		v, ok, err := s.ClaimTransfer(ctx, "modis")
+		if err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
+		return v
+	}
+	first := time.Now().UTC().Add(-7 * time.Hour)
+	task := claim()
+	if err := s.FinishTransferFailure(ctx, task, errors.New("404"), time.Second, true, false, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishTransferFailure(ctx, task, errors.New("stale"), time.Second, true, false, first); err == nil {
+		t.Fatal("stale claim accepted")
+	}
+	task = claim()
+	if err := s.FinishTransferFailure(ctx, task, errors.New("timeout"), time.Second, false, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	task = claim()
+	if task.Missing404Count != 1 || !task.First404At.Equal(first) {
+		t.Fatalf("evidence lost across mixed error/restart: %+v", task)
+	}
+	if err := s.FinishTransferFailure(ctx, task, errors.New("404"), time.Second, true, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetryTask(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	task = claim()
+	if task.Missing404Count != 0 || !task.First404At.IsZero() {
+		t.Fatalf("manual retry did not reset evidence: %+v", task)
+	}
+	if err := s.FinishTransferFailure(ctx, task, errors.New("404"), time.Second, true, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	task = claim()
+	if err := s.MarkDownloaded(ctx, task.ID, "/tmp/file", 1); err != nil {
+		t.Fatal(err)
+	}
+	task, err = s.Task(ctx, task.ID)
+	if err != nil || task.Missing404Count != 0 || !task.First404At.IsZero() {
+		t.Fatalf("download did not reset evidence: %+v %v", task, err)
+	}
+}
+
 func TestAdoptVerifiedSharesExistingAcrossOrders(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(filepath.Join(t.TempDir(), "queue.db"))

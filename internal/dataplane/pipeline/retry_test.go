@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net"
@@ -50,35 +51,85 @@ func TestExponentialRetryEqualJitterIsBoundedAndIncreasing(t *testing.T) {
 	}
 }
 
+func TestRetryPipelineCountsOnly404AndFailsAfterWindow(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	item, _, err := s.Enqueue(ctx, model.TaskSpec{Key: "mixed", SourceID: "modis", Name: "file", URL: "https://example.invalid/file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE tasks SET attempts=100 WHERE id=?`, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	task, ok, err := s.ClaimTransfer(ctx, "modis")
+	if err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	runtime := &Runtime{store: s}
+	runtime.scheduleTransferRetry(ctx, "modis", task, &transfer.HTTPError{Status: http.StatusNotFound})
+	pending, err := s.Task(ctx, item.ID)
+	if err != nil || pending.State != "retry_wait" || pending.Missing404Count != 1 {
+		t.Fatalf("first 404 after mixed attempts: %+v %v", pending, err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET next_attempt_ns=0,missing_404_count=5,first_404_at=? WHERE id=?`, time.Now().Add(-7*time.Hour).UTC().Format(time.RFC3339Nano), item.ID); err != nil {
+		t.Fatal(err)
+	}
+	task, ok, err = s.ClaimTransfer(ctx, "modis")
+	if err != nil || !ok {
+		t.Fatalf("second claim: %v %v", ok, err)
+	}
+	runtime.scheduleTransferRetry(ctx, "modis", task, &transfer.HTTPError{Status: http.StatusNotFound})
+	pending, err = s.Task(ctx, item.ID)
+	if err != nil || pending.State != "failed" || pending.Missing404Count != 6 {
+		t.Fatalf("confirmed 404 not terminal: %+v %v", pending, err)
+	}
+}
+
 func TestRetryPolicyForEverySupportedProduct(t *testing.T) {
 	for _, provider := range config.Load().Providers {
 		t.Run(provider.SourceID, func(t *testing.T) {
-			for _, status := range []int{http.StatusNotFound, http.StatusGone} {
-				for attempts := 1; attempts < missingObjectMaxAttempts; attempts++ {
-					decision := transferRetryDecision(attempts, &transfer.HTTPError{Status: status})
-					if decision.terminal || decision.delay <= 0 || decision.delay > retryMaxDelay {
-						t.Fatalf("HTTP %d attempt %d should retry with backoff: %+v", status, attempts, decision)
-					}
+			now := time.Now()
+			missing := &transfer.HTTPError{Status: http.StatusNotFound}
+			for _, task := range []model.Task{
+				{Attempts: 100},
+				{Attempts: 100, Missing404Count: 4, First404At: now.Add(-7 * time.Hour)},
+				{Attempts: 100, Missing404Count: 20, First404At: now.Add(-time.Hour)},
+			} {
+				if got := transferRetryDecision(task, missing, now); got.terminal || got.delay <= 0 {
+					t.Fatalf("premature 404 failure: %+v", got)
 				}
-				if got := transferRetryDecision(missingObjectMaxAttempts, &transfer.HTTPError{Status: status}); !got.terminal {
-					t.Fatalf("HTTP %d must eventually fail after repeated confirmation: %+v", status, got)
-				}
+			}
+			if got := transferRetryDecision(model.Task{Attempts: 6, Missing404Count: 5, First404At: now.Add(-6 * time.Hour)}, missing, now); !got.terminal {
+				t.Fatalf("confirmed 404 should fail: %+v", got)
+			}
+			if got := transferRetryDecision(model.Task{Attempts: 1}, &transfer.HTTPError{Status: http.StatusGone}, now); !got.terminal {
+				t.Fatalf("410 should fail: %+v", got)
 			}
 			for _, status := range []int{http.StatusRequestTimeout, http.StatusTooEarly,
 				http.StatusTooManyRequests, http.StatusInternalServerError,
 				http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
-				if got := transferRetryDecision(24, &transfer.HTTPError{Status: status}); got.terminal || got.delay < retryMaxDelay/2 {
+				if got := transferRetryDecision(model.Task{Attempts: 24}, &transfer.HTTPError{Status: status}, now); got.terminal || got.delay < retryMaxDelay/2 {
 					t.Fatalf("HTTP %d should keep retrying through outages: %+v", status, got)
 				}
 			}
-			if got := transferRetryDecision(1, &net.DNSError{IsTimeout: true}); got.terminal || got.delay <= 0 {
+			if got := transferRetryDecision(model.Task{Attempts: 1}, &net.DNSError{IsTimeout: true}, now); got.terminal || got.delay <= 0 {
 				t.Fatalf("network timeout should retry: %+v", got)
 			}
-			if got := transferRetryDecision(1, errors.New("temporary central gateway failure")); got.terminal || got.delay <= 0 {
+			if got := transferRetryDecision(model.Task{Attempts: 1}, errors.New("temporary central gateway failure"), now); got.terminal || got.delay <= 0 {
 				t.Fatalf("central service outage should retry: %+v", got)
 			}
 			for _, status := range []int{http.StatusBadRequest, http.StatusMethodNotAllowed, http.StatusUnprocessableEntity} {
-				if got := transferRetryDecision(1, &transfer.HTTPError{Status: status}); !got.terminal {
+				if got := transferRetryDecision(model.Task{Attempts: 1}, &transfer.HTTPError{Status: status}, now); !got.terminal {
 					t.Fatalf("malformed HTTP %d request must not retry forever: %+v", status, got)
 				}
 			}
@@ -90,9 +141,9 @@ func TestRetryAfterIsMinimumAndRetainsIndependentJitter(t *testing.T) {
 	for _, delay := range []time.Duration{time.Minute, time.Hour} {
 		var first, last time.Duration
 		for i := 0; i < 40; i++ {
-			got := transferRetryDecision(1, &transfer.HTTPError{
+			got := transferRetryDecision(model.Task{Attempts: 1}, &transfer.HTTPError{
 				Status: http.StatusTooManyRequests, RetryAfter: delay,
-			})
+			}, time.Now())
 			if got.terminal || got.delay < delay || got.delay > delay+min(delay/4, 5*time.Minute) {
 				t.Fatalf("Retry-After %s was ignored: %+v", delay, got)
 			}
@@ -147,11 +198,8 @@ func TestRetryPolicyPersistsFutureScheduleAndTerminal404(t *testing.T) {
 			if _, ok, err := state.ClaimTransfer(ctx, source); err != nil || ok {
 				t.Fatalf("backoff bypassed: ok=%t err=%v", ok, err)
 			}
-			claimed.Attempts = missingObjectMaxAttempts
-			runtime.scheduleTransferRetry(ctx, source, claimed, &transfer.HTTPError{Status: http.StatusNotFound})
-			failed, err := state.Task(ctx, claimed.ID)
-			if err != nil || failed.State != "failed" {
-				t.Fatalf("persistent missing file must fail after bounded attempts: %+v err=%v", failed, err)
+			if pending.Missing404Count != 1 || pending.First404At.IsZero() {
+				t.Fatalf("404 evidence not persisted: %+v", pending)
 			}
 		})
 	}

@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   media_type TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL DEFAULT 'queued',
   attempts INTEGER NOT NULL DEFAULT 0,
+  missing_404_count INTEGER NOT NULL DEFAULT 0,
+  first_404_at TEXT NOT NULL DEFAULT '',
   next_attempt_ns INTEGER NOT NULL DEFAULT 0,
   observed_size INTEGER NOT NULL DEFAULT 0,
   sha256 TEXT NOT NULL DEFAULT '',
@@ -110,6 +112,40 @@ func Open(path string) (*Store, error) {
 		rows.Close()
 		if !found {
 			if _, err := db.Exec("ALTER TABLE tasks ADD COLUMN " + column + " TEXT NOT NULL DEFAULT ''"); err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+		}
+	}
+	for _, column := range []struct{ name, definition string }{
+		{"missing_404_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"first_404_at", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		rows, err := db.Query("PRAGMA table_info(tasks)")
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		found := false
+		for rows.Next() {
+			var id, notnull, pk int
+			var name, kind string
+			var defaultValue any
+			if err := rows.Scan(&id, &name, &kind, &notnull, &defaultValue, &pk); err != nil {
+				rows.Close()
+				_ = db.Close()
+				return nil, err
+			}
+			found = found || name == column.name
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if !found {
+			if _, err := db.Exec("ALTER TABLE tasks ADD COLUMN " + column.name + " " + column.definition); err != nil {
 				_ = db.Close()
 				return nil, err
 			}
@@ -304,7 +340,7 @@ func (s *Store) MarkDownloaded(ctx context.Context, id int64, stagingPath string
 	now := stamp(time.Now())
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
-		SET state='verifying',staging_path=?,observed_size=?,next_attempt_ns=0,last_error='',updated_at=?
+		SET state='verifying',staging_path=?,observed_size=?,next_attempt_ns=0,last_error='',missing_404_count=0,first_404_at='',updated_at=?
 		WHERE id=?`, stagingPath, observedSize, now, id)
 	return err
 }
@@ -319,6 +355,38 @@ func (s *Store) RetryTransfer(ctx context.Context, id int64, cause error, delay 
 		SET state='retry_wait',next_attempt_ns=?,last_error=?,updated_at=?
 		WHERE id=?`, now.Add(delay).UnixNano(), safeError(cause), stamp(now), id)
 	return err
+}
+
+// FinishTransferFailure commits the failure decision and its 404 evidence in
+// one update. The claim number prevents a stale worker from replacing a newer claim.
+func (s *Store) FinishTransferFailure(ctx context.Context, task model.Task, cause error, delay time.Duration, missing404, terminal bool, now time.Time) error {
+	if delay < time.Second {
+		delay = time.Second
+	}
+	state := "retry_wait"
+	next := now.Add(delay).UnixNano()
+	if terminal {
+		state, next = "failed", 0
+	}
+	missing := 0
+	if missing404 {
+		missing = 1
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE tasks SET state=?,next_attempt_ns=?,last_error=?,updated_at=?,
+		missing_404_count=missing_404_count+?,
+		first_404_at=CASE WHEN ?=1 AND first_404_at='' THEN ? ELSE first_404_at END
+		WHERE id=? AND state='downloading' AND attempts=?`, state, next, safeError(cause), stamp(now), missing, missing, stamp(now), task.ID, task.Attempts)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return errors.New("transfer claim is no longer current")
+	}
+	return nil
 }
 
 func (s *Store) WaitForAuth(ctx context.Context, id int64, cause error) error {
@@ -477,7 +545,7 @@ func (s *Store) RetryTask(ctx context.Context, id int64) error {
 	now := stamp(time.Now())
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
-		SET state='queued',next_attempt_ns=0,last_error='',updated_at=?
+		SET state='queued',next_attempt_ns=0,last_error='',missing_404_count=0,first_404_at='',updated_at=?
 		WHERE id=? AND state IN ('failed','retry_wait','verify_wait','waiting_auth')`, now, id)
 	if err != nil {
 		return err
@@ -592,7 +660,7 @@ const taskSelect = `
 SELECT id,task_key,source_id,collection_id,granule_id,asset_id,filename,url,auth_ref,relative_dir,
        expected_size,etag,media_type,state,attempts,next_attempt_ns,observed_size,sha256,
        official_checksum_status,official_checksum_algorithm,official_checksum_value,staging_path,
-       archive_path,last_error,requested_at,started_at,completed_at,updated_at
+       archive_path,last_error,requested_at,started_at,completed_at,updated_at,missing_404_count,first_404_at
 FROM tasks`
 
 type scanner interface {
@@ -602,13 +670,13 @@ type scanner interface {
 func scanTask(row scanner) (model.Task, error) {
 	var task model.Task
 	var nextAttemptNS int64
-	var requested, started, completed, updated string
+	var requested, started, completed, updated, first404 string
 	err := row.Scan(
 		&task.ID, &task.Key, &task.SourceID, &task.CollectionID, &task.GranuleID, &task.AssetID,
 		&task.Name, &task.URL, &task.AuthRef, &task.RelativeDir, &task.Size, &task.ETag, &task.MediaType,
 		&task.State, &task.Attempts, &nextAttemptNS, &task.ObservedSize, &task.SHA256,
 		&task.OfficialChecksumStatus, &task.OfficialChecksumAlgorithm, &task.OfficialChecksumValue, &task.StagingPath,
-		&task.ArchivePath, &task.LastError, &requested, &started, &completed, &updated,
+		&task.ArchivePath, &task.LastError, &requested, &started, &completed, &updated, &task.Missing404Count, &first404,
 	)
 	if err != nil {
 		return model.Task{}, err
@@ -617,6 +685,7 @@ func scanTask(row scanner) (model.Task, error) {
 	task.StartedAt = parseStamp(started)
 	task.CompletedAt = parseStamp(completed)
 	task.UpdatedAt = parseStamp(updated)
+	task.First404At = parseStamp(first404)
 	if task.State == "done" && task.OfficialChecksumStatus == "" {
 		// Do not present pre-upgrade archives as officially verified.
 		task.OfficialChecksumStatus = "legacy_local_only"

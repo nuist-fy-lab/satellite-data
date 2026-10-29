@@ -166,8 +166,14 @@ func (f *providerFlow) probeProgress(now time.Time, ceiling int) (oldLimit, newL
 	if elapsed > 0 {
 		rate = float64(progress) / elapsed.Seconds()
 	}
-	if now.Before(f.probeBlockedUntil) || f.errorRate >= 0.2 ||
-		f.limit >= ceiling || f.active < f.limit || progress < progressProbeMinBytes {
+	if now.Before(f.probeBlockedUntil) || f.active < f.limit || progress < progressProbeMinBytes {
+		return oldLimit, newLimit, rate
+	}
+	// A long, progressing download is evidence of recovery even before it
+	// completes. Decay only once per useful probe interval after cooldown;
+	// otherwise a congestion EWMA at 0.2 can block probes indefinitely.
+	f.errorRate *= 0.8
+	if f.errorRate >= 0.2 || f.limit >= ceiling {
 		return oldLimit, newLimit, rate
 	}
 	f.limit++
@@ -490,17 +496,19 @@ func (r *Runtime) handleTransferError(ctx context.Context, provider config.Provi
 }
 
 func (r *Runtime) scheduleTransferRetry(ctx context.Context, source string, task model.Task, cause error) {
-	decision := transferRetryDecision(task.Attempts, cause)
+	now := time.Now().UTC()
+	decision := transferRetryDecision(task, cause, now)
+	var httpErr *transfer.HTTPError
+	missing404 := errors.As(cause, &httpErr) && httpErr.Status == http.StatusNotFound
 	if decision.terminal {
 		slog.Warn("stop retrying unavailable or invalid download", "provider", source,
 			"task", task.ID, "attempts", task.Attempts, "reason", decision.reason, "error", cause)
-		if err := r.store.Fail(context.WithoutCancel(ctx), task.ID, cause); err != nil {
-			slog.Error("persist terminal download failure", "provider", source, "task", task.ID, "error", err)
-		}
+	}
+	if err := r.store.FinishTransferFailure(context.WithoutCancel(ctx), task, cause, decision.delay, missing404, decision.terminal, now); err != nil {
+		slog.Error("persist scheduled download retry", "provider", source, "task", task.ID, "error", err)
 		return
 	}
-	if err := r.store.RetryTransfer(context.WithoutCancel(ctx), task.ID, cause, decision.delay); err != nil {
-		slog.Error("persist scheduled download retry", "provider", source, "task", task.ID, "error", err)
+	if decision.terminal {
 		return
 	}
 	slog.Info("schedule download retry", "provider", source, "task", task.ID,
