@@ -55,6 +55,7 @@ def verify_download(meta, directory):
         if asset.get("digest") != "sha256:" + digest(directory / name):
             raise ValueError("Invalid GitHub release digest: " + name)
     manifest_path = directory / "build-manifest.json"
+    manifest = None
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
         if manifest.get("schema") != 1 or not isinstance(manifest.get("partial"), bool):
@@ -78,7 +79,26 @@ def verify_download(meta, directory):
         for name, checksum in checksums.items():
             if checksum != digest(directory / name):
                 raise ValueError("Invalid release checksum: " + name)
-    return json.loads(manifest_path.read_text()) if manifest_path.exists() else None
+    slots = {0: set(), 1: set(), 2: set()}
+    commits = {}
+    for name in names:
+        match = HISTORY.fullmatch(name)
+        if match:
+            slot = int(match[2])
+            if slot in commits and commits[slot] != match[3]:
+                raise ValueError("Mixed bundle commits in history slot")
+            commits[slot] = match[3]
+            slots[slot].add(match[1])
+        elif name in plan.BINARIES.values():
+            slots[0].add(name)
+    for slot, binaries in slots.items():
+        if slot == 0 and manifest and manifest["partial"]:
+            continue
+        control = {"satellite", "satellited"} & binaries
+        dataplane = {"satellite-data-downloader", "satellite-checksum-sidecar"} & binaries
+        if len(control) == 1 or len(dataplane) == 1 or (dataplane and not control):
+            raise ValueError("Incomplete binary pairs in bundle slot " + str(slot))
+    return manifest
 
 
 def assemble(dist, target, previous_dir=None, previous_meta=None):

@@ -86,12 +86,29 @@ class BundleTests(unittest.TestCase):
         release.verify_download(meta(self.dist, NEW), self.dist)
 
     def test_history_retains_only_two_previous_slots(self):
-        (self.old / ("satellite-prev1-" + "c" * 12)).write_text("older")
-        (self.old / ("satellite-prev2-" + "d" * 12)).write_text("oldest")
+        for name in ("satellite", "satellited"):
+            (self.old / (name + "-prev1-" + "c" * 12)).write_text("older")
+            (self.old / (name + "-prev2-" + "d" * 12)).write_text("oldest")
         self.old_meta = meta(self.old)
         self.assemble(selection())
         self.assertTrue((self.dist / ("satellite-prev2-" + "c" * 12)).exists())
         self.assertFalse((self.dist / ("satellite-prev2-" + "d" * 12)).exists())
+
+    def test_mixed_and_incomplete_history_slots_are_rejected(self):
+        first = self.old / ("satellite-prev1-" + "c" * 12)
+        first.write_text("older cli")
+        with self.assertRaisesRegex(ValueError, "Incomplete binary pairs"):
+            release.verify_download(meta(self.old), self.old)
+        (self.old / ("satellited-prev1-" + "d" * 12)).write_text("different bundle")
+        with self.assertRaisesRegex(ValueError, "Mixed bundle commits"):
+            release.verify_download(meta(self.old), self.old)
+
+    def test_partial_pr_bundle_allows_one_rebuilt_binary(self):
+        (self.dist / "satellite").write_text("new cli")
+        entries = {"satellite": {"source_sha": NEW, "sha256": release.digest(self.dist / "satellite")}}
+        release.write_manifest(self.dist, NEW, entries, True)
+        manifest = release.verify_download(meta(self.dist, NEW), self.dist)
+        self.assertTrue(manifest["partial"])
 
     def test_corrupted_previous_asset_blocks_reuse(self):
         (self.old / "satellited").write_text("corruption")
