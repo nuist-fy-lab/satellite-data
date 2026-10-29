@@ -153,7 +153,9 @@ docs/                          Architecture and operations documentation
 
 ## Deployment & Configuration
 
-Builds and tests run in GitHub Actions (`CGO_ENABLED=0`, `GOAMD64=v1` static binaries) and publish all four binaries (`satellite`, `satellited`, `satellite-data-downloader`, `satellite-checksum-sidecar`) atomically under `ci-latest`. Production cluster node `c2ln1` runs user-level `systemd` units restricted to `c2ln1` via both `ConditionHost=c2ln1` (`deploy/systemd/c2ln1/*.conf`) and `SATELLITE_REQUIRE_HOST=c2ln1`.
+GitHub Actions tests and builds affected modules (`CGO_ENABLED=0`, `GOAMD64=v1` static binaries). `ci-latest` always contains all four binaries plus `deployment.tar.gz`: unchanged assets are reused after digest and dependency checks, with each asset's actual source commit recorded in `build-manifest.json`. See [Module CI/CD](docs/ci-cd.md) for selection rules, release verification and manual full builds. The legacy [satellite-data-downloader repository](https://github.com/nuist-fy-lab/satellite-data-downloader) is archived; development and releases use this monorepo.
+
+Production cluster node `c2ln1` runs user-level `systemd` units restricted to `c2ln1` via both `ConditionHost=c2ln1` (`deploy/systemd/c2ln1/*.conf`) and `SATELLITE_REQUIRE_HOST=c2ln1`.
 
 Key environment variables for `satellited`:
 
