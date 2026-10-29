@@ -158,7 +158,6 @@ func TestMODISCongestionSuppressesExplorationUntilCooldown(t *testing.T) {
 		t.Fatalf("true upstream congestion must still reduce concurrency, got %d", flow.limit)
 	}
 	flow.active = flow.limit
-	flow.errorRate = 0
 	flow.addBytes(4 << 20)
 	if _, next, _ := flow.probeProgress(now.Add(time.Minute), 8); next != 2 {
 		t.Fatalf("probe ignored upstream congestion cooldown: %d", next)
@@ -166,6 +165,49 @@ func TestMODISCongestionSuppressesExplorationUntilCooldown(t *testing.T) {
 	flow.addBytes(4 << 20)
 	if _, next, _ := flow.probeProgress(now.Add(4*progressProbeInterval), 8); next != 3 {
 		t.Fatalf("probe never recovered after cooldown: %d", next)
+	}
+}
+
+func TestMODISProgressRecoveryDecaysCongestionOnlyOnUsefulIntervals(t *testing.T) {
+	now := time.Now()
+	flow := &providerFlow{limit: 2, active: 2, errorRate: 0.5, probeAt: now, probeBlockedUntil: now.Add(progressProbeInterval)}
+	flow.addBytes(2 << 20)
+	flow.probeProgress(now.Add(progressProbeInterval/2), 8)
+	if flow.errorRate != 0.5 || flow.limit != 2 {
+		t.Fatal("cooldown must preserve congestion history")
+	}
+	flow.probeProgress(now.Add(progressProbeInterval), 8)
+	if flow.errorRate != 0.4 || flow.limit != 2 {
+		t.Fatalf("first useful interval should decay without premature growth: rate=%f limit=%d", flow.errorRate, flow.limit)
+	}
+	flow.probeProgress(now.Add(2*progressProbeInterval), 8)
+	if flow.errorRate != 0.4 || flow.limit != 2 {
+		t.Fatal("an interval without useful progress must not decay congestion")
+	}
+	for i := 3; i <= 6; i++ {
+		flow.addBytes(2 << 20)
+		flow.probeProgress(now.Add(time.Duration(i)*progressProbeInterval), 8)
+	}
+	if flow.limit != 3 || flow.errorRate >= 0.2 {
+		t.Fatalf("sustained progress should permit one bounded probe: rate=%f limit=%d", flow.errorRate, flow.limit)
+	}
+}
+
+func TestMODISRecoveryAfterMissingObjectAndIdle(t *testing.T) {
+	now := time.Now()
+	flow := &providerFlow{limit: 1, active: 1, errorRate: 0.2, probeAt: now}
+	flow.finish(false, isCongestion(&transfer.HTTPError{Status: 404}), 8)
+	flow.probeProgress(now.Add(progressProbeInterval), 8)
+	if flow.limit != 1 || flow.errorRate != 0.2 {
+		t.Fatalf("404 and idle must not change congestion history: limit=%d rate=%f", flow.limit, flow.errorRate)
+	}
+	if !flow.start() {
+		t.Fatal("expected a slot for the next transfer")
+	}
+	flow.addBytes(2 << 20)
+	flow.probeProgress(now.Add(2*progressProbeInterval), 8)
+	if flow.limit != 2 || flow.errorRate >= 0.2 {
+		t.Fatalf("productive transfer should recover without completing: limit=%d rate=%f", flow.limit, flow.errorRate)
 	}
 }
 

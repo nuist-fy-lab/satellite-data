@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"path"
@@ -406,10 +407,10 @@ func modisMediaType(linkType, name string) string {
 
 func parseMiB(value string) int64 {
 	size, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-	if err != nil || size <= 0 {
+	if err != nil || math.IsNaN(size) || math.IsInf(size, 0) || size <= 0 || size >= float64(math.MaxInt64)/(1024*1024) {
 		return 0
 	}
-	return int64(size * 1024 * 1024)
+	return int64(math.Round(size * 1024 * 1024))
 }
 
 func setCMRHeaders(req *http.Request) {

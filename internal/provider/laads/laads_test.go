@@ -25,6 +25,17 @@ func TestMODISResolution(t *testing.T) {
 	}
 }
 
+func TestParseMiBRoundsCatalogBytes(t *testing.T) {
+	if got := parseMiB("34.5478057861328"); got != 36226000 {
+		t.Fatalf("got %d bytes, want 36226000", got)
+	}
+	for _, value := range []string{"NaN", "Inf", "-1", "1e100"} {
+		if got := parseMiB(value); got != 0 {
+			t.Errorf("%q: got %d", value, got)
+		}
+	}
+}
+
 func TestMODISCadence(t *testing.T) {
 	if got := modisCadence("Calibrated Radiances 5-Min L1B Swath 1km"); got != "5m" {
 		t.Fatalf("got=%q", got)

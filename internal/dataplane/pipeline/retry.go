@@ -6,13 +6,15 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 )
 
 // A temporary 404 can be an eventual-consistency delay at the provider,
 // an expiring CDN cache, or a transient gateway result. Recheck it several
 // times, but do not retry truly absent objects forever.
-const missingObjectMaxAttempts = 6
+const missingObjectConfirmations = 6
+const missingObjectWindow = 6 * time.Hour
 
 const (
 	retryBaseDelay = 5 * time.Second
@@ -29,14 +31,17 @@ type retryDecision struct {
 // number of actual HTTP download attempts (ClaimTransfer increments it before
 // calling Download). Transient transport errors keep retrying with a capped
 // delay so a multi-hour upstream outage does not permanently lose data.
-func transferRetryDecision(attempt int, cause error) retryDecision {
+func transferRetryDecision(task model.Task, cause error, now time.Time) retryDecision {
+	attempt := task.Attempts
 	var httpErr *transfer.HTTPError
 	if errors.As(cause, &httpErr) {
 		switch httpErr.Status {
-		case http.StatusNotFound, http.StatusGone:
-			if attempt >= missingObjectMaxAttempts {
-				return retryDecision{terminal: true, reason: "object still unavailable after repeated 404/410 confirmation"}
+		case http.StatusNotFound:
+			if task.Missing404Count+1 >= missingObjectConfirmations && !task.First404At.IsZero() && now.Sub(task.First404At) >= missingObjectWindow {
+				return retryDecision{terminal: true, reason: "object unavailable after repeated 404 confirmations over six hours"}
 			}
+		case http.StatusGone:
+			return retryDecision{terminal: true, reason: "provider reports object permanently gone (HTTP 410)"}
 		case http.StatusBadRequest, http.StatusMethodNotAllowed,
 			http.StatusNotAcceptable, http.StatusRequestEntityTooLarge,
 			http.StatusRequestURITooLong, http.StatusUnsupportedMediaType,
