@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 )
 
 const checksumFixture = "science granule content from trusted dataset"

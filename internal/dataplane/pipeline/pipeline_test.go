@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/config"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/config"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 )
 
 func TestAllowedHostAcceptsNativeLAADS(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 )
 
 func TestVerifiedArchiveReuseChecksPathAndActualSHA256(t *testing.T) {

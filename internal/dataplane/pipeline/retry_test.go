@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/config"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/store"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/config"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 )
 
 func TestExponentialRetryEqualJitterIsBoundedAndIncreasing(t *testing.T) {

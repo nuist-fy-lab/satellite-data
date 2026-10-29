@@ -12,11 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/access"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/config"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/pipeline"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/server"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/store"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/access"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/config"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/pipeline"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/server"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
 )
 
 func main() {

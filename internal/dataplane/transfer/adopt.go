@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 )
 
 // VerifiedArchiveReuse permits reuse of a file already registered by the

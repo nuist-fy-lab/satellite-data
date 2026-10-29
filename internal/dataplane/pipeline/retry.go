@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 )
 
 // A temporary 404 can be an eventual-consistency delay at the provider,

@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/pipeline"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/store"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/pipeline"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 )
 
 type Server struct {

@@ -18,8 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/auth"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/auth"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 )
 
 var contentRangePattern = regexp.MustCompile(`(?i)^bytes\s+(\d+)-(\d+)/(\d+|\*)$`)

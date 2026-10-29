@@ -11,19 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/store"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
 )
-
-type Event struct {
-	TaskID       int64  `json:"task_id"`
-	SourceID     string `json:"source_id"`
-	CollectionID string `json:"collection_id"`
-	GranuleID    string `json:"granule_id"`
-	Filename     string `json:"filename"`
-	ArchivePath  string `json:"archive_path"`
-	Size         int64  `json:"size"`
-	SHA256       string `json:"sha256"`
-}
 
 type Notifier struct {
 	socket string

@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/server"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/store"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/server"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 )
 
 func historicalFixture(t *testing.T) (*sidecar, *store.Store, candidate, func()) {

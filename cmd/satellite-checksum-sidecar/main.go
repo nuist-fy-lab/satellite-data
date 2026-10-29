@@ -25,8 +25,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 	_ "modernc.org/sqlite"
 )
 

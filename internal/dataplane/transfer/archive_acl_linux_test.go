@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 )
 
 func TestSharedPromotionInheritsDefaultACL(t *testing.T) {

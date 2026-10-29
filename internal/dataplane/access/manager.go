@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/auth"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/auth"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 )
 
 var ErrNoRoute = errors.New("no usable central access route")

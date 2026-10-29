@@ -14,12 +14,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/access"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/archiveevent"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/config"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/model"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/store"
-	"github.com/nuist-fy-lab/satellite-data-downloader/internal/transfer"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/access"
+	"github.com/nuist-fy-lab/satellite-data/internal/archiveevent"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/config"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 )
 
 type Runtime struct {
