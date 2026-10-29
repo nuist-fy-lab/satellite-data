@@ -78,7 +78,7 @@ func TestPostgresCompactStateRoundTrip(t *testing.T) {
 		t.Fatalf("duplicate assets were not consolidated: %d %v", assetCount, err)
 	}
 	if _, err := s.ReplaceLocalFilesWithWarnings(ctx,
-		[]LocalFile{{Path: "/tmp/pg-unrelated.hdf", Filename: "unrelated.hdf", Size: 4, State: "ok"}},
+		[]LocalFile{{Path: "/tmp/pg-unrelated.hdf", Filename: "unrelated.hdf", Size: 5 << 30, MtimeNS: 1790610031212360399, State: "ok"}},
 		"postgres-local-scan-regression", nil); err != nil {
 		t.Fatalf("PostgreSQL local archive scan: %v", err)
 	}

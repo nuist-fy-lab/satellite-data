@@ -1571,7 +1571,7 @@ func stageLocalFiles(ctx context.Context, conn *sql.Conn, files []LocalFile, pos
 	// Only the connection-local TEMP database is written here. Do not reserve
 	// the main writer lock while inserting tens of thousands of scan results.
 	if _, err := conn.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS scanned_local_files (
-		path TEXT PRIMARY KEY, filename TEXT NOT NULL, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+		path TEXT PRIMARY KEY, filename TEXT NOT NULL, size BIGINT NOT NULL, mtime_ns BIGINT NOT NULL,
 		state TEXT NOT NULL, detail TEXT NOT NULL, source_id TEXT NOT NULL
 	)`); err != nil {
 		return err
