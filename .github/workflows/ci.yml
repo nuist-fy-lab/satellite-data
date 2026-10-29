@@ -155,8 +155,15 @@ jobs:
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
       - name: Check historical verifier on production Python 3.6
         run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -m unittest discover -s deploy/tests -p 'test_verify_earthcare_archive.py'
-      - name: Verify EarthCARE user units
-        run: systemd-analyze verify deploy/systemd/earthcare-verification.service deploy/systemd/earthcare-verification.timer
+      - name: Verify EarthCARE user units and c2ln1 host guards
+        run: |
+          systemd-analyze verify deploy/systemd/earthcare-verification.service deploy/systemd/earthcare-verification.timer
+          for conf in deploy/systemd/c2ln1/*.conf; do
+            grep -qx 'ConditionHost=c2ln1' "$conf"
+          done
+          for svc in satellited satellite-data-downloader satellite-checksum-sidecar; do
+            grep -qx 'Environment=SATELLITE_REQUIRE_HOST=c2ln1' "deploy/systemd/c2ln1/${svc}.conf"
+          done
       - name: Validate portal styles and HTML without a browser
         run: |
           npm install --prefix "$RUNNER_TEMP/satellite-web" --no-save --ignore-scripts css-tree@3.1.0 parse5@7.2.1
@@ -167,8 +174,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y acl
       - name: Test
         run: go test ./...
-      - name: Race-check persistent orders and centre dispatch
-        run: go test -race ./internal/state ./internal/downloadcoord ./internal/httpapi ./internal/central
+      - name: Race-check persistent orders, centre dispatch, and dataplane pipeline
+        run: go test -race ./internal/state ./internal/downloadcoord ./internal/httpapi ./internal/central ./internal/dataplane/access ./internal/dataplane/store ./internal/dataplane/server ./internal/dataplane/transfer ./internal/dataplane/pipeline
 
   build:
     runs-on: ubuntu-latest
@@ -186,7 +193,7 @@ jobs:
         with:
           go-version: '1.26.6'
           cache: false
-      - name: Build daemon and CLI
+      - name: Build control plane, dataplane, sidecar, and CLI
         env:
           CGO_ENABLED: '0'
           GOOS: linux
@@ -196,13 +203,15 @@ jobs:
           mkdir -p dist
           go build -trimpath -ldflags='-s -w' -o dist/satellited ./cmd/satellited
           go build -trimpath -ldflags='-s -w' -o dist/satellite ./cmd/satellite
+          go build -trimpath -ldflags='-s -w' -o dist/satellite-data-downloader ./cmd/satellite-data-downloader
+          go build -trimpath -ldflags='-s -w' -o dist/satellite-checksum-sidecar ./cmd/satellite-checksum-sidecar
           cp deploy/verify-earthcare-archive.py dist/verify-earthcare-archive.py
           cp deploy/normalize-earthcare-packages.py dist/normalize-earthcare-packages.py
           cp deploy/systemd/earthcare-verification.service deploy/systemd/earthcare-verification.timer dist/
       - name: Record cloud build digests
         run: |
           cd dist
-          sha256sum satellite satellited verify-earthcare-archive.py normalize-earthcare-packages.py earthcare-verification.service earthcare-verification.timer > SHA256SUMS
+          sha256sum satellite satellited satellite-data-downloader satellite-checksum-sidecar verify-earthcare-archive.py normalize-earthcare-packages.py earthcare-verification.service earthcare-verification.timer > SHA256SUMS
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -228,7 +237,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="ci-pr-${PR_NUMBER}-${SOURCE_SHA:0:12}"
-          gh release create "$tag" dist/satellite dist/satellited dist/verify-earthcare-archive.py dist/normalize-earthcare-packages.py dist/earthcare-verification.service dist/earthcare-verification.timer --repo "$GITHUB_REPOSITORY" \
+          gh release create "$tag" dist/satellite dist/satellited dist/satellite-data-downloader dist/satellite-checksum-sidecar dist/verify-earthcare-archive.py dist/normalize-earthcare-packages.py dist/earthcare-verification.service dist/earthcare-verification.timer --repo "$GITHUB_REPOSITORY" \
             --target "$SOURCE_SHA" --title "CI PR ${PR_NUMBER} ${SOURCE_SHA:0:12}" \
             --notes "Cloud-verified PR binaries for $SOURCE_SHA" --prerelease
           gh release upload "$tag" dist/visual/*.png --repo "$GITHUB_REPOSITORY"
@@ -236,7 +245,7 @@ jobs:
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir verify
           target="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .target_commitish)"
           [[ "$target" == "$SOURCE_SHA" ]]
-          for name in satellite satellited verify-earthcare-archive.py normalize-earthcare-packages.py earthcare-verification.service earthcare-verification.timer; do
+          for name in satellite satellited satellite-data-downloader satellite-checksum-sidecar verify-earthcare-archive.py normalize-earthcare-packages.py earthcare-verification.service earthcare-verification.timer; do
             cmp "dist/$name" "verify/$name"
             expected="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq ".assets[] | select(.name==\"$name\") | .digest")"
             [[ "$expected" == "sha256:$(sha256sum "verify/$name" | cut -d' ' -f1)" ]]

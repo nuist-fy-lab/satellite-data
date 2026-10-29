@@ -8,10 +8,11 @@
 
 `satellite-data` 提供统一的 Web 门户、HTTP API 与轻量级命令行工具（`satellite`），用于多源地球观测卫星及再分析资料的目录检索、持久订单提交与本地归档可用性追踪。
 
-系统在架构上将**目录发现与订单管理**和**底层数据传输**解耦：
+系统采用统一的 Monorepo 仓库管理，并在运行时将**目录发现与订单管理**和**底层数据传输**解耦为协同进程：
 
-- **`satellited`（本仓库）**：负责维护官方产品目录、年度/日内可用性日历、本地归档索引、数据源凭据与代理路由，以及持久化下载订单调度。
-- **[`satellite-data-downloader`](https://github.com/nuist-fy-lab/satellite-data-downloader)**：通过本机私有 Unix Socket 接收经中心批准的资产下载任务，按数据源隔离执行断点续传、完整性校验、暂存与原子归档。
+- **`satellited`**：负责维护官方产品目录、年度/日内可用性日历、本地归档索引（支持 SQLite 与无损 PostgreSQL）、数据源凭据与代理路由，以及持久化下载订单调度。
+- **`satellite-data-downloader`**：通过本机私有 Unix Socket（`$XDG_RUNTIME_DIR`）接收经中心批准的资产下载任务，按数据源隔离执行断点续传、完整性校验、暂存与原子归档。
+- **`satellite-checksum-sidecar`**：以低 I/O 优先级独立巡检历史已归档文件的官方校验和，不干扰实时下载队列。
 - **`satellite`（轻量 CLI）**：仅通过 API Key 提交任务或查询状态，不在客户端本地保存上游数据源凭据，也不直接承担文件下载。
 
 ```text
@@ -129,23 +130,30 @@ satellite download batch-status --id 1
 
 ```text
 cmd/
-  satellite/             轻量级用户 CLI
-  satellited/            中心 API 与内嵌 Web 守护进程
+  satellite/                   轻量级用户 CLI
+  satellited/                  中心 API 与内嵌 Web 守护进程
+  satellite-data-downloader/   按数据源隔离的断点续传下载守护进程
+  satellite-checksum-sidecar/  低优先级历史归档官方校验和审计进程
 internal/
-  app/                   服务编排与数据源装配
-  httpapi/               REST 与 SSE 接口实现
-  model/                 Source / Collection / Granule / Asset 领域模型
-  objectstore/           匿名 GCS 与 S3 列表客户端
-  provider/              各数据源适配器（calipso, cloudsat, earthcare, era5, eumetsat, goes, himawari, laads）
-  transfer/              HTTP 传输基础组件
-web/                     内嵌零外部依赖前端界面
-deploy/                  部署脚本与归档维护工具
-docs/                    架构与运维说明文档
+  app/                         服务编排与数据源装配
+  archiveevent/                归档完成事件的统一本机 IPC 契约
+  central/                     加密凭据库与本机授权网关
+  dataplane/                   下载队列、IPC 服务、流式校验传输与并发工作池
+  downloadcoord/               持久化订单调度、三层去重与 ERA5 编排
+  httpapi/                     REST 与 SSE 接口实现
+  indexer/                     本地归档扫描与官方可用性日历索引器
+  model/                       Source / Collection / Granule / Asset 领域模型
+  objectstore/                 匿名 GCS 与 S3 列表客户端
+  provider/                    各数据源适配器（calipso, cloudsat, earthcare, era5, eumetsat, goes, himawari, laads）
+  state/                       SQLite 与无损 PostgreSQL 持久化状态层
+web/                           内嵌零外部依赖前端界面
+deploy/                        用户态 systemd 单元、c2ln1 主机绑定守卫与运维脚本
+docs/                          架构与运维说明文档
 ```
 
 ## 部署与配置
 
-项目通过 GitHub Actions 编译静态二进制文件（`CGO_ENABLED=0`，`GOAMD64=v1`）。生产节点以用户级 `systemd` 服务运行 `satellited.service` 与配套的 `satellite-data-downloader.service`。
+项目通过 GitHub Actions 编译全部四个静态二进制文件（`CGO_ENABLED=0`，`GOAMD64=v1`：`satellite`、`satellited`、`satellite-data-downloader`、`satellite-checksum-sidecar`）并原子发布至 `ci-latest`。在共享 GPFS `$HOME` 的集群环境中，生产服务通过 `systemd --user` 运行在 `c2ln1` 节点，并同时由 `ConditionHost=c2ln1`（`deploy/systemd/c2ln1/*.conf`）与进程级 `SATELLITE_REQUIRE_HOST=c2ln1` 双重限制仅允许在 `c2ln1` 启动。
 
 `satellited` 核心环境变量：
 

@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/access"
 	"github.com/nuist-fy-lab/satellite-data/internal/archiveevent"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/access"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/config"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
@@ -251,14 +251,20 @@ func New(cfg config.Config, state *store.Store, accessManager *access.Manager) (
 }
 
 func (r *Runtime) Run(ctx context.Context) {
-	go r.events.Run(ctx)
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		r.events.Run(ctx)
+	}()
 	for _, item := range r.cfg.Providers {
 		if !item.Enabled {
 			continue
 		}
 		item := item
 		if item.SourceID == "modis" {
+			r.wg.Add(1)
 			go func() {
+				defer r.wg.Done()
 				ticker := time.NewTicker(5 * time.Second)
 				defer ticker.Stop()
 				for {
@@ -291,10 +297,10 @@ func (r *Runtime) Run(ctx context.Context) {
 			}(worker)
 		}
 	}
-	go func() {
-		<-ctx.Done()
-		r.wg.Wait()
-	}()
+}
+
+func (r *Runtime) Wait() {
+	r.wg.Wait()
 }
 
 func (r *Runtime) Provider(sourceID string) (config.Provider, bool) {
@@ -345,6 +351,9 @@ func (r *Runtime) ValidateTask(spec model.TaskSpec) error {
 	}
 	if strings.TrimSpace(spec.Name) == "" || strings.TrimSpace(spec.CollectionID) == "" || strings.TrimSpace(spec.GranuleID) == "" {
 		return errors.New("name, collection_id and granule_id are required")
+	}
+	if err := transfer.ValidateTaskPaths(spec.Name, spec.RelativeDir); err != nil {
+		return err
 	}
 	if spec.Size < 0 {
 		return errors.New("asset size must not be negative")
@@ -549,7 +558,7 @@ func (r *Runtime) verifyLoop(ctx context.Context, provider config.Provider, work
 			}
 			var integrity *transfer.IntegrityError
 			if errors.As(err, &integrity) || errors.Is(err, os.ErrNotExist) {
-				_ = os.Remove(task.StagingPath)
+				_ = transfer.RemoveStaging(task.ID, task.StagingPath)
 				_ = r.store.Redownload(context.WithoutCancel(ctx), task.ID, err, retryDelay(task.Attempts))
 			} else {
 				_ = r.store.RetryVerification(context.WithoutCancel(ctx), task.ID, err, retryDelay(task.Attempts))

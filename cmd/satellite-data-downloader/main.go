@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,9 +23,19 @@ import (
 )
 
 func main() {
+	requireHost := flag.String("require-host", strings.TrimSpace(os.Getenv("SATELLITE_REQUIRE_HOST")), "refuse to start unless hostname matches")
+	flag.Parse()
+	if flag.NArg() != 0 {
+		slog.Error("unexpected positional arguments")
+		os.Exit(2)
+	}
+	if err := enforceRequiredHost(*requireHost); err != nil {
+		slog.Error("host restriction check failed", "error", err)
+		os.Exit(1)
+	}
 	cfg := config.Load()
 	for _, path := range []string{filepath.Dir(cfg.SocketPath), filepath.Dir(cfg.DBPath), cfg.DownloadRoot} {
-		if err := os.MkdirAll(path, 0o750); err != nil {
+		if err := os.MkdirAll(path, 0o700); err != nil {
 			slog.Error("create runtime directory", "path", path, "error", err)
 			os.Exit(1)
 		}
@@ -82,8 +95,28 @@ func main() {
 	slog.Info("satellite downloader listening", "socket", cfg.SocketPath)
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("downloader server stopped", "error", err)
+		stop()
+		runtime.Wait()
 		os.Exit(1)
 	}
+	stop()
+	runtime.Wait()
+}
+
+func enforceRequiredHost(required string) error {
+	required = strings.ToLower(strings.TrimSpace(required))
+	if required == "" {
+		return nil
+	}
+	actual, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	actual = strings.ToLower(strings.TrimSpace(actual))
+	if actual == required || strings.HasPrefix(actual, required+".") {
+		return nil
+	}
+	return fmt.Errorf("running on host %q, restricted to %q", actual, required)
 }
 
 func listenUnix(path string) (net.Listener, error) {
@@ -106,7 +139,7 @@ func listenUnix(path string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o660); err != nil {
+	if err := os.Chmod(path, 0o600); err != nil {
 		_ = listener.Close()
 		return nil, err
 	}

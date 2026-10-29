@@ -835,8 +835,8 @@ func (s *Server) indexRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	end, err := time.Parse(time.DateOnly, strings.TrimSpace(values.Get("end")))
-	if err != nil || !end.After(start) {
-		writeError(w, http.StatusBadRequest, errors.New("invalid end day"))
+	if err != nil || !end.After(start) || start.Year() < 1940 || end.Sub(start) > 366*24*time.Hour {
+		writeError(w, http.StatusBadRequest, errors.New("invalid or excessive date range (max 366 days)"))
 		return
 	}
 	if _, selected, err := s.store.ProductSource(r.Context(), product); err != nil {

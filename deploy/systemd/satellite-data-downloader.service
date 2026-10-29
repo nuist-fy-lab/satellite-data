@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-%h/.config/satellite-data-downloader/runtime.env
-ExecStart=%h/.local/bin/satellite-data-downloader
+ExecStart=%h/.local/opt/satellite-data/current/satellite-data-downloader
 Restart=on-failure
 RestartSec=2s
 UMask=0077

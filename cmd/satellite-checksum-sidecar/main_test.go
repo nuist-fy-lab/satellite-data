@@ -57,7 +57,12 @@ func historicalFixture(t *testing.T) (*sidecar, *store.Store, candidate, func())
 	if _, err := state.Exec(schema); err != nil {
 		t.Fatal(err)
 	}
-	sock := filepath.Join(root, "downloader.sock")
+	sockDir, err := os.MkdirTemp("/tmp", "sat-sc-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "downloader.sock")
 	listener, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)

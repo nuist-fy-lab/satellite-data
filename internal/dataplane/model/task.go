@@ -3,7 +3,7 @@ package model
 import "time"
 
 type TaskSpec struct {
-	Key          string `json:"key"`
+	Key          string `json:"key,omitempty"`
 	SourceID     string `json:"source_id"`
 	CollectionID string `json:"collection_id"`
 	GranuleID    string `json:"granule_id"`

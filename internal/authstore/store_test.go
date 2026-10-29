@@ -19,6 +19,12 @@ func TestSatelliteAPIKeysAreHashedAndOwnerRevocable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.VerifyPassword(t.Context(), "nonexistent-user", "fixture-long-password"); err == nil || err.Error() != "invalid credentials" {
+		t.Fatalf("unexpected missing-user error: %v", err)
+	}
+	if _, err := s.VerifyPassword(t.Context(), "operator", "wrong-long-password"); err == nil || err.Error() != "invalid credentials" {
+		t.Fatalf("unexpected wrong-password error: %v", err)
+	}
 	key, secret, err := s.CreateAPIKey(t.Context(), user.ID, "Laptop")
 	if err != nil {
 		t.Fatal(err)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -86,9 +87,13 @@ func (e *earthcareToken) token(ctx context.Context) (string, error) {
 	if e.access != "" && time.Until(e.expiresAt) > time.Minute {
 		return e.access, nil
 	}
+	secret := strings.TrimSpace(os.Getenv("SATELLITE_EARTHCARE_CLIENT_SECRET"))
+	if secret == "" {
+		secret = earthcareClientSecret
+	}
 	form := url.Values{
 		"client_id":     {earthcareClientID},
-		"client_secret": {earthcareClientSecret},
+		"client_secret": {secret},
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {e.offline},
 		"scope":         {"offline_access openid"},

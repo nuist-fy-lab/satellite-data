@@ -29,7 +29,11 @@ func (v *commaValues) Set(value string) error {
 }
 
 func (c *client) dataOrder(args []string, inclusive bool) error {
-	set := flag.NewFlagSet("download submit", flag.ContinueOnError)
+	commandName := "download create"
+	if inclusive {
+		commandName = "download submit"
+	}
+	set := flag.NewFlagSet(commandName, flag.ContinueOnError)
 	source := set.String("source", "", "source ID; inferred from product")
 	collection := set.String("collection", "", "collection ID (compatible alias)")
 	var products commaValues
@@ -110,7 +114,12 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 		if *hourly || len(times) > 0 {
 			return errors.New("use --scenes-file or --time/--hourly")
 		}
-		raw, err := os.ReadFile(*scenesFile)
+		sf, err := os.Open(*scenesFile)
+		if err != nil {
+			return errors.New("scenes file must be a nonempty UTC-day map in JSON (max 1 MiB)")
+		}
+		defer sf.Close()
+		raw, err := io.ReadAll(io.LimitReader(sf, (1<<20)+1))
 		if err != nil || len(raw) > 1<<20 || len(raw) == 0 || json.Unmarshal(raw, &scenes) != nil || len(scenes) == 0 {
 			return errors.New("scenes file must be a nonempty UTC-day map in JSON (max 1 MiB)")
 		}
@@ -181,9 +190,19 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 	if len(products) > 1 {
 		keys := make([]string, 0, len(products))
 		for _, product := range products {
-			_, resolved, err := resolveProduct("", "", product)
+			itemSource, resolved, err := resolveProduct("", "", product)
 			if err != nil {
 				return err
+			}
+			if itemSource != "era5" && len(inputs) != 0 {
+				return errors.New("on-demand input flags are not supported for this product")
+			}
+			itemSelection, err := (downloadfilter.Selection{Band: *band, Times: times, Scenes: scenes}).Normalize(itemSource, resolved)
+			if err != nil {
+				return err
+			}
+			if itemSelection.Band != selection.Band {
+				return errors.New("multi-product orders require compatible band selection across all products")
 			}
 			keys = append(keys, resolved)
 		}
@@ -198,7 +217,7 @@ func (c *client) dataOrder(args []string, inclusive bool) error {
 		}
 		if err := c.post("/api/v1/downloads/batch", map[string]any{
 			"products": keys, "start": startValue, "end": endValue,
-			"band": *band, "times": selection.Times, "scenes": selection.Scenes, "inputs": inputs,
+			"band": selection.Band, "times": selection.Times, "scenes": selection.Scenes, "inputs": inputs,
 		}, &response); err != nil {
 			return err
 		}

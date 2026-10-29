@@ -72,12 +72,21 @@ func main() {
 		slog.Error("find home", "error", err)
 		os.Exit(1)
 	}
-	dbpath := flag.String("queue-db", filepath.Join(home, ".local/state/satellite-data-downloader/downloader.sqlite3"), "read-only live downloader database")
+	dbpath := flag.String("queue-db", defaultQueueDB(home), "read-only live downloader database")
 	statepath := flag.String("state-db", filepath.Join(home, ".local/state/satellite-data-checksum-sidecar/audit.sqlite3"), "exclusive sidecar checkpoint database")
-	socket := flag.String("socket", filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "satellite-data-downloader/downloader.sock"), "live downloader Unix socket for tiny result updates")
+	socket := flag.String("socket", defaultDownloaderSocket(home), "live downloader Unix socket for tiny result updates")
 	limit := flag.Int64("read-mibps", 8, "maximum historic archive read rate in MiB/s (one worker)")
 	interval := flag.Duration("metadata-interval", 500*time.Millisecond, "minimum spacing between public metadata lookups")
+	requireHost := flag.String("require-host", strings.TrimSpace(os.Getenv("SATELLITE_REQUIRE_HOST")), "refuse to start unless hostname matches")
 	flag.Parse()
+	if flag.NArg() != 0 {
+		slog.Error("unexpected positional arguments")
+		os.Exit(2)
+	}
+	if err := enforceRequiredHost(*requireHost); err != nil {
+		slog.Error("host restriction check failed", "error", err)
+		os.Exit(1)
+	}
 	if *limit < 1 || *limit > 256 || *interval < 50*time.Millisecond {
 		slog.Error("invalid sidecar resource limit")
 		os.Exit(2)
@@ -86,14 +95,14 @@ func main() {
 		slog.Error("create state directory", "error", err)
 		os.Exit(1)
 	}
-	queue, err := sql.Open("sqlite", "file:"+*dbpath+"?mode=ro")
+	queue, err := sql.Open("sqlite", "file:"+*dbpath+"?mode=ro&_busy_timeout=5000")
 	if err != nil {
 		slog.Error("open read-only downloader database", "error", err)
 		os.Exit(1)
 	}
 	defer queue.Close()
 	queue.SetMaxOpenConns(1)
-	if _, err := queue.Exec("PRAGMA query_only=ON"); err != nil {
+	if _, err := queue.Exec("PRAGMA busy_timeout=5000; PRAGMA query_only=ON"); err != nil {
 		slog.Error("lock downloader database read-only", "error", err)
 		os.Exit(1)
 	}
@@ -308,7 +317,7 @@ func (s *sidecar) report(ctx context.Context, c candidate, status, algorithm, va
 func (s *sidecar) deferRetry(ctx context.Context, c candidate, attempts int, cause error) error {
 	// Independent bounded exponential backoff; metadata outages never stop
 	// ordinary downloads and never result in terminal archive mutations.
-	stage := min(attempts-1, 8)
+	stage := max(0, min(attempts-1, 8))
 	delay := 5 * time.Second * time.Duration(1<<stage)
 	if delay > 30*time.Minute {
 		delay = 30 * time.Minute
@@ -329,4 +338,47 @@ func (s *sidecar) record(ctx context.Context, c candidate, status, algorithm, va
 		next_retry_ns=excluded.next_retry_ns,detail=excluded.detail,updated_at=excluded.updated_at`,
 		c.id, c.source, status, algorithm, value, sha, attempts, due, detail, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+func defaultQueueDB(home string) string {
+	if value := strings.TrimSpace(os.Getenv("SATDOWN_DB")); value != "" {
+		if strings.HasPrefix(value, "%h/") {
+			return filepath.Join(home, strings.TrimPrefix(value, "%h/"))
+		}
+		return value
+	}
+	return filepath.Join(home, ".local/state/satellite-data-downloader/downloader.sqlite3")
+}
+
+func defaultDownloaderSocket(home string) string {
+	if value := strings.TrimSpace(os.Getenv("SATDOWN_SOCKET")); value != "" {
+		if strings.HasPrefix(value, "%h/") {
+			return filepath.Join(home, strings.TrimPrefix(value, "%h/"))
+		}
+		return value
+	}
+	if runtime := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); runtime != "" {
+		return filepath.Join(runtime, "satellite-data-downloader/downloader.sock")
+	}
+	runUser := filepath.Join("/run/user", strconv.Itoa(os.Getuid()))
+	if info, err := os.Stat(runUser); err == nil && info.IsDir() {
+		return filepath.Join(runUser, "satellite-data-downloader/downloader.sock")
+	}
+	return filepath.Join(home, ".local/state/satellite-data-downloader/downloader.sock")
+}
+
+func enforceRequiredHost(required string) error {
+	required = strings.ToLower(strings.TrimSpace(required))
+	if required == "" {
+		return nil
+	}
+	actual, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	actual = strings.ToLower(strings.TrimSpace(actual))
+	if actual == required || strings.HasPrefix(actual, required+".") {
+		return nil
+	}
+	return fmt.Errorf("running on host %q, restricted to %q", actual, required)
 }

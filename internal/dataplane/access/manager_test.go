@@ -7,14 +7,25 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
+func shortUnixSocket(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "sat-ipc-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, name)
+}
+
 func TestCentralIPCStreamsRangesWithoutAnyCredential(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "central.sock")
+	path := shortUnixSocket(t, "central.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +101,7 @@ func TestCentralTransportRefusesMutation(t *testing.T) {
 }
 
 func TestCentralTransportReportsUnavailableCentre(t *testing.T) {
-	manager, _ := NewManager(filepath.Join(t.TempDir(), "missing.sock"))
+	manager, _ := NewManager(shortUnixSocket(t, "missing.sock"))
 	r, _ := http.NewRequest(http.MethodGet, "https://storage.googleapis.com/fixture", nil)
 	if _, err := (&centralTransport{manager: manager, source: "goes"}).RoundTrip(r); !errors.Is(err, ErrCentralUnavailable) {
 		t.Fatalf("transport error=%v want ErrCentralUnavailable", err)

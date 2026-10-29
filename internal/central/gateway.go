@@ -50,6 +50,18 @@ func cdsAssetHost(host string) bool {
 	return host == "object-store.os-api.cci1.ecmwf.int" || host == "object-store.os-api.cci2.ecmwf.int"
 }
 
+func allowedRedirectHost(source, host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if allowedHost(source, host) || host == "storage.googleapis.com" {
+		return true
+	}
+	if strings.HasSuffix(host, ".s3.amazonaws.com") || (strings.Contains(host, ".s3.") && strings.HasSuffix(host, ".amazonaws.com")) ||
+		(strings.HasPrefix(host, "s3.") && strings.HasSuffix(host, ".amazonaws.com")) {
+		return true
+	}
+	return strings.HasSuffix(host, ".earthdatacloud.nasa.gov") || strings.HasSuffix(host, ".eosdis.nasa.gov")
+}
+
 func (s *Service) Gateway() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/access/status", func(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +180,7 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		if cdsJobID != "" && !cdsAssetHost(host) {
 			return errors.New("CDS asset redirect host is not allowed")
 		}
-		if cdsJobID == "" && !allowedHost(request.SourceID, host) && !strings.HasSuffix(host, ".s3.amazonaws.com") && !strings.HasSuffix(host, ".amazonaws.com") && host != "storage.googleapis.com" {
+		if cdsJobID == "" && !allowedRedirectHost(request.SourceID, host) {
 			return errors.New("asset redirect host is not allowed")
 		}
 		if host != u.Hostname() {

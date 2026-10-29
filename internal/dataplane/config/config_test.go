@@ -182,3 +182,19 @@ func TestLoadFallsBackToHomeStateForIPC(t *testing.T) {
 		t.Fatalf("ArchiveEventSocket=%q want %q", cfg.ArchiveEventSocket, want)
 	}
 }
+
+func TestLoadAlignsDefaultArchiveRootAndExpandsSystemdHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("SATDOWN_ARCHIVE_ROOT", "")
+	t.Setenv("SATDOWN_DB", "%h/.local/state/satellite-data-downloader/downloader.sqlite3")
+
+	cfg := Load()
+	if want := filepath.Join(home, ".local", "share", "satellite-data", "archive"); cfg.ArchiveRoot != want {
+		t.Fatalf("ArchiveRoot=%q want %q", cfg.ArchiveRoot, want)
+	}
+	if want := filepath.Join(home, ".local", "state", "satellite-data-downloader", "downloader.sqlite3"); cfg.DBPath != want {
+		t.Fatalf("DBPath=%q want %q", cfg.DBPath, want)
+	}
+}

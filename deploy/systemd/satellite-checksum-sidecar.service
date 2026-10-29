@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/satellite-checksum-sidecar --read-mibps=8 --metadata-interval=500ms
+EnvironmentFile=-%h/.config/satellite-data-downloader/runtime.env
+ExecStart=%h/.local/opt/satellite-data/current/satellite-checksum-sidecar --read-mibps=8 --metadata-interval=500ms
 Restart=on-failure
 RestartSec=30s
 Nice=19

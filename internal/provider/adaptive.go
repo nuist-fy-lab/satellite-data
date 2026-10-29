@@ -99,11 +99,18 @@ type adaptiveProvider struct {
 	flow *queryFlow
 }
 
-func (p *adaptiveProvider) Collections(ctx context.Context) ([]model.Collection, error) {
+func (p *adaptiveProvider) Collections(ctx context.Context) (items []model.Collection, err error) {
 	if err := p.flow.acquire(ctx); err != nil {
 		return nil, err
 	}
-	items, err := p.Provider.Collections(ctx)
+	finished := false
+	defer func() {
+		if !finished {
+			p.flow.finish(false, true)
+		}
+	}()
+	items, err = p.Provider.Collections(ctx)
+	finished = true
 	p.flow.finish(err == nil, ctx.Err() == nil && !errors.Is(err, ErrUnsupportedCollection))
 	if err == nil {
 		items = append([]model.Collection(nil), items...)
@@ -114,11 +121,18 @@ func (p *adaptiveProvider) Collections(ctx context.Context) ([]model.Collection,
 	return items, err
 }
 
-func (p *adaptiveProvider) Search(ctx context.Context, q model.Query) ([]model.Granule, error) {
+func (p *adaptiveProvider) Search(ctx context.Context, q model.Query) (items []model.Granule, err error) {
 	if err := p.flow.acquire(ctx); err != nil {
 		return nil, err
 	}
-	items, err := p.Provider.Search(ctx, q)
+	finished := false
+	defer func() {
+		if !finished {
+			p.flow.finish(false, true)
+		}
+	}()
+	items, err = p.Provider.Search(ctx, q)
+	finished = true
 	p.flow.finish(err == nil, ctx.Err() == nil && !errors.Is(err, ErrUnsupportedCollection) && !errors.Is(err, ErrOnDemand))
 	return items, err
 }

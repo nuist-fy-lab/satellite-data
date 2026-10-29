@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/auth"
@@ -620,7 +621,7 @@ func PromoteWithOfficial(task model.Task, archiveRoot string, official []Officia
 		if existingDigest != digest {
 			return PromoteResult{}, &CollisionError{Path: target}
 		}
-		_ = os.Remove(task.StagingPath)
+		_ = RemoveStaging(task.ID, task.StagingPath)
 		verification.Path, verification.Size, verification.SHA256 = target, existing.Size(), digest
 		return verification, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -640,27 +641,66 @@ func PromoteWithOfficial(task model.Task, archiveRoot string, official []Officia
 	}
 	if tempDigest != digest {
 		_ = os.Remove(temp)
-		return PromoteResult{}, &IntegrityError{Detail: "archive copy SHA-256 mismatch"}
+		return PromoteResult{}, errors.New("archive copy SHA-256 mismatch")
 	}
 	if err := os.Link(temp, target); err != nil {
-		_ = os.Remove(temp)
 		if errors.Is(err, os.ErrExist) {
+			_ = os.Remove(temp)
 			return PromoteResult{}, &CollisionError{Path: target}
 		}
-		return PromoteResult{}, err
-	}
-	if err := os.Remove(temp); err != nil {
+		if errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.EXDEV) || errors.Is(err, syscall.EPERM) {
+			if _, statErr := os.Lstat(target); statErr == nil {
+				_ = os.Remove(temp)
+				return PromoteResult{}, &CollisionError{Path: target}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				_ = os.Remove(temp)
+				return PromoteResult{}, statErr
+			}
+			if renameErr := os.Rename(temp, target); renameErr != nil {
+				_ = os.Remove(temp)
+				return PromoteResult{}, renameErr
+			}
+		} else {
+			_ = os.Remove(temp)
+			return PromoteResult{}, err
+		}
+	} else if err := os.Remove(temp); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return PromoteResult{}, err
 	}
 	if err := syncDir(targetDir); err != nil {
 		return PromoteResult{}, err
 	}
-	if err := os.Remove(task.StagingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := RemoveStaging(task.ID, task.StagingPath); err != nil {
 		return PromoteResult{}, err
 	}
-	_ = syncDir(filepath.Dir(task.StagingPath))
 	verification.Path, verification.Size, verification.SHA256 = target, info.Size(), digest
 	return verification, nil
+}
+
+func ValidateTaskPaths(name, relativeDir string) error {
+	if _, err := safeName(name); err != nil {
+		return err
+	}
+	_, err := safeRelativeDir(relativeDir)
+	return err
+}
+
+func RemoveStaging(taskID int64, stagingPath string) error {
+	if strings.TrimSpace(stagingPath) == "" {
+		return nil
+	}
+	if err := os.Remove(stagingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_ = os.Remove(stagingPath + ".json")
+	dir := filepath.Dir(stagingPath)
+	if taskID > 0 && filepath.Base(dir) == strconv.FormatInt(taskID, 10) {
+		_ = os.Remove(dir)
+		_ = syncDir(filepath.Dir(dir))
+		return nil
+	}
+	_ = syncDir(dir)
+	return nil
 }
 
 func ensureArchiveDirectory(root, relative string, groupWritable bool) error {

@@ -22,6 +22,10 @@ type client struct {
 
 func main() {
 	args := os.Args[1:]
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
+		usage()
+		return
+	}
 	if len(args) < 2 {
 		usage()
 		os.Exit(2)
@@ -61,7 +65,7 @@ func main() {
 	case "download batch-status":
 		err = c.downloadBatchStatus(args[2:])
 	case "download providers":
-		err = c.downloadProviders()
+		err = c.downloadProviders(args[2:]...)
 	case "era5 schema":
 		err = c.era5Schema(args[2:])
 	case "era5 submit":
@@ -215,7 +219,15 @@ func (c *client) downloadBatchStatus(args []string) error {
 	return nil
 }
 
-func (c *client) downloadProviders() error {
+func (c *client) downloadProviders(args ...string) error {
+	set := flag.NewFlagSet("download providers", flag.ContinueOnError)
+	jsonOutput := set.Bool("json", false, "print JSON")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
+	if set.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
 	var payload struct {
 		Providers []struct {
 			SourceID       string         `json:"source_id"`
@@ -226,6 +238,9 @@ func (c *client) downloadProviders() error {
 	}
 	if err := c.get("/api/v1/downloader/providers", &payload); err != nil {
 		return err
+	}
+	if *jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(payload.Providers)
 	}
 	for _, item := range payload.Providers {
 		fmt.Printf("%-12s enabled=%-5t configured=%-5t states=%v\n",
@@ -346,7 +361,7 @@ func usage() {
   satellite download submit --product era5:reanalysis-era5-single-levels --start 2024-01-01 --end 2024-01-02 --variable 2m_temperature --area 32.25,-118.75,32,-118.5 [--json]
   satellite download list [--limit 50] [--json]
   satellite download status --id 1 [--json]
-  satellite download providers
+  satellite download providers [--json]
   satellite era5 schema --collection era5:reanalysis-era5-single-levels
   satellite era5 submit --collection era5:reanalysis-era5-single-levels --variable 2m_temperature --product-type reanalysis --year 2024 --month 01 --day 01 --time 00:00 --area 32.25,-118.75,32,-118.5 --data-format netcdf --download-format unarchived [--json]
   satellite era5 submit --collection era5:reanalysis-era5-single-levels --inputs-file request.json [--json]

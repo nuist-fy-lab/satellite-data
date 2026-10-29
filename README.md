@@ -8,10 +8,11 @@ Unified multi-satellite scientific data discovery, ordering, archive indexing, a
 
 `satellite-data` provides a central web portal, HTTP API, and thin CLI (`satellite`) for discovering, ordering, and indexing multi-source earth observation and reanalysis datasets.
 
-The system deliberately separates **catalogue discovery & order management** from **bulk data transfer**:
+The unified monorepo cleanly separates **catalogue discovery & order management** from **bulk data transfer** across cooperating local processes:
 
-- **`satellited` (this repository)**: Manages official product catalogues, availability calendars, local archive indexing, provider credentials/routes, and persistent acquisition orders.
-- **[`satellite-data-downloader`](https://github.com/nuist-fy-lab/satellite-data-downloader)**: Consumes approved asset tasks over a local Unix socket and handles provider-isolated resumable downloads, checksum verification, staging, and atomic archive promotion.
+- **`satellited`**: Manages official product catalogues, availability calendars, local archive indexing (SQLite or PostgreSQL), provider credentials/routes, and persistent acquisition orders.
+- **`satellite-data-downloader`**: Consumes approved asset tasks over a local Unix socket (`$XDG_RUNTIME_DIR`) and handles provider-isolated resumable downloads, checksum verification, staging, and atomic archive promotion.
+- **`satellite-checksum-sidecar`**: Independently audits historical archived granules against official upstream checksums at throttled I/O rates without blocking live downloads.
 - **`satellite` (thin CLI)**: Submits orders and queries catalogue or task status via Bearer API keys—never storing upstream provider credentials or executing transfers locally.
 
 ```text
@@ -129,23 +130,30 @@ All portal pages and API endpoints require either an authenticated web session (
 
 ```text
 cmd/
-  satellite/             Thin user CLI
-  satellited/            Central API and embedded web daemon
+  satellite/                   Thin user CLI
+  satellited/                  Central API and embedded web daemon
+  satellite-data-downloader/   Provider-isolated resumable transfer daemon
+  satellite-checksum-sidecar/  Low-priority historical archive checksum auditor
 internal/
-  app/                   Service orchestration and provider wiring
-  httpapi/               REST & SSE endpoints
-  model/                 Source / Collection / Granule / Asset domain models
-  objectstore/           Anonymous GCS and S3 listing clients
-  provider/              Source adapters (calipso, cloudsat, earthcare, era5, eumetsat, goes, himawari, laads)
-  transfer/              HTTP transfer primitives
-web/                     Embedded dependency-free web interface
-deploy/                  Deployment scripts and archive maintenance utilities
-docs/                    Architecture and operations documentation
+  app/                         Service orchestration and provider wiring
+  archiveevent/                Shared IPC contract for archive completion notifications
+  central/                     Encrypted credential vault & local authorization gateway
+  dataplane/                   Downloader queue, IPC server, transfer engine & worker pools
+  downloadcoord/               Persistent order scheduling, deduplication & ERA5 orchestration
+  httpapi/                     REST & SSE endpoints
+  indexer/                     Archive filesystem scanner & official calendar indexer
+  model/                       Source / Collection / Granule / Asset domain models
+  objectstore/                 Anonymous GCS and S3 listing clients
+  provider/                    Source adapters (calipso, cloudsat, earthcare, era5, eumetsat, goes, himawari, laads)
+  state/                       SQLite & lossless PostgreSQL persistence layer
+web/                           Embedded dependency-free web interface
+deploy/                        User-level systemd units, c2ln1 host guards & maintenance tools
+docs/                          Architecture and operations documentation
 ```
 
 ## Deployment & Configuration
 
-Builds and tests run in GitHub Actions (`CGO_ENABLED=0`, `GOAMD64=v1` static binaries). Production hosts run `satellited.service` alongside `satellite-data-downloader.service` as user-level `systemd` units.
+Builds and tests run in GitHub Actions (`CGO_ENABLED=0`, `GOAMD64=v1` static binaries) and publish all four binaries (`satellite`, `satellited`, `satellite-data-downloader`, `satellite-checksum-sidecar`) atomically under `ci-latest`. Production cluster node `c2ln1` runs user-level `systemd` units restricted to `c2ln1` via both `ConditionHost=c2ln1` (`deploy/systemd/c2ln1/*.conf`) and `SATELLITE_REQUIRE_HOST=c2ln1`.
 
 Key environment variables for `satellited`:
 

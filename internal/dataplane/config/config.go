@@ -59,15 +59,32 @@ func Load() Config {
 		provider("era5", true, 2, 2, 2, 10*time.Minute, "cds"),
 	}
 	return Config{
-		SocketPath:           env("SATDOWN_SOCKET", filepath.Join(runtime, "satellite-data-downloader", "downloader.sock")),
-		DBPath:               env("SATDOWN_DB", filepath.Join(state, "downloader.sqlite3")),
-		CentralSocket:        env("SATDOWN_CENTRAL_SOCKET", filepath.Join(runtime, "satellite-data", "central.sock")),
-		DownloadRoot:         env("SATDOWN_DOWNLOAD_ROOT", filepath.Join(state, "delivery")),
-		ArchiveRoot:          env("SATDOWN_ARCHIVE_ROOT", filepath.Join(home, "satellite-downloads")),
+		SocketPath:           expandHomeToken(env("SATDOWN_SOCKET", filepath.Join(runtime, "satellite-data-downloader", "downloader.sock")), home),
+		DBPath:               expandHomeToken(env("SATDOWN_DB", filepath.Join(state, "downloader.sqlite3")), home),
+		CentralSocket:        expandHomeToken(env("SATDOWN_CENTRAL_SOCKET", filepath.Join(runtime, "satellite-data", "central.sock")), home),
+		DownloadRoot:         expandHomeToken(env("SATDOWN_DOWNLOAD_ROOT", filepath.Join(state, "delivery")), home),
+		ArchiveRoot:          expandHomeToken(env("SATDOWN_ARCHIVE_ROOT", defaultArchiveRoot(home)), home),
 		ArchiveGroupWritable: envBool("SATDOWN_ARCHIVE_GROUP_WRITABLE", true),
-		ArchiveEventSocket:   env("SATDOWN_ARCHIVE_EVENT_SOCKET", filepath.Join(runtime, "satellite-data", "archive-events.sock")),
+		ArchiveEventSocket:   expandHomeToken(env("SATDOWN_ARCHIVE_EVENT_SOCKET", filepath.Join(runtime, "satellite-data", "archive-events.sock")), home),
 		Providers:            providers,
 	}
+}
+
+func defaultArchiveRoot(home string) string {
+	if root := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); root != "" {
+		return filepath.Join(root, "satellite-data", "archive")
+	}
+	if home == "" {
+		return "archive"
+	}
+	return filepath.Join(home, ".local", "share", "satellite-data", "archive")
+}
+
+func expandHomeToken(value, home string) string {
+	if home != "" && strings.HasPrefix(value, "%h/") {
+		return filepath.Join(home, strings.TrimPrefix(value, "%h/"))
+	}
+	return value
 }
 
 func runtimeRoot(home string) string {
