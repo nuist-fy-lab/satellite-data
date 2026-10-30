@@ -2382,10 +2382,12 @@ function downloadProductRow(product, selected = false) {
   const code = product.data_type || product.product_code || '';
   const heading = [...new Set([product.satellite, code].filter(Boolean))].join(' · ') || downloadProductName(product);
   const name = downloadProductName(product);
-  const metadata = [...new Set([product.instrument, product.level, product.area_type, product.resolution].filter(Boolean))].join(' · ');
-  const description = '<span class="download-product-copy"><strong>' + esc(heading) + '</strong>' +
-    (name !== heading && name !== code ? '<span>' + esc(name) + '</span>' : '') +
-    (metadata ? '<span class="download-product-metadata">' + esc(metadata) + '</span>' : '') + '</span>';
+  const fields = [product.satellite, product.instrument, product.level, code, product.area_type, product.resolution];
+  const identifier = product.metadata?.filename_pattern || product.official_id || product.product_key || product.collection_id || code;
+  const description = '<span class="download-product-copy"><span class="download-product-line">' +
+    fields.map(value => '<span class="download-product-tag" title="' + esc(value || '—') + '">' + esc(value || '—') + '</span>').join('') +
+    '<span class="download-product-name" title="' + esc(name) + '">' + esc(name) + '</span></span>' +
+    '<span class="download-product-identifier">' + esc(identifier) + '</span></span>';
   if (selected) return '<div class="download-selected-product">' + description +
     '<button type="button" data-download-remove="' + esc(product.product_key) + '" aria-label="移除 ' + esc(heading) + '">×</button></div>';
   return '<label class="download-product-row"><input type="checkbox" data-download-product="' + esc(product.product_key) + '"' +

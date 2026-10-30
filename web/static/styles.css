@@ -390,23 +390,27 @@ main.calendar-wide{width:100%}
 .download-product-search{display:flex;align-items:flex-end;gap:12px;margin:14px 0}
 .download-product-search label{width:min(480px,100%)}
 .download-product-search button{min-height:34px;white-space:nowrap}
-.download-product-panels{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:14px}
+.download-product-panels{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
 .download-product-panel{min-width:0;border:1px solid var(--line);border-radius:7px;background:#fff;overflow:hidden}
-.download-product-panel>header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:11px 12px;border-bottom:1px solid var(--line);min-height:52px}
+.download-product-panel>header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);min-height:40px}
 .download-product-panel>header h3 span{color:var(--muted);font-weight:500;margin-left:4px}
 .download-product-panel>header button{font-size:13px;padding:4px 8px}
 .download-submit-form .download-check-all{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--fg)}
 .download-submit-form .download-check-all input{width:16px;height:16px;margin:0}
-.download-product-results,.download-selected-products{height:340px;overflow-y:auto;overscroll-behavior:contain;padding:8px}
-.download-submit-form .download-product-row{display:flex;align-items:flex-start;gap:10px;padding:11px 9px;margin-bottom:6px;border:1px solid var(--line);border-radius:6px;color:var(--fg);cursor:pointer}
+.download-product-results,.download-selected-products{overflow-y:auto;overscroll-behavior:contain;padding:6px}
+.download-product-results{max-height:300px}
+.download-selected-products{max-height:200px}
+.download-submit-form .download-product-row,.download-selected-product{display:flex;align-items:flex-start;gap:7px;padding:7px 8px;margin-bottom:5px;border:1px solid var(--line);border-radius:6px;color:var(--fg);font-size:12px}
+.download-submit-form .download-product-row{cursor:pointer}
+.download-product-row:last-child,.download-selected-product:last-child{margin-bottom:0}
 .download-product-row:hover{background:var(--soft)}
-.download-submit-form .download-product-row>input{width:17px;height:17px;flex:0 0 auto;margin:2px 0 0}
-.download-product-copy{display:grid;gap:5px;min-width:0;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
-.download-product-copy strong{font-size:14px;font-weight:600}
-.download-product-metadata{color:var(--muted)}
-.download-selected-product{display:flex;align-items:flex-start;gap:8px;padding:11px 5px;border-bottom:1px solid var(--line)}
-.download-selected-product .download-product-copy{flex:1}
-.download-selected-product button{flex:0 0 auto;width:28px;height:28px;padding:0;font-size:19px}
+.download-submit-form .download-product-row>input{width:14px;height:14px;flex:0 0 auto;margin:3px 0 0}
+.download-product-copy{display:grid;flex:1;gap:5px;min-width:0;font-size:12px;line-height:1.35}
+.download-product-line{display:grid;grid-template-columns:minmax(64px,.8fr) minmax(66px,.8fr) minmax(36px,.45fr) minmax(80px,1.1fr) minmax(50px,.65fr) minmax(64px,.8fr) minmax(160px,2fr);align-items:center;gap:6px;min-width:0}
+.download-product-tag{min-width:0;padding:2px 7px;border-radius:999px;background:var(--soft);text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:400}
+.download-product-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.download-product-identifier{min-width:0;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;overflow-wrap:anywhere}
+.download-selected-product button{flex:0 0 auto;width:22px;height:22px;padding:0;font-size:16px;line-height:20px}
 .download-picker-empty{padding:24px 10px;text-align:center;font-size:13px;color:var(--muted)}
 .download-confirm-dialog{width:min(720px,calc(100vw - 32px));max-height:90vh;border:1px solid var(--line);border-radius:10px;padding:20px;color:var(--fg);background:#fff;box-shadow:0 16px 64px #0004;overflow:auto}
 .download-confirm-dialog::backdrop{background:#1f232866}
@@ -423,7 +427,7 @@ main.calendar-wide{width:100%}
 .download-task-summary dd{margin:0;min-width:0;overflow-wrap:anywhere}
 .download-submit-result{border:1px solid #aceebb;border-radius:8px;background:#f3fcf4;padding:16px;margin-top:10px}
 .download-submit-result>h3{margin-top:0;color:#116329}
-@media(max-width:900px){.download-product-panels{grid-template-columns:minmax(0,1fr)}.download-selected-products{height:auto;max-height:260px}}
+@media(max-width:900px){.download-product-line{grid-template-columns:repeat(3,minmax(0,1fr))}.download-product-name{grid-column:1/-1;white-space:normal}.download-product-tag{font-size:11px}}
 @media(max-width:450px){.download-product-picker{padding:10px}.download-product-search{align-items:stretch;flex-direction:column}.download-product-search label{width:100%}.download-confirm-dialog{padding:14px}.download-submit-actions{align-items:stretch;flex-direction:column}.download-submit-actions #dl-submit{width:100%}}
 @media(max-width:780px){.download-submit-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:450px){.download-submit-form{grid-template-columns:minmax(0,1fr)}}
