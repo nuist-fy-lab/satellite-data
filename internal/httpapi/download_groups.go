@@ -10,6 +10,7 @@ import (
 
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
+	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
 
@@ -55,6 +56,15 @@ func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, task
 	}
 	specs := make([]state.GroupProduct, 0, len(req.Products))
 	seen := make(map[string]bool, len(req.Products))
+	products, err := s.store.DownloadTaskProducts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	byKey := make(map[string]model.Product, len(products))
+	for _, product := range products {
+		byKey[product.ProductKey] = product
+	}
 	for _, key := range req.Products {
 		key = strings.TrimSpace(key)
 		if key == "" || seen[key] {
@@ -62,11 +72,12 @@ func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, task
 			return
 		}
 		seen[key] = true
-		source, _, err := s.store.ProductSource(r.Context(), key)
-		if err != nil {
+		product, exists := byKey[key]
+		if !exists {
 			writeError(w, http.StatusNotFound, errors.New("unknown product "+key))
 			return
 		}
+		source := product.SourceID
 		providerID, ok := downloadcoord.ProviderForSource(source)
 		if !ok {
 			writeError(w, http.StatusBadRequest, errors.New("unsupported source "+source))

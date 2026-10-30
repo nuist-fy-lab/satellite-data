@@ -25,7 +25,7 @@ type downloadTaskView struct {
 }
 
 func (s *Server) downloadTaskViews(ctx context.Context, tasks []state.DownloadGroup) ([]downloadTaskView, error) {
-	products, err := s.store.Products(ctx, "")
+	products, err := s.store.DownloadTaskProducts(ctx)
 	if err != nil {
 		return nil, err
 	}

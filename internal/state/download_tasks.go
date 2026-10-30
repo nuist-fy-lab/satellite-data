@@ -3,9 +3,30 @@ package state
 import (
 	"context"
 	"errors"
+
+	"github.com/nuist-fy-lab/satellite-data/internal/model"
 )
 
 const DownloadTaskPageSize = 30
+
+// Task summaries need catalogue labels, without aggregating the archive's
+// potentially millions of local slots on every progress refresh.
+func (s *Store) DownloadTaskProducts(ctx context.Context) ([]model.Product, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT product_key,source_id,satellite,instrument,data_type,display_name FROM products ORDER BY product_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]model.Product, 0)
+	for rows.Next() {
+		var p model.Product
+		if err := rows.Scan(&p.ProductKey, &p.SourceID, &p.Satellite, &p.Instrument, &p.DataType, &p.DisplayName); err != nil {
+			return nil, err
+		}
+		items = append(items, p)
+	}
+	return items, rows.Err()
+}
 
 // DownloadTasksPage lists submitted tasks, rather than their per-product work
 // items. Unassociated legacy requests are deliberately excluded.
