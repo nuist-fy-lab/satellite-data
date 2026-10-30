@@ -437,6 +437,7 @@ try {
             stacked:panels[1].top>=panels[0].bottom,aligned:Math.abs(panels[1].left-panels[0].left)<1,
             cardHeight:rowBox.height,fontSize:parseFloat(getComputedStyle($('.download-product-name')).fontSize),
             tagCount:row.querySelectorAll('.download-product-tag').length,
+            versionTag:!!row.querySelector('.download-product-tag[title^="版本："]'),
             nameBelow:row.querySelector('.download-product-name').getBoundingClientRect().top>=row.querySelector('.download-product-line').getBoundingClientRect().bottom,
             nameClipped:row.querySelector('.download-product-name').scrollWidth>row.querySelector('.download-product-name').clientWidth+1,
             legacy:!!document.querySelector('#dl-extra-products,#download-batches,#download-requests')};
@@ -448,7 +449,8 @@ try {
         assert.equal(picker.stacked,true);
         assert.equal(picker.aligned,true);
         assert.ok(picker.fontSize<=12);
-        assert.equal(picker.tagCount,8);
+        assert.equal(picker.tagCount,7);
+        assert.equal(picker.versionTag,false);
         assert.equal(picker.nameBelow,true);
         assert.equal(picker.nameClipped,false);
         const queue=await driver.executeScript(`
