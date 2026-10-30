@@ -499,6 +499,7 @@ try {
         assert.equal(temporal.periodClock,false);
         assert.equal(temporal.monthly,'select-one');assert.equal(temporal.observation,'datetime-local');
         assert.deepEqual(temporal.dekads,['01','11','21']);
+        await driver.executeScript("document.querySelector('#dl-selected-products').scrollIntoView({block:'start'})");
         await writeFile('dist/visual/download-product-options-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
       }
       if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {

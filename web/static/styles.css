@@ -375,7 +375,7 @@ main.calendar-wide{width:100%}
 .download-picker-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
 .download-product-picker h3{font-size:14px;font-weight:650;margin:0}
 #dl-selected-count{background:#ddf4ff;color:#0969da;padding:5px 10px;border-radius:999px;font-size:13px;font-weight:600}
-.download-product-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+.download-product-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}
 .download-filter-field{display:grid;gap:6px;min-width:0;font-size:13px;color:var(--muted)}
 .download-filter{position:relative;min-width:0;color:var(--fg)}
 .download-filter summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer;list-style:none}

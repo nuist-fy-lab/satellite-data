@@ -14,6 +14,8 @@ func TestProductTemporalSemantics(t *testing.T) {
 	}{
 		{model.Product{SourceID: "goes18", ProductKey: "goes18:ABI-L1b-RadF", Cadence: "10m"}, "scan"},
 		{model.Product{SourceID: "himawari9", ProductKey: "himawari9:AHI-L1b-FLDK", Cadence: "10m"}, "scan"},
+		{model.Product{SourceID: "mtg", ProductKey: "mtg:FCI", Cadence: "10m"}, "scan"},
+		{model.Product{SourceID: "goes18", ProductKey: "goes18:otherF", Cadence: "10m"}, "observation"},
 		{model.Product{SourceID: "modis", Cadence: "5m", DisplayName: "MODIS 5-Min L1A Swath"}, "observation"},
 		{model.Product{SourceID: "viirs", Cadence: "6m"}, "observation"},
 		{model.Product{SourceID: "cloudsat", Cadence: "event"}, "orbit"},

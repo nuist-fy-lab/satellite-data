@@ -54,9 +54,12 @@ func Resolve(p model.Product) Profile {
 	if strings.EqualFold(p.AreaType, "ORBIT") || strings.EqualFold(p.Level, "ORBIT") || p.SourceID == "cloudsat" || p.SourceID == "calipso" {
 		return Profile{Kind: "orbit", Label: "轨道产品"}
 	}
-	geo := strings.HasPrefix(p.SourceID, "goes") || strings.HasPrefix(p.SourceID, "himawari") || p.SourceID == "eumetsat"
-	axis := slotaxis.Resolve(p.SourceID, p.ProductKey, p.Cadence)
-	if geo && axis.CadenceMinutes > 0 {
+	axis, known := slotaxis.Known(p.SourceID, p.ProductKey)
+	// MTG's catalogue advertises a fixed cadence only for FCI Level 1C.
+	if p.SourceID == "mtg" && cadence == "10m" {
+		axis, known = slotaxis.Resolve(p.SourceID, p.ProductKey, p.Cadence), true
+	}
+	if known {
 		return Profile{Kind: "scan", Label: "静止卫星时次", CadenceMinutes: axis.CadenceMinutes}
 	}
 	return Profile{Kind: "observation", Label: "观测区间"}
