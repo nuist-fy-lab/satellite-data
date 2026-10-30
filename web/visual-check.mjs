@@ -12,9 +12,9 @@ const fixture = `
 window.styleFixture = async function(view, mode, wide) {
   state.downloads.catalogReady = true;
   state.downloads.catalog = [
-    {product_key:'goes18:ABI-L1b-RadF',source_id:'goes18',satellite:'GOES-18',instrument:'ABI',level:'L1B',data_type:'ABI-L1b-RadF',version:'6.1',display_name:'Full disk radiance with the complete official product name visible below metadata tags',area_type:'DISK',resolution:'0.5 / 1 / 2 km',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10},bands:[{number:2,wavelength:'0.64 µm',resolution:'0.5 km'}]},
-    {product_key:'modis:terra',source_id:'modis',satellite:'Terra',instrument:'MODIS',level:'L2',data_type:'MOD06_L2',display_name:'Cloud properties',area_type:'SWATH',resolution:'1 km',bands:[]},
-    {product_key:'modis:aqua',source_id:'modis',satellite:'Aqua',instrument:'MODIS',level:'L2',data_type:'MYD06_L2',display_name:'Cloud properties',area_type:'SWATH',resolution:'1 km',bands:[]}
+    {product_key:'goes18:ABI-L1b-RadF',source_id:'goes18',satellite:'GOES-18',instrument:'ABI',level:'L1B',data_type:'ABI-L1b-RadF',version:'',display_name:'Full disk radiance with the complete official product name visible below metadata tags',area_type:'DISK',resolution:'0.5 / 1 / 2 km',time_profile:{kind:'scan',label:'扫描时次',semantic_label:'扫描时间',cadence_minutes:10,selection_minutes:5},bands:[{number:2,wavelength:'0.64 µm',resolution:'0.5 km'}]},
+    {product_key:'modis:terra',source_id:'modis',satellite:'Terra',instrument:'MODIS',level:'L2',data_type:'MOD06_L2',display_name:'Cloud properties',time_profile:{kind:'observation',semantic:'observation',semantic_label:'沿轨观测'},area_type:'SWATH',resolution:'1 km',bands:[]},
+    {product_key:'modis:aqua',source_id:'modis',satellite:'Aqua',instrument:'MODIS',level:'L2',data_type:'MYD06_L2',display_name:'Cloud properties',time_profile:{kind:'observation',semantic:'observation',semantic_label:'沿轨观测'},area_type:'SWATH',resolution:'1 km',bands:[]}
   ];
   state.downloads.selectedProducts = new Set(['goes18:ABI-L1b-RadF','modis:aqua']);
   stopIndexStream(); state.satelliteYears.clear();
@@ -112,6 +112,7 @@ window.downloadTemporalFixture = function() {
     const key='modis:'+kind;
     state.downloads.catalog.push({product_key:key,source_id:'modis',satellite:'Terra',instrument:'MODIS',data_type:kind,version:'61',display_name:'Temporal product '+kind,time_profile:{kind,label:kind},bands:[]});
     state.downloads.selectedProducts.add(key);
+    state.downloads.productOptions[key]={...downloadSettings(state.downloads.catalog.at(-1)),customTime:true};
   }
   refreshDownloadFilters();
   for(const editor of document.querySelectorAll('[data-download-options]'))editor.open=true;
@@ -537,7 +538,10 @@ try {
         await driver.executeScript(`
           const band=document.querySelector('[data-shared-option="band"]');band.value='2';band.dispatchEvent(new Event('change',{bubbles:true}));
           const time=document.querySelector('[data-shared-option="mode"]');time.value='custom';time.dispatchEvent(new Event('change',{bubbles:true}));
-          const clock=document.querySelector('[data-shared-option="custom"]');clock.value='00:10, 12:00';clock.dispatchEvent(new Event('change',{bubbles:true}));
+          for (const value of ['00:10','12:00']) {
+            const clock=document.querySelector('[data-shared-times] [data-download-slot]');clock.value=value;
+            document.querySelector('[data-shared-times] [data-download-time-add]').click();
+          }
         `);
         const shared=await driver.executeScript('return window.downloadConfirmationFixture(true)');
         assert.equal(shared.open,true);assert.match(shared.content,/00:10 \/ 12:00/);assert.match(shared.content,/0.64 µm/);
