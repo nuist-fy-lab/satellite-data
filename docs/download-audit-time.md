@@ -35,7 +35,7 @@ The points below record the initial investigation. Final implementation fixes an
 ## Coverage and limits
 
 `TestDownloadMatrixAudit` exercises leap dates, UTC offsets, daily/monthly/
-annual/dekadal and 7/8/10/16-day metadata, custom boundaries, half-open scene
+annual and 7/8/10/16-day metadata, custom boundaries, half-open scene
 end, 32/33 products, duplicate and unknown settings, atomic rejection,
 per-product inheritance/reset, version persistence, and the legacy batch route.
 `TestDownloadOwnerDedupMatrixAudit` verifies owner-isolated identities and

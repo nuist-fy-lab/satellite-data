@@ -2530,7 +2530,7 @@ function downloadTimeProfile(product) {
 }
 
 function downloadPeriodProduct(product) {
-  return ['daily', 'weekly', 'composite', 'dekadal', 'monthly', 'annual'].includes(downloadTimeProfile(product).kind);
+  return ['daily', 'composite', 'monthly', 'annual'].includes(downloadTimeProfile(product).kind);
 }
 
 function downloadNextDay(day) {
@@ -2547,7 +2547,6 @@ function downloadSettings(product) {
     if (!day) return '';
     if (profile.kind === 'monthly') return day.slice(0, 7);
     if (profile.kind === 'annual') return day.slice(0, 4);
-    if (profile.kind === 'dekadal') return day.slice(0, 8) + (Number(day.slice(8)) <= 10 ? '01' : Number(day.slice(8)) <= 20 ? '11' : '21');
     if (['observation', 'orbit'].includes(profile.kind)) return (end ? downloadNextDay(day) : day) + 'T00:00';
     return day;
   };
@@ -2580,19 +2579,16 @@ function downloadProductOptions(product) {
     profile.kind === 'scan' ? (settings.mode === 'custom' ? settings.custom || '指定时次' : ({all: '全部扫描', hourly: '每小时整点', synoptic: '00 / 06 / 12 / 18'})[settings.mode]) : '',
     product.bands?.length ? downloadBandLabel(product, settings.band) : ''].filter(Boolean).join(' · ');
   const type = ['observation', 'orbit'].includes(profile.kind) || (profile.kind === 'scan' && settings.customTime) ? 'datetime-local' : profile.kind === 'monthly' ? 'month' : profile.kind === 'annual' ? 'number' : 'date';
-  const coverage = ['weekly', 'composite'].includes(profile.kind);
+  const coverage = profile.kind === 'composite';
   const startLabel = profile.selection_basis === 'file_start' ? '文件起始时间从' : coverage ? '覆盖开始日期' : profile.kind === 'monthly' ? '开始月份' : profile.kind === 'annual' ? '开始年份' : type === 'datetime-local' ? '数据开始时间' : '开始日期';
   const endLabel = profile.selection_basis === 'file_start' ? '文件起始时间至（不含）' : coverage ? '覆盖结束日期' : profile.kind === 'monthly' ? '结束月份' : profile.kind === 'annual' ? '结束年份' : type === 'datetime-local' ? '数据结束时间（不含）' : '结束日期';
   const dateField = (field, label) => {
-    if (['monthly','dekadal'].includes(profile.kind)) {
-      const dekad = profile.kind === 'dekadal';
+    if (profile.kind === 'monthly') {
       const prefix = field === 'start' ? '开始' : '结束';
-      return '<label>' + prefix + (dekad ? '旬' : '月份') + '（UTC）<span class="download-period-fields">' +
+      return '<label>' + prefix + '月份（UTC）<span class="download-period-fields">' +
         '<input type="number" min="1900" max="9998" step="1" aria-label="' + prefix + '年份" data-option-field="' + field + '-year" value="' + esc(settings[field].slice(0, 4)) + '"' + disabled + '>' +
         '<select aria-label="' + prefix + '月份" data-option-field="' + field + '-month"' + disabled + '>' +
-        '<option value="">月份</option>' + Array.from({length:12},(_,i) => { const value=String(i+1).padStart(2,'0'); return '<option value="' + value + '"' + (settings[field].slice(5,7) === value ? ' selected' : '') + '>' + (i+1) + ' 月</option>'; }).join('') + '</select>' +
-        (dekad ? '<select aria-label="' + prefix + '旬" data-option-field="' + field + '-dekad"' + disabled + '>' + [['01','上旬'],['11','中旬'],['21','下旬']].map(([value,name]) =>
-          '<option value="' + value + '"' + (settings[field].slice(8) === value ? ' selected' : '') + '>' + name + '</option>').join('') + '</select>' : '') + '</span></label>';
+        '<option value="">月份</option>' + Array.from({length:12},(_,i) => { const value=String(i+1).padStart(2,'0'); return '<option value="' + value + '"' + (settings[field].slice(5,7) === value ? ' selected' : '') + '>' + (i+1) + ' 月</option>'; }).join('') + '</select></span></label>';
     }
     return '<label>' + label + '（' + zone + '）<input type="' + type + '" data-option-field="' + field + '" value="' + esc(settings[field]) + '"' +
       (type === 'number' ? ' min="1900" max="9998" step="1"' : '') + disabled + '></label>';
@@ -2619,11 +2615,11 @@ function changeDownloadProductOption(key, field, value, checked) {
     const number = Number(value);
     if (number && !product.bands?.some(band => band.number === number)) return;
     settings.band = number;
-  } else if (/^(start|end)-(year|month|dekad)$/.test(field)) {
+  } else if (/^(start|end)-(year|month)$/.test(field)) {
     const [part, unit] = field.split('-');
-    const values = [current[part]?.slice(0,4) || '', current[part]?.slice(5,7) || '', current[part]?.slice(8) || '01'];
-    values[unit === 'year' ? 0 : unit === 'month' ? 1 : 2] = value;
-    settings = {...current, customTime: true, [part]: values.slice(0,downloadTimeProfile(product).kind === 'dekadal' ? 3 : 2).join('-')};
+    const values = [current[part]?.slice(0,4) || '', current[part]?.slice(5,7) || ''];
+    values[unit === 'year' ? 0 : 1] = value;
+    settings = {...current, customTime: true, [part]: values.join('-')};
   } else if (['start', 'end'].includes(field)) settings = {...current, customTime: true, [field]: value};
   else if (['mode', 'custom'].includes(field)) settings = {...current, [field]: value};
   state.downloads.productOptions[key] = settings;
@@ -2715,12 +2711,6 @@ function downloadProductInterval(product, settings, zone = downloadInputZone()) 
   } else if (kind === 'annual') {
     if (![start, end].every(value => /^\d{4}$/.test(value) && Number(value) >= 1900 && Number(value) <= 9998)) throw new Error('请选择有效年份');
     start += '-01-01'; end = String(Number(end) + 1) + '-01-01';
-  } else if (kind === 'dekadal') {
-    if (![start, end].every(value => /^\d{4}-(0[1-9]|1[0-2])-(01|11|21)$/.test(value))) throw new Error('请选择开始和结束旬');
-    const until = new Date(end + 'T00:00:00Z');
-    if (until.getUTCDate() === 21) { until.setUTCDate(1); until.setUTCMonth(until.getUTCMonth() + 1); }
-    else until.setUTCDate(until.getUTCDate() + 10);
-    end = until.toISOString().slice(0, 10);
   } else if (['observation', 'orbit'].includes(kind) || (kind === 'scan' && start.includes('T'))) {
     const parse = value => {
       if (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error('请选择完整的数据起止时间');
@@ -2750,8 +2740,8 @@ function validateDownloadScanTimes(profile,times) {
 }
 
 function downloadEntryPeriod(entry) {
-  const {product, settings, zone} = entry;
-  const format = value => downloadTimeProfile(product).kind === 'dekadal' ? value.slice(0, 7) + ' ' + ({'01':'上旬','11':'中旬','21':'下旬'})[value.slice(8)] : value.replace('T', ' ');
+  const {settings, zone} = entry;
+  const format = value => value.replace('T', ' ');
   return format(settings.start) + ' 至 ' + format(settings.end) + ' · ' + zone;
 }
 
@@ -2975,7 +2965,7 @@ function downloadTaskDetails(task) {
     '<div class="download-queue-children">' + (task.downloads || []).map(item => {
       const stage = downloadQueueStage(item.state);
       const name = [item.satellite, item.product_code, item.version ? '版本 ' + item.version : ''].filter(Boolean).join(' · ') || downloadProductName(item);
-      const zone = ['daily','weekly','composite','dekadal','monthly','annual'].includes(item.time_profile?.kind) ? 'UTC' : state.downloads.displayZone;
+      const zone = ['daily','composite','monthly','annual'].includes(item.time_profile?.kind) ? 'UTC' : state.downloads.displayZone;
       const scenes = Object.entries(item.selection?.scenes || {}).map(([day, times]) =>
         times.map(time => downloadTimestamp(day + 'T' + time + ':00Z', state.downloads.displayZone)).join(' / ')).join('；');
       return '<div class="download-queue-child"><div class="download-task-product"><strong>' + esc(name) + '</strong>' +

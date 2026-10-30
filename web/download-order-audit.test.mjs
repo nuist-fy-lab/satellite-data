@@ -69,7 +69,6 @@ test('period boundaries, invalid dates, and scan cadence are checked before subm
   const h=harness();
   const interval=(kind,start,end,extra={})=>h.context.downloadProductInterval({time_profile:{kind,cadence_minutes:10}},{start,end,mode:'all',...extra},'BJT');
   assert.equal(interval('monthly','2024-02','2024-02').end,'2024-03-01T00:00:00.000Z');
-  assert.equal(interval('dekadal','2024-02-21','2024-02-21').end,'2024-03-01T00:00:00.000Z');
   assert.equal(interval('annual','2024','2024').end,'2025-01-01T00:00:00.000Z');
   assert.equal(interval('observation','2024-02-29T00:00','2024-03-01T00:00').start,'2024-02-28T16:00:00.000Z');
   assert.throws(()=>interval('scan','2024-02-30','2024-03-01'));
