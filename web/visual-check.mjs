@@ -100,6 +100,13 @@ window.styleFixture = async function(view, mode, wide) {
   // The sidebar animates for 180ms; measure only after its layout settles.
   await new Promise(resolve=>setTimeout(resolve,250));
 };
+window.downloadConfirmationFixture = function(open) {
+  if (!open) {closeDownloadConfirmation(); return {open:$('#download-confirm').open};}
+  submitDownload({preventDefault(){}});
+  const dialog=$('#download-confirm'),box=dialog.getBoundingClientRect();
+  return {open:dialog.open,content:$('#dl-confirm-summary').textContent,left:box.left,right:box.right,
+    width:innerWidth,scroll:dialog.scrollWidth,client:dialog.clientWidth};
+};
 window.inventoryFixture = async function() {
   const module=await import('/era5-inventory.js');
   const files=[{dataset:'era5:reanalysis-era5-single-levels',name:'temperature_january.nc',bytes:25171,verified:true,state:'ok',start:'2024-01-01T00:00:00Z',end:'2024-02-01T00:00:00Z',variables:['2m_temperature','total_precipitation'],levels:[],times:['00:00','12:00'],area:[32.25,118.5,32,118.75]},
@@ -395,6 +402,7 @@ try {
       assert.deepEqual(metrics.bad,[],view+' has collapsed controls');
       if (view === 'downloads-view') {
         const picker = await driver.executeScript(`
+          const $=selector=>document.querySelector(selector);
           const checked=[...document.querySelectorAll('[data-download-product]:checked')].map(node=>node.dataset.downloadProduct);
           return {checked,selected:$('#dl-selected-count').textContent,results:$('#dl-filtered-count').textContent,
             legacy:!!document.querySelector('#dl-extra-products,#download-batches,#download-requests')};
@@ -437,19 +445,14 @@ try {
             const node=document.getElementById(id);node.value=value;node.dispatchEvent(new Event('change'));
           }
         `);
-        const confirmation=await driver.executeScript(`
-          submitDownload({preventDefault(){}});
-          const dialog=$('#download-confirm'),box=dialog.getBoundingClientRect();
-          return {open:dialog.open,content:$('#dl-confirm-summary').textContent,left:box.left,right:box.right,
-            width:innerWidth,scroll:dialog.scrollWidth,client:dialog.clientWidth};
-        `);
+        const confirmation=await driver.executeScript('return window.downloadConfirmationFixture(true)');
         assert.equal(confirmation.open,true);
         assert.match(confirmation.content,/GOES-18、Aqua/);
         assert.match(confirmation.content,/产品清单 · 2 个/);
         assert.ok(confirmation.left>=0&&confirmation.right<=confirmation.width+1,'task confirmation exceeds viewport');
         assert.ok(confirmation.scroll<=confirmation.client+1,'task confirmation has horizontal overflow');
         await writeFile('dist/visual/download-task-confirm-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
-        await driver.executeScript('closeDownloadConfirmation()');
+        await driver.executeScript('return window.downloadConfirmationFixture(false)');
       }
       if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));

@@ -2342,11 +2342,15 @@ function selectedDownloadProducts() {
   return state.downloads.catalog.filter(product => state.downloads.selectedProducts.has(product.product_key));
 }
 
+function downloadFilterValues(id, product, field) {
+  return id === 'satellite' ? collectionSatellites(product) : [field(product)].filter(Boolean);
+}
+
 function filteredDownloadProducts() {
   const search = ($('#dl-search').value || '').trim().toLowerCase();
   return state.downloads.catalog.filter(product => dlStages.every(([id, , field]) => {
     const selected = state.downloads.filters[id];
-    return !selected?.size || selected.has(field(product));
+    return !selected?.size || downloadFilterValues(id, product, field).some(value => selected.has(value));
   }) && (!search || [product.satellite, product.instrument, product.data_type, product.display_name,
     product.product_key].join(' ').toLowerCase().includes(search)));
 }
@@ -2357,7 +2361,7 @@ function refreshDownloadFilters() {
   let items = state.downloads.catalog;
   const controls = [];
   for (const [id, label, field] of dlStages) {
-    const values = uniqueSorted(items.map(field).filter(Boolean));
+    const values = uniqueSorted(items.flatMap(product => downloadFilterValues(id, product, field)));
     const selected = new Set([...(state.downloads.filters[id] || [])].filter(value => values.includes(value)));
     state.downloads.filters[id] = selected;
     const optionName = value => id === 'source' ? state.sources.find(source => source.id === value)?.name || value : value;
@@ -2368,7 +2372,7 @@ function refreshDownloadFilters() {
       values.map(value => '<label><input type="checkbox" data-download-filter="' + id + '" value="' + esc(value) + '"' +
         (selected.has(value) ? ' checked' : '') + '><span>' + esc(optionName(value)) + '</span></label>').join('') +
       '</div></details></div>');
-    if (selected.size) items = items.filter(product => selected.has(field(product)));
+    if (selected.size) items = items.filter(product => downloadFilterValues(id, product, field).some(value => selected.has(value)));
   }
   holder.innerHTML = controls.join('');
   renderDownloadSelection();

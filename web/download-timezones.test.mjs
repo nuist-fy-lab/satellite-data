@@ -282,6 +282,17 @@ test('selecting an oversized result does not silently submit a partial product s
   assert.equal(h.run('state.downloads.selectedProducts.size'), 32);
 });
 
+test('joint products remain selectable from either real satellite', () => {
+  const h=harness();
+  h.run("state.downloads.catalog=[{product_key:'modis:joint',source_id:'modis',satellite:'Terra / Aqua',instrument:'MODIS',data_type:'MCD06'}];state.downloads.filters.satellite=new Set(['Terra'])");
+  h.context.refreshDownloadFilters();
+  assert.equal(h.context.filteredDownloadProducts().length,1);
+  assert.doesNotMatch(h.element('#dl-filters').innerHTML,/value="Terra \/ Aqua"/);
+  h.run("state.downloads.filters.satellite=new Set(['Aqua'])");
+  h.context.refreshDownloadFilters();
+  assert.equal(h.context.filteredDownloadProducts().length,1);
+});
+
 test('confirmation can be cancelled and submits the reviewed snapshot exactly once', async () => {
   const h = harness();
   h.run("state.downloads.catalog=[{product_key:'modis:a',source_id:'modis',satellite:'Aqua',data_type:'MYD06_L2'},{product_key:'goes18:b',source_id:'goes18',satellite:'GOES-18',data_type:'ABI-L1b-RadF'}];state.downloads.selectedProducts=new Set(['modis:a','goes18:b'])");
