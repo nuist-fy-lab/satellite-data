@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=25">
+  <link rel="stylesheet" href="/styles.css?v=26">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -191,23 +191,32 @@
     <section class="view" id="downloads-view">
       <header class="simple-header"><div><div class="brand">下载任务</div><div class="subbrand">队列、速度、重试和归档状态</div></div><div class="download-head-actions"><label>任务时区<select id="download-timezone" aria-label="下载任务时区"><option value="UTC">UTC</option><option value="BJT">BJT</option></select></label><button id="refresh-downloads" type="button">刷新</button></div></header>
       <section class="download-section">
-        <h2>提交下载</h2>
+        <h2>新建下载任务</h2>
         <form id="download-submit-form" class="download-submit-form">
-          <label>数据源<select id="dl-source" required></select></label>
-          <label>卫星<select id="dl-satellite"></select></label>
-          <label>传感器<select id="dl-instrument"></select></label>
-          <label>L 级别<select id="dl-level"></select></label>
-          <label>区域<select id="dl-area"></select></label>
-          <label>产品<select id="dl-product" required></select></label>
-          <label>附加产品（跨卫星／源）<input id="dl-extra-products" type="text" placeholder="其他产品完整键，逗号分隔；留空为单产品"></label>
-          <label>分辨率<select id="dl-resolution"></select></label>
+          <div class="download-product-picker">
+            <div class="download-picker-heading"><h3>选择产品</h3><span id="dl-selected-count">已选 0 个</span></div>
+            <div id="dl-filters" class="download-product-filters"></div>
+            <div class="download-product-search"><label>搜索<input id="dl-search" type="search" placeholder="卫星、产品名称或代码" autocomplete="off"></label><button id="dl-reset-filters" type="button">清空筛选</button></div>
+            <div class="download-product-panels">
+              <section class="download-product-panel"><header><h3>筛选结果 <span id="dl-filtered-count">0</span></h3><label class="download-check-all"><input id="dl-select-results" type="checkbox">全选当前结果</label></header><div id="dl-product-results" class="download-product-results" aria-label="筛选结果"></div></section>
+              <section class="download-product-panel"><header><h3>已选产品 <span id="dl-basket-count">0</span></h3><button id="dl-clear-selection" type="button">清空已选</button></header><div id="dl-selected-products" class="download-selected-products" aria-label="已选产品"></div></section>
+            </div>
+          </div>
+          <label>时间基准<select id="dl-timezone"><option value="UTC">UTC</option><option value="BJT">BJT</option></select></label>
           <label>波段<select id="dl-band"></select></label>
           <label><span id="dl-start-label">开始日期（UTC）</span><input id="dl-start" type="date" required></label>
           <label><span id="dl-end-label">结束日期（UTC，含当天）</span><input id="dl-end" type="date" required></label>
           <label><span id="dl-time-label">时次（UTC）</span><select id="dl-time-mode"><option value="all">全部时次</option><option value="hourly">每小时整点</option><option value="synoptic">00 / 06 / 12 / 18</option><option value="custom">自定义</option></select></label>
           <label id="dl-custom-field" class="hidden"><span id="dl-custom-label">自定义时次（UTC，HH:MM）</span><input id="dl-custom" placeholder="00:00, 12:00"></label>
-          <div class="download-submit-actions"><button id="dl-submit" type="submit">提交下载</button><span id="dl-submit-status" role="status"></span></div>
+          <div class="download-submit-actions"><span id="dl-submit-status" role="status"></span><button id="dl-submit" type="submit">一次提交，自动调度</button></div>
         </form>
+        <div id="dl-submit-result" class="download-submit-result hidden" role="status"></div>
+        <dialog id="download-confirm" class="download-confirm-dialog" aria-labelledby="download-confirm-title">
+          <header><h2 id="download-confirm-title">确认下载任务</h2><button id="dl-confirm-close" type="button" aria-label="关闭确认窗口">×</button></header>
+          <div id="dl-confirm-summary"></div>
+          <div id="dl-confirm-error" class="form-error" role="alert"></div>
+          <footer><button id="dl-confirm-cancel" type="button">返回修改</button><button id="dl-confirm-submit" type="button">确认提交</button></footer>
+        </dialog>
       </section>
       <div id="downloads-error" class="form-error"></div>
       <section class="download-section download-monitor" aria-label="下载监控">
@@ -241,9 +250,8 @@
         </div>
       </section>
       <section class="download-section"><h2>Provider 传输</h2><div id="download-providers" class="download-list"></div></section>
-      <section class="download-section"><h2>多产品批量订单</h2><div id="download-batches" class="download-queue-list"></div></section>
-      <section class="download-section"><h2>下载请求</h2><div id="download-requests" class="download-queue-list"></div>
-        <nav id="download-pages" class="download-pagination hidden" aria-label="下载请求分页">
+      <section class="download-section"><h2>下载任务</h2><div id="download-tasks" class="download-queue-list"></div>
+        <nav id="download-pages" class="download-pagination hidden" aria-label="下载任务分页">
           <span id="download-page-summary" aria-live="polite"></span>
           <button type="button" id="download-page-prev">上一页</button>
           <span id="download-page-current"></span>
@@ -361,6 +369,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=32"></script>
+  <script type="module" src="/app.js?v=33"></script>
 </body>
 </html>

@@ -69,6 +69,8 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/era5/requests/{id}/result", s.era5Result)
 	mux.HandleFunc("GET /api/v1/era5/inventory", s.era5Inventory)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
+	mux.HandleFunc("POST /api/v1/download-tasks", s.createDownloadTask)
+	mux.HandleFunc("GET /api/v1/download-tasks", s.downloadTasks)
 	mux.HandleFunc("POST /api/v1/downloads/batch", s.createDownloadGroup)
 	mux.HandleFunc("GET /api/v1/downloads/batch", s.downloadGroups)
 	mux.HandleFunc("GET /api/v1/downloads/batch/{id}", s.downloadGroup)
@@ -567,12 +569,19 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 			}
 			payload.Inputs["time"], _ = json.Marshal(selection.Times)
 		}
-		request, err := s.store.EnqueueERA5OrderOwned(r.Context(), user.ID, payload.Collection, start, end, payload.Inputs)
+		owner := user.ID
+		if owner == "" && !s.portalAuth {
+			owner = "local"
+		}
+		selection, _ := (downloadfilter.Selection{Times: payload.Times}).Normalize(payload.Source, payload.Collection)
+		task, created, err := s.store.EnqueueDownloadGroup(r.Context(), owner, start, end, []state.GroupProduct{{
+			Source: payload.Source, Provider: "era5", Collection: payload.Collection, Selection: selection, Inputs: payload.Inputs,
+		}})
 		if err != nil {
 			writeERA5Error(w, err)
 			return
 		}
-		writeJSON(w, http.StatusAccepted, map[string]any{"download": request})
+		writeJSON(w, http.StatusAccepted, map[string]any{"download": task.Downloads[0], "task_id": task.ID, "created": created})
 		return
 	}
 	if len(payload.Inputs) != 0 {
@@ -596,7 +605,13 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	request, err := s.store.EnqueueSelectedDownloadRequestOwned(r.Context(), user.ID, payload.Source, providerID, payload.Collection, start, end, selection)
+	owner := user.ID
+	if owner == "" && !s.portalAuth {
+		owner = "local"
+	}
+	task, created, err := s.store.EnqueueDownloadGroup(r.Context(), owner, start, end, []state.GroupProduct{{
+		Source: payload.Source, Provider: providerID, Collection: payload.Collection, Selection: selection,
+	}})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -606,7 +621,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	// discovery has its own provider-isolated workers and must not depend on the
 	// calendar indexer finishing first.
 	_ = s.store.EnqueueRange(r.Context(), payload.Collection, start, end, 200)
-	writeJSON(w, http.StatusAccepted, map[string]any{"download": request})
+	writeJSON(w, http.StatusAccepted, map[string]any{"download": task.Downloads[0], "task_id": task.ID, "created": created})
 }
 
 func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
