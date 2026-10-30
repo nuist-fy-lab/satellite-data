@@ -337,7 +337,7 @@ test('mixed temporal products submit independent observation windows and UTC cal
   h.run(`state.downloads.catalog=[
     {product_key:'goes18:scan',source_id:'goes18',satellite:'GOES-18',version:'1',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10},bands:[{number:2,wavelength:'0.64 µm',resolution:'0.5 km'}]},
     {product_key:'modis:swath',source_id:'modis',time_profile:{kind:'observation',label:'观测区间'}},
-    ...['daily','weekly','composite','dekadal','monthly','annual'].map(kind=>({product_key:'modis:'+kind,source_id:'modis',time_profile:{kind,label:kind}}))
+    ...['daily','composite','monthly','annual'].map(kind=>({product_key:'modis:'+kind,source_id:'modis',time_profile:{kind,label:kind}}))
   ];state.downloads.selectedProducts=new Set(state.downloads.catalog.map(p=>p.product_key));
   state.downloads.productOptions['goes18:scan']={mode:'custom',custom:'00:10',band:2};
   state.downloads.productOptions['modis:swath']={customTime:true,start:'2024-02-29T08:30',end:'2024-02-29T09:15'};`);
@@ -350,18 +350,15 @@ test('mixed temporal products submit independent observation windows and UTC cal
   assert.equal(opts['goes18:scan'].band,2);
   assert.equal(opts['modis:swath'].start,'2024-02-29T00:30:00.000Z');
   assert.equal(opts['modis:swath'].end,'2024-02-29T01:15:00.000Z');
-  for(const kind of ['daily','weekly','composite']) {
+  for(const kind of ['daily','composite']) {
     assert.equal(opts['modis:'+kind].start,'2024-02-29T00:00:00.000Z');
     assert.equal(opts['modis:'+kind].end,'2024-03-01T00:00:00.000Z');
     assert.equal(opts['modis:'+kind].times.length,0);
   }
-  assert.equal(opts['modis:dekadal'].start,'2024-02-21T00:00:00.000Z');
-  assert.equal(opts['modis:dekadal'].end,'2024-03-01T00:00:00.000Z');
   assert.equal(opts['modis:monthly'].start,'2024-02-01T00:00:00.000Z');
   assert.equal(opts['modis:monthly'].end,'2024-03-01T00:00:00.000Z');
   assert.equal(opts['modis:annual'].start,'2024-01-01T00:00:00.000Z');
   assert.equal(opts['modis:annual'].end,'2025-01-01T00:00:00.000Z');
-  assert.match(h.element('#dl-confirm-summary').innerHTML,/2024-02 下旬 至 2024-02 下旬 · UTC/);
   assert.match(h.element('#dl-confirm-summary').innerHTML,/C02 · 0.64 µm · 0.5 km/);
   assert.match(h.element('#dl-confirm-summary').innerHTML,/2024-02-29 08:30 至 2024-02-29 09:15 · BJT/);
   assert.equal(h.requests.length,0);
@@ -372,7 +369,7 @@ test('each product exposes only applicable controls and independent band definit
   h.run(`state.downloads.catalog=[
     {product_key:'goes18:a',source_id:'goes18',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10},bands:[{number:2,wavelength:'0.64 µm',resolution:'0.5 km'}]},
     {product_key:'himawari9:b',source_id:'himawari9',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10},bands:[{number:2,wavelength:'0.51 µm',resolution:'1 km'}]},
-    ...['observation','orbit','daily','weekly','dekadal','monthly'].map(kind=>({product_key:'modis:'+kind,source_id:'modis',time_profile:{kind,label:kind}}))
+    ...['observation','orbit','daily','monthly'].map(kind=>({product_key:'modis:'+kind,source_id:'modis',time_profile:{kind,label:kind}}))
   ];state.downloads.selectedProducts=new Set(state.downloads.catalog.map(p=>p.product_key));`);
   h.element('#dl-start').value='2026-01-01';h.element('#dl-end').value='2026-01-02';
   h.context.changeDownloadProductOption('goes18:a','band','2');
@@ -390,12 +387,10 @@ test('each product exposes only applicable controls and independent band definit
   assert.equal(h.run("downloadBandLabel(state.downloads.catalog[1],2)"),'C02 · 0.51 µm · 1 km');
   const render=kind=>h.run(`downloadProductOptions(state.downloads.catalog.find(p=>p.time_profile.kind==='${kind}'))`);
   assert.match(render('scan'),/data-option-field="mode"/);
-  for(const kind of ['observation','orbit','daily','weekly','dekadal','monthly']) assert.doesNotMatch(render(kind),/data-option-field="mode"|data-option-field="band"/);
+  for(const kind of ['observation','orbit','daily','monthly']) assert.doesNotMatch(render(kind),/data-option-field="mode"|data-option-field="band"/);
   assert.match(render('observation'),/type="datetime-local"/);
   assert.match(render('monthly'),/data-option-field="start-year"/);
   assert.match(render('monthly'),/data-option-field="start-month"/);
-  assert.match(render('dekadal'),/上旬[\s\S]*中旬[\s\S]*下旬/);
-  assert.match(render('weekly'),/覆盖开始日期/);
   assert.throws(()=>h.run("downloadProductInterval(state.downloads.catalog[0],{start:'2026-01-01',end:'2026-01-02',mode:'custom',custom:'00:05'},'UTC')"),/分钟间隔/);
 });
 

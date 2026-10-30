@@ -7,7 +7,7 @@ Three Paseo GPT-6.1 Terra reviewers covered catalogue semantics, backend combina
 | Catalogue-wide submission | 808 historical fixture rows across 13 source IDs: all 802 archive products accept a one-year interval; six ERA5 datasets reject missing generation inputs. This tests metadata/submission compatibility, not live availability. |
 | Live MODIS versions | NASA CMR currently lists 70 LAADS/MODIS collections, of which 10 version-6 collections have zero granules. Only the 60 collections with positive counts are offered. Independently versioned derived products retain their real 1/1.1/2 versions. VIIRS uses the same existence rule. |
 | Mixed tasks | Single/multiple source products, separate periods/bands/times, explicit resets, unknown keys, 32/33-product limit, invalid one-of-many atomic rejection. |
-| Time edges | Leap day, month/dekad/year end, 7/8/10/16-day coverage, half-open bounds, invalid RFC3339 offsets, minute scenes, recurring times, exact UTC/BJT round trips. |
+| Time edges | Leap day, month/year end, 7/8/10/16-day coverage, half-open bounds, invalid RFC3339 offsets, minute scenes, recurring times, exact UTC/BJT round trips. |
 | GOES historical modes | Mode 3/4/6 full disks use 15/5/10-minute axes from file metadata. ABI CMIP joins the verified scan policies; MAG cannot inherit ABI area/cadence from its name suffix. Mocked coordinator verifies all three modes in one order. |
 | Leading overlap | GOES looks into prior folders and retains files whose real coverage intersects the left boundary; exclusive ends and duplicate objects are tested. Composite overlap is scheduled only in its first chunk. |
 | Privacy and duplicates | Separate owners, reordered members, normalized times, equivalent offsets, resubmission and distinct selections. |

@@ -33,10 +33,6 @@ func Resolve(p model.Product) Profile {
 		return Profile{Kind: "monthly", Label: "月产品"}
 	case cadence == "1y" || cadence == "annual" || strings.Contains(title, "ANNUAL") || strings.Contains(title, "YEARLY"):
 		return Profile{Kind: "annual", Label: "年产品"}
-	case cadence == "dekad" || cadence == "1dekad" || strings.Contains(title, "DEKAD") || strings.Contains(title, "旬"):
-		return Profile{Kind: "dekadal", Label: "旬产品"}
-	case cadence == "1w" || cadence == "weekly" || strings.Contains(title, "WEEKLY"):
-		return Profile{Kind: "weekly", Label: "周产品"}
 	case cadence == "1d" || cadence == "daily" || strings.Contains(title, "DAILY"):
 		// An eight-day rolling composite published daily remains a daily product.
 		return Profile{Kind: "daily", Label: "日产品"}
@@ -77,14 +73,14 @@ func Resolve(p model.Product) Profile {
 
 func (p Profile) IsPeriod() bool {
 	switch p.Kind {
-	case "daily", "weekly", "dekadal", "monthly", "annual", "composite":
+	case "daily", "monthly", "annual", "composite":
 		return true
 	}
 	return false
 }
 
 // ValidateRange keeps UTC product dates independent of the display timezone.
-// Weekly and multi-day products use coverage intersections, because their
+// Multi-day products use coverage intersections, because their
 // official anchors and year-end windows differ between collections.
 func (p Profile) ValidateRange(start, end time.Time) error {
 	if start.IsZero() || !end.After(start) {
@@ -102,9 +98,6 @@ func (p Profile) ValidateRange(start, end time.Time) error {
 		}
 		if p.Kind == "annual" && (at.Month() != time.January || at.Day() != 1) {
 			return errors.New("annual products require whole calendar years")
-		}
-		if p.Kind == "dekadal" && at.Day() != 1 && at.Day() != 11 && at.Day() != 21 {
-			return errors.New("dekadal products require whole calendar dekads")
 		}
 	}
 	return nil

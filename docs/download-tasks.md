@@ -8,12 +8,10 @@ A task contains 1–32 products. Submit it once; the coordinator queries each pr
 | Polar swath / observation | Observation start and exclusive end, to the minute | Intersect the available official coverage interval; retain point events when only a start is available |
 | Orbit product | Data start and exclusive end | Whole files selected by official time metadata; CloudSat explicitly selects file start because its catalogue does not provide file end times |
 | Daily | Inclusive date range, UTC | Files intersecting the chosen days |
-| Weekly | Inclusive coverage date range, UTC | Official weekly coverage; no assumed ISO-week anchor |
 | Multi-day composite | Inclusive coverage date range, UTC | Official coverage; no universal composite epoch or year-end truncation |
-| Calendar dekad | Month plus upper/middle/lower dekad | Days 1–10, 11–20, 21–month end, UTC |
 | Monthly / annual | Inclusive month / year range | Whole UTC calendar months / years |
 
-The server returns `time_profile` in both the download catalogue and task summaries. A five-minute polar granule duration does not imply a recurring five-minute scan schedule. A rolling composite published daily remains a daily product. A ten-day interval is not assumed to be a calendar dekad.
+The server returns `time_profile` in both the download catalogue and task summaries. A five-minute polar granule duration does not imply a recurring five-minute scan schedule. A rolling composite published daily remains a daily product.
 
 The selected-product header exposes shared scan-time and band controls only for compatible instruments and time rules or identical band definitions (number, wavelength and resolution). Each product retains an explicit expand/collapse action. Missing and inapplicable metadata do not become placeholder chips. Only actual version numbers are offered; NASA CMR collections require a positive official granule count. A derived product's version 1.1 is independent of the MODIS standard-collection 6.1 sequence.
 

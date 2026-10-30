@@ -108,7 +108,7 @@ window.downloadConfirmationFixture = function(open) {
     width:innerWidth,scroll:dialog.scrollWidth,client:dialog.clientWidth};
 };
 window.downloadTemporalFixture = function() {
-  for (const kind of ['observation','orbit','daily','weekly','composite','dekadal','monthly','annual']) {
+  for (const kind of ['observation','orbit','daily','composite','monthly','annual']) {
     const key='modis:'+kind;
     state.downloads.catalog.push({product_key:key,source_id:'modis',satellite:'Terra',instrument:'MODIS',data_type:kind,version:'61',display_name:'Temporal product '+kind,time_profile:{kind,label:kind},bands:[]});
     state.downloads.selectedProducts.add(key);
@@ -120,8 +120,7 @@ window.downloadTemporalFixture = function() {
     overflow:controls.filter(node=>node.getBoundingClientRect().right>node.closest('.download-selected-item').getBoundingClientRect().right+1).map(node=>node.type),
     periodClock:!!document.querySelector('[data-download-options="modis:monthly"] [data-option-field="mode"]'),
     monthly:document.querySelector('[data-download-options="modis:monthly"] [data-option-field="start-month"]').type,
-    observation:document.querySelector('[data-download-options="modis:observation"] [data-option-field="start"]').type,
-    dekads:[...document.querySelector('[data-download-options="modis:dekadal"] [data-option-field="start-dekad"]').options].map(option=>option.value)};
+    observation:document.querySelector('[data-download-options="modis:observation"] [data-option-field="start"]').type};
 };
 window.downloadSharedFixture = function(compatible) {
   const first=state.downloads.catalog.find(product=>product.source_id==='goes18');
@@ -532,7 +531,6 @@ try {
         assert.deepEqual(temporal.overflow,[],'product controls exceed card');
         assert.equal(temporal.periodClock,false);
         assert.equal(temporal.monthly,'select-one');assert.equal(temporal.observation,'datetime-local');
-        assert.deepEqual(temporal.dekads,['01','11','21']);
         await driver.executeScript("document.querySelector('#dl-selected-products').scrollIntoView({block:'start'})");
         await writeFile('dist/visual/download-product-options-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
         assert.deepEqual(await driver.executeScript('return window.downloadSharedFixture(true)'),{time:false,band:false});
