@@ -2526,10 +2526,16 @@ function downloadProductOptions(product) {
   const startLabel = coverage ? '覆盖开始日期' : profile.kind === 'monthly' ? '开始月份' : profile.kind === 'annual' ? '开始年份' : type === 'datetime-local' ? '观测开始' : '开始日期';
   const endLabel = coverage ? '覆盖结束日期' : profile.kind === 'monthly' ? '结束月份' : profile.kind === 'annual' ? '结束年份' : type === 'datetime-local' ? '观测结束（不含）' : '结束日期';
   const dateField = (field, label) => {
-    if (profile.kind === 'dekadal') return '<label>' + (field === 'start' ? '开始旬' : '结束旬') + '（UTC）<span class="download-dekad">' +
-      '<input type="month" data-option-field="' + field + '-month" value="' + esc(settings[field].slice(0, 7)) + '"' + disabled + '>' +
-      '<select data-option-field="' + field + '-dekad"' + disabled + '>' + [['01','上旬'],['11','中旬'],['21','下旬']].map(([value,name]) =>
-        '<option value="' + value + '"' + (settings[field].slice(8) === value ? ' selected' : '') + '>' + name + '</option>').join('') + '</select></span></label>';
+    if (['monthly','dekadal'].includes(profile.kind)) {
+      const dekad = profile.kind === 'dekadal';
+      const prefix = field === 'start' ? '开始' : '结束';
+      return '<label>' + prefix + (dekad ? '旬' : '月份') + '（UTC）<span class="download-period-fields">' +
+        '<input type="number" min="1900" max="9998" step="1" aria-label="' + prefix + '年份" data-option-field="' + field + '-year" value="' + esc(settings[field].slice(0, 4)) + '"' + disabled + '>' +
+        '<select aria-label="' + prefix + '月份" data-option-field="' + field + '-month"' + disabled + '>' +
+        '<option value="">月份</option>' + Array.from({length:12},(_,i) => { const value=String(i+1).padStart(2,'0'); return '<option value="' + value + '"' + (settings[field].slice(5,7) === value ? ' selected' : '') + '>' + (i+1) + ' 月</option>'; }).join('') + '</select>' +
+        (dekad ? '<select aria-label="' + prefix + '旬" data-option-field="' + field + '-dekad"' + disabled + '>' + [['01','上旬'],['11','中旬'],['21','下旬']].map(([value,name]) =>
+          '<option value="' + value + '"' + (settings[field].slice(8) === value ? ' selected' : '') + '>' + name + '</option>').join('') + '</select>' : '') + '</span></label>';
+    }
     return '<label>' + label + '（' + zone + '）<input type="' + type + '" data-option-field="' + field + '" value="' + esc(settings[field]) + '"' +
       (type === 'number' ? ' min="1900" max="9998" step="1"' : '') + disabled + '></label>';
   };
@@ -2554,9 +2560,11 @@ function changeDownloadProductOption(key, field, value, checked) {
     const number = Number(value);
     if (number && !product.bands?.some(band => band.number === number)) return;
     settings.band = number;
-  } else if (/^(start|end)-(month|dekad)$/.test(field)) {
+  } else if (/^(start|end)-(year|month|dekad)$/.test(field)) {
     const [part, unit] = field.split('-');
-    settings = {...current, customTime: true, [part]: unit === 'month' ? value + '-' + (current[part]?.slice(8) || '01') : (current[part]?.slice(0, 7) || '') + '-' + value};
+    const values = [current[part]?.slice(0,4) || '', current[part]?.slice(5,7) || '', current[part]?.slice(8) || '01'];
+    values[unit === 'year' ? 0 : unit === 'month' ? 1 : 2] = value;
+    settings = {...current, customTime: true, [part]: values.slice(0,downloadTimeProfile(product).kind === 'dekadal' ? 3 : 2).join('-')};
   } else if (['start', 'end'].includes(field)) settings = {...current, customTime: true, [field]: value};
   else if (['mode', 'custom'].includes(field)) settings = {...current, [field]: value};
   state.downloads.productOptions[key] = settings;

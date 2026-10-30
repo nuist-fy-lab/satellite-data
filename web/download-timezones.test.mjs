@@ -392,7 +392,8 @@ test('each product exposes only applicable controls and independent band definit
   assert.match(render('scan'),/data-option-field="mode"/);
   for(const kind of ['observation','orbit','daily','weekly','dekadal','monthly']) assert.doesNotMatch(render(kind),/data-option-field="mode"|data-option-field="band"/);
   assert.match(render('observation'),/type="datetime-local"/);
-  assert.match(render('monthly'),/type="month"/);
+  assert.match(render('monthly'),/data-option-field="start-year"/);
+  assert.match(render('monthly'),/data-option-field="start-month"/);
   assert.match(render('dekadal'),/上旬[\s\S]*中旬[\s\S]*下旬/);
   assert.match(render('weekly'),/覆盖开始日期/);
   assert.throws(()=>h.run("downloadProductInterval(state.downloads.catalog[0],{start:'2026-01-01',end:'2026-01-02',mode:'custom',custom:'00:05'},'UTC')"),/扫描间隔/);

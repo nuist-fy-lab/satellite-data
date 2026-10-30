@@ -119,7 +119,7 @@ window.downloadTemporalFixture = function() {
   return {types:controls.map(node=>node.type),
     overflow:controls.filter(node=>node.getBoundingClientRect().right>node.closest('.download-selected-item').getBoundingClientRect().right+1).map(node=>node.type),
     periodClock:!!document.querySelector('[data-download-options="modis:monthly"] [data-option-field="mode"]'),
-    monthly:document.querySelector('[data-download-options="modis:monthly"] [data-option-field="start"]').type,
+    monthly:document.querySelector('[data-download-options="modis:monthly"] [data-option-field="start-month"]').type,
     observation:document.querySelector('[data-download-options="modis:observation"] [data-option-field="start"]').type,
     dekads:[...document.querySelector('[data-download-options="modis:dekadal"] [data-option-field="start-dekad"]').options].map(option=>option.value)};
 };
@@ -497,7 +497,7 @@ try {
         const temporal=await driver.executeScript('return window.downloadTemporalFixture()');
         assert.deepEqual(temporal.overflow,[],'product controls exceed card');
         assert.equal(temporal.periodClock,false);
-        assert.equal(temporal.monthly,'month');assert.equal(temporal.observation,'datetime-local');
+        assert.equal(temporal.monthly,'select-one');assert.equal(temporal.observation,'datetime-local');
         assert.deepEqual(temporal.dekads,['01','11','21']);
         await writeFile('dist/visual/download-product-options-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
       }
