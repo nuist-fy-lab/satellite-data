@@ -404,13 +404,23 @@ try {
         const picker = await driver.executeScript(`
           const $=selector=>document.querySelector(selector);
           const checked=[...document.querySelectorAll('[data-download-product]:checked')].map(node=>node.dataset.downloadProduct);
+          const panels=[...document.querySelectorAll('.download-product-panel')].map(node=>node.getBoundingClientRect());
+          const row=$('.download-product-row'),rowBox=row.getBoundingClientRect();
           return {checked,selected:$('#dl-selected-count').textContent,results:$('#dl-filtered-count').textContent,
+            stacked:panels[1].top>=panels[0].bottom,aligned:Math.abs(panels[1].left-panels[0].left)<1,
+            cardHeight:rowBox.height,fontSize:parseFloat(getComputedStyle($('.download-product-name')).fontSize),
+            tagCount:row.querySelectorAll('.download-product-tag').length,
             legacy:!!document.querySelector('#dl-extra-products,#download-batches,#download-requests')};
         `);
         assert.equal(picker.checked.length,2);
         assert.equal(picker.selected,'已选 2 个');
         assert.equal(picker.results,'3');
         assert.equal(picker.legacy,false);
+        assert.equal(picker.stacked,true);
+        assert.equal(picker.aligned,true);
+        assert.ok(picker.fontSize<=12);
+        assert.equal(picker.tagCount,6);
+        if(width>=1000)assert.ok(picker.cardHeight<=60,'product card is not compact: '+JSON.stringify(picker));
         const initial = await driver.executeScript(`const $=selector=>document.querySelector(selector);return {
           task:$('#download-timezone').value,monitor:$('#download-monitor-timezone').value,
           request:$('#download-tasks').textContent,
