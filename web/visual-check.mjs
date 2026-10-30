@@ -486,7 +486,7 @@ try {
             axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)};
         `);
         assert.match(changed.request, /2027-01-01 04:00 BJT/);
-        assert.equal(changed.label, '开始日期（BJT）');
+        assert.equal(changed.label, '统一开始日期（BJT）');
         assert.deepEqual(changed.axis, initial.axis);
         const monitorChanged = await driver.executeScript(`
           const $=selector=>document.querySelector(selector);
