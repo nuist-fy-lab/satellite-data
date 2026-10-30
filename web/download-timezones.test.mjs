@@ -170,7 +170,7 @@ test('download request rows show precise sparse scene selections instead of all 
   }]}], page:1, pages:1, total:1});
   const content = h.element('#download-tasks').innerHTML;
   assert.match(content, /2006-06-15 08:00 BJT/);
-  assert.match(content, /2 天 · 3 个指定时次/);
+  assert.match(content, /2006-06-16 02:45 BJT \/ 2006-06-16 02:50 BJT/);
   assert.match(content, /等待查询/);
   assert.doesNotMatch(content, /全部时次|<progress\b/);
   h.run('expandedDownloadTasks.add("task-408")');
@@ -238,7 +238,7 @@ test('invalid dates, inverted ranges and invalid times cannot enqueue a request'
   h.run("state.downloads.selectedProducts.add('cloudsat:2B-GEOPROF')");
   await h.context.submitDownload({preventDefault() {}});
   assert.equal(h.requests.length, 0);
-  assert.match(h.element('#dl-submit-status').textContent, /观测起止时间/);
+  assert.match(h.element('#dl-submit-status').textContent, /数据起止时间/);
 });
 
 test('cascading multi-satellite filters retain the selected basket across searches', () => {
@@ -333,6 +333,7 @@ test('failed submission retains the reviewed selection for an explicit retry', a
 
 test('mixed temporal products submit independent observation windows and UTC calendar periods', async () => {
   const h=harness();
+  h.context.setDownloadTimezone('BJT');
   h.run(`state.downloads.catalog=[
     {product_key:'goes18:scan',source_id:'goes18',satellite:'GOES-18',version:'1',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10},bands:[{number:2,wavelength:'0.64 µm',resolution:'0.5 km'}]},
     {product_key:'modis:swath',source_id:'modis',time_profile:{kind:'observation',label:'观测区间'}},
@@ -341,7 +342,6 @@ test('mixed temporal products submit independent observation windows and UTC cal
   state.downloads.productOptions['goes18:scan']={mode:'custom',custom:'00:10',band:2};
   state.downloads.productOptions['modis:swath']={customTime:true,start:'2024-02-29T08:30',end:'2024-02-29T09:15'};`);
   h.element('#dl-start').value='2024-02-29';h.element('#dl-end').value='2024-02-29';
-  h.context.setDownloadTimezone('BJT');
   await h.context.submitDownload({preventDefault(){}});
   assert.equal(h.element('#download-confirm').open,true);
   const opts=h.run('JSON.parse(JSON.stringify(state.downloads.confirmation.payload.options))');
@@ -396,7 +396,7 @@ test('each product exposes only applicable controls and independent band definit
   assert.match(render('monthly'),/data-option-field="start-month"/);
   assert.match(render('dekadal'),/上旬[\s\S]*中旬[\s\S]*下旬/);
   assert.match(render('weekly'),/覆盖开始日期/);
-  assert.throws(()=>h.run("downloadProductInterval(state.downloads.catalog[0],{start:'2026-01-01',end:'2026-01-02',mode:'custom',custom:'00:05'},'UTC')"),/扫描间隔/);
+  assert.throws(()=>h.run("downloadProductInterval(state.downloads.catalog[0],{start:'2026-01-01',end:'2026-01-02',mode:'custom',custom:'00:05'},'UTC')"),/分钟间隔/);
 });
 
 test('source families, satellite versions, resolution units and inapplicable metadata stay distinct', () => {
@@ -418,7 +418,7 @@ test('source families, satellite versions, resolution units and inapplicable met
   assert.deepEqual(resolutions('0.5 / 1 / 2 km'),['0.5 km','1 km','2 km']);
   assert.deepEqual(resolutions('1/5km'),['1 km','5 km']);
   assert.deepEqual(resolutions('2 arcsec/pixel'),['2 arcsec/pixel']);
-  assert.deepEqual([...h.context.downloadFilterValues('level',{level:'ORBIT'},p=>p.level)],['__not_applicable']);
+  assert.deepEqual([...h.context.downloadFilterValues('level',{level:'ORBIT'},p=>p.level)],[]);
 });
 
 test('year grid uses all available width with proportional square-cell spacing including 54-week leap years', () => {

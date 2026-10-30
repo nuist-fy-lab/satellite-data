@@ -24,6 +24,7 @@ type Provider struct {
 
 var archiveName = regexp.MustCompile(`^OR_([A-Za-z0-9-]+)_G(1[6-9])_s([0-9]{13,22})_e[0-9]{13,22}_c[0-9]{13,22}\.nc$`)
 var archiveScanMode = regexp.MustCompile(`-M[0-9](C[0-9]{2})?$`)
+var filenameScanMode = regexp.MustCompile(`-M([0-9])(?:C[0-9]{2})?_G1[6-9]_`)
 
 // ArchiveIdentity uses NOAA's timestamp, not the local directory date.
 func ArchiveIdentity(name string) (string, time.Time, bool) {
@@ -123,21 +124,31 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	}
 
 	type grouped struct {
-		start  time.Time
-		end    time.Time
-		assets []model.Asset
+		start        time.Time
+		end          time.Time
+		assets       []model.Asset
+		mode         string
+		modeConflict bool
 	}
 	groups := map[string]*grouped{}
+	seen := map[string]bool{}
 	consume := func(page objectstore.Page) {
 		for _, object := range page.Objects {
 			start, end, key, ok := parseGOESObjectTime(filepath.Base(object.Name))
-			if !ok || start.Before(q.Start) || !start.Before(q.End) {
+			if !ok || !start.Before(q.End) || (start.Before(q.Start) && (end.IsZero() || !end.After(q.Start))) || seen[object.Name] {
 				continue
+			}
+			seen[object.Name] = true
+			mode := ""
+			if match := filenameScanMode.FindStringSubmatch(filepath.Base(object.Name)); match != nil {
+				mode = match[1]
 			}
 			g := groups[key]
 			if g == nil {
-				g = &grouped{start: start, end: end}
+				g = &grouped{start: start, end: end, mode: mode}
 				groups[key] = g
+			} else if g.mode != mode {
+				g.modeConflict = true
 			}
 			if end.After(g.end) {
 				g.end = end
@@ -148,8 +159,13 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 			})
 		}
 	}
+	lookback := 24 * time.Hour
+	if strings.HasPrefix(product, "ABI-L1b-") || strings.HasPrefix(product, "GLM-") {
+		lookback = time.Hour
+	}
+	first := q.Start.Add(-lookback)
 	if q.End.Sub(q.Start) <= 3*time.Hour {
-		for hour := q.Start.UTC().Truncate(time.Hour); hour.Before(q.End); hour = hour.Add(time.Hour) {
+		for hour := first.UTC().Truncate(time.Hour); hour.Before(q.End); hour = hour.Add(time.Hour) {
 			prefix := fmt.Sprintf("%s/%04d/%03d/%02d/", product, hour.Year(), hour.YearDay(), hour.Hour())
 			token := ""
 			for {
@@ -165,7 +181,7 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 			}
 		}
 	} else {
-		firstDay := time.Date(q.Start.UTC().Year(), q.Start.UTC().Month(), q.Start.UTC().Day(), 0, 0, 0, 0, time.UTC)
+		firstDay := time.Date(first.UTC().Year(), first.UTC().Month(), first.UTC().Day(), 0, 0, 0, 0, time.UTC)
 		for day := firstDay; day.Before(q.End); day = day.AddDate(0, 0, 1) {
 			prefix := fmt.Sprintf("%s/%04d/%03d/", product, day.Year(), day.YearDay())
 			token := ""
@@ -186,6 +202,10 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	out := make([]model.Granule, 0, len(groups))
 	for key, group := range groups {
 		sort.Slice(group.assets, func(i, j int) bool { return group.assets[i].Name < group.assets[j].Name })
+		metadata := map[string]string{"satellite": strconv.Itoa(p.satellite), "store": "gcs"}
+		if group.mode != "" && !group.modeConflict {
+			metadata["scan_mode"] = group.mode
+		}
 		out = append(out, model.Granule{
 			ID:           p.sourceID + ":" + product + ":" + key,
 			SourceID:     p.sourceID,
@@ -193,10 +213,7 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 			Start:        group.start,
 			End:          group.end,
 			Assets:       group.assets,
-			Metadata: map[string]string{
-				"satellite": strconv.Itoa(p.satellite),
-				"store":     "gcs",
-			},
+			Metadata:     metadata,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
@@ -205,6 +222,9 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 
 func goesArea(product string) string {
 	upper := strings.ToUpper(product)
+	if !strings.HasPrefix(upper, "ABI-") {
+		return ""
+	}
 	switch {
 	case strings.HasSuffix(upper, "F") || strings.Contains(upper, "RADF"):
 		return "DISK"
@@ -273,6 +293,9 @@ func parseGOESCode(code string) (time.Time, bool) {
 
 func goesCadence(product string) string {
 	upper := strings.ToUpper(product)
+	if !strings.HasPrefix(upper, "ABI-") {
+		return "event"
+	}
 	switch {
 	case strings.HasSuffix(upper, "F") || strings.Contains(upper, "RADF"):
 		return "10m"

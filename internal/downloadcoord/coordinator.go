@@ -144,6 +144,9 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 	}
 	axis := slotaxis.Resolve(request.SourceID, request.CollectionID, product.Cadence)
 	timeProfile := producttime.Resolve(product)
+	if timeProfile.Kind != "scan" {
+		axis.CadenceMinutes = 0
+	}
 	searchStart, searchEnd := request.Cursor, chunkEnd
 	if len(request.Selection.Times) > 0 || len(request.Selection.Scenes) > 0 {
 		searchStart = searchStart.Add(-axis.Max)
@@ -162,24 +165,31 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 	// Estimate the scan phase from the selected band, not other bands that
 	// can start seconds apart within the same nominal observation.
 	observed := make([]time.Time, 0, len(granules))
+	byScanMode := map[string][]time.Time{}
 	for _, granule := range granules {
 		for _, asset := range granule.Assets {
 			if request.Selection.MatchesAsset(request.SourceID, request.CollectionID, asset.Name) {
 				observed = append(observed, granule.Start)
+				mode := granule.Metadata["scan_mode"]
+				byScanMode[mode] = append(byScanMode[mode], granule.Start)
 				break
 			}
 		}
 	}
 	refs := make([]state.DownloaderTaskRef, 0, len(granules))
 	selected := 0
-	tolerance := axis.Tolerance(observed)
 	for _, granule := range granules {
 		times := request.Selection.Times
 		if len(request.Selection.Scenes) > 0 {
 			times = sceneTimes
 		}
-		nominal, match := axis.MatchWithin(granule.Start, times, observed, tolerance)
-		coverage := timeProfile.Kind != "scan" && len(times) == 0 && len(request.Selection.Scenes) == 0
+		actualAxis := axis.WithGOESMode(request.SourceID, request.CollectionID, granule.Metadata["scan_mode"])
+		scanTimes := observed
+		if strings.HasPrefix(request.SourceID, "goes") {
+			scanTimes = byScanMode[granule.Metadata["scan_mode"]]
+		}
+		nominal, match := actualAxis.MatchWithin(granule.Start, times, scanTimes, actualAxis.Tolerance(scanTimes))
+		coverage := len(times) == 0 && len(request.Selection.Scenes) == 0
 		if coverage {
 			match = producttime.OwnsCoverage(granule.Start, granule.End, request.Start, request.Cursor, chunkEnd)
 		} else {

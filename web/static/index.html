@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=28">
+  <link rel="stylesheet" href="/styles.css?v=29">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -199,7 +199,7 @@
             <div class="download-product-search"><label>搜索<input id="dl-search" type="search" placeholder="卫星、产品名称或代码" autocomplete="off"></label><button id="dl-reset-filters" type="button">清空筛选</button></div>
             <div class="download-product-panels">
               <section class="download-product-panel"><header><h3>筛选结果 <span id="dl-filtered-count">0</span></h3><label class="download-check-all"><input id="dl-select-results" type="checkbox">全选当前结果</label></header><div id="dl-product-results" class="download-product-results" aria-label="筛选结果"></div></section>
-              <section class="download-product-panel"><header><h3>已选产品 <span id="dl-basket-count">0</span></h3><button id="dl-clear-selection" type="button">清空已选</button></header><div id="dl-selected-products" class="download-selected-products" aria-label="已选产品"></div></section>
+              <section class="download-product-panel"><header><h3>已选产品 <span id="dl-basket-count">0</span></h3><div id="dl-shared-options" class="download-shared-options"></div><button id="dl-clear-selection" type="button">清空已选</button></header><div id="dl-selected-products" class="download-selected-products" aria-label="已选产品"></div></section>
             </div>
           </div>
           <label>时间基准<select id="dl-timezone"><option value="UTC">UTC</option><option value="BJT">BJT</option></select></label>
@@ -366,6 +366,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=35"></script>
+  <script type="module" src="/app.js?v=36"></script>
 </body>
 </html>

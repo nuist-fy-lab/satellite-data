@@ -65,6 +65,8 @@ type collectionFeed struct {
 			TimeStart         string   `json:"time_start"`
 			TimeEnd           string   `json:"time_end"`
 			CloudHosted       bool     `json:"cloud_hosted"`
+			HasGranules       *bool    `json:"has_granules"`
+			GranuleCount      *int64   `json:"granule_count"`
 			Platforms         []string `json:"platforms"`
 		} `json:"entry"`
 	} `json:"feed"`
@@ -77,9 +79,12 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 		return append([]model.Collection(nil), p.catalog...), nil
 	}
 	values := url.Values{
-		"provider":   {"LAADS"},
-		"instrument": {"MODIS"},
-		"page_size":  {"2000"},
+		"provider":               {"LAADS"},
+		"instrument":             {"MODIS"},
+		"page_size":              {"2000"},
+		"has_granules":           {"true"},
+		"include_has_granules":   {"true"},
+		"include_granule_counts": {"true"},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cmrBase+"/collections.json?"+values.Encode(), nil)
 	if err != nil {
@@ -101,6 +106,12 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 	out := make([]model.Collection, 0, len(payload.Feed.Entries))
 	for _, item := range payload.Feed.Entries {
 		if item.ID == "" || item.ShortName == "" {
+			continue
+		}
+		if item.HasGranules == nil || item.GranuleCount == nil {
+			return nil, fmt.Errorf("CMR MODIS collection %s is missing granule availability", item.ID)
+		}
+		if !*item.HasGranules || *item.GranuleCount <= 0 {
 			continue
 		}
 		satellite := modisSatellite(item.Platforms)
@@ -125,6 +136,8 @@ func (p *Provider) Collections(ctx context.Context) ([]model.Collection, error) 
 				"time_start":         item.TimeStart,
 				"time_end":           item.TimeEnd,
 				"cloud_hosted":       strconv.FormatBool(item.CloudHosted),
+				"has_granules":       "true",
+				"product_count":      strconv.FormatInt(*item.GranuleCount, 10),
 			},
 		})
 	}

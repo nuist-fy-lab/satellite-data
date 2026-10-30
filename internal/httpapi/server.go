@@ -984,6 +984,20 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 
 func parseTime(value string) (time.Time, error) {
 	value = strings.TrimSpace(value)
+	// Go's parser normalizes offsets such as +24:00 and +08:60, although
+	// RFC3339 does not permit them. Reject rather than shift a user's order.
+	if len(value) > 10 && !strings.HasSuffix(value, "Z") {
+		if len(value) < 6 {
+			return time.Time{}, errors.New("invalid time offset")
+		}
+		offset := value[len(value)-6:]
+		if (offset[0] != '+' && offset[0] != '-') || offset[3] != ':' ||
+			offset[1] < '0' || offset[1] > '9' || offset[2] < '0' || offset[2] > '9' ||
+			offset[4] < '0' || offset[4] > '9' || offset[5] < '0' || offset[5] > '9' ||
+			(offset[1]-'0')*10+offset[2]-'0' > 23 || (offset[4]-'0')*10+offset[5]-'0' > 59 {
+			return time.Time{}, errors.New("invalid RFC3339 time offset")
+		}
+	}
 	if value == "" {
 		return time.Time{}, errors.New("missing time")
 	}

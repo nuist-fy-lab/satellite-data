@@ -54,3 +54,29 @@ func TestCrossMidnightAndEventIsolation(t *testing.T) {
 		t.Fatalf("isolated event %s %v", nominal, ok)
 	}
 }
+
+func TestGOESFileModeKeepsHistoricalScanTimes(t *testing.T) {
+	for _, product := range []string{"ABI-L1b-RadF", "ABI-L2-CMIPF"} {
+		base := Resolve("goes16", "goes16:"+product, "10m")
+		for _, tc := range []struct {
+			mode, actual, selected string
+			cadence                int
+		}{
+			{"3", "2018-01-01T00:15:21Z", "00:15", 15},
+			{"4", "2018-01-01T00:05:21Z", "00:05", 5},
+			{"6", "2024-01-01T00:10:21Z", "00:10", 10},
+		} {
+			axis := base.WithGOESMode("goes16", "goes16:"+product, tc.mode)
+			observed := []time.Time{at(tc.actual)}
+			if axis.CadenceMinutes != tc.cadence {
+				t.Fatalf("mode %s: %+v", tc.mode, axis)
+			}
+			if nominal, ok := axis.Match(observed[0], []string{tc.selected}, observed); !ok || nominal.Format("15:04") != tc.selected {
+				t.Fatalf("mode %s lost %s: %v %v", tc.mode, tc.selected, nominal, ok)
+			}
+		}
+		if base.WithGOESMode("goes16", "goes16:"+product, "").CadenceMinutes != 0 {
+			t.Fatal("unknown mode forced to current grid")
+		}
+	}
+}

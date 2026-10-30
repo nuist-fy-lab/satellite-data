@@ -123,6 +123,17 @@ window.downloadTemporalFixture = function() {
     observation:document.querySelector('[data-download-options="modis:observation"] [data-option-field="start"]').type,
     dekads:[...document.querySelector('[data-download-options="modis:dekadal"] [data-option-field="start-dekad"]').options].map(option=>option.value)};
 };
+window.downloadSharedFixture = function(compatible) {
+  const first=state.downloads.catalog.find(product=>product.source_id==='goes18');
+  const second={...first,product_key:'goes16:ABI-L1b-RadF',source_id:'goes16',satellite:'GOES-16'};
+  state.downloads.catalog=[first,second];
+  state.downloads.selectedProducts=new Set([first.product_key,second.product_key]);
+  state.downloads.productOptions={};
+  if(!compatible)second.instrument='AHI';
+  refreshDownloadFilters();
+  return {time:document.querySelector('[data-shared-option="mode"]').disabled,
+    band:document.querySelector('[data-shared-option="band"]').disabled};
+};
 window.inventoryFixture = async function() {
   const module=await import('/era5-inventory.js');
   const files=[{dataset:'era5:reanalysis-era5-single-levels',name:'temperature_january.nc',bytes:25171,verified:true,state:'ok',start:'2024-01-01T00:00:00Z',end:'2024-02-01T00:00:00Z',variables:['2m_temperature','total_precipitation'],levels:[],times:['00:00','12:00'],area:[32.25,118.5,32,118.75]},
@@ -440,6 +451,20 @@ try {
         assert.equal(picker.tagCount,8);
         assert.equal(picker.nameBelow,true);
         assert.equal(picker.nameClipped,false);
+        const queue=await driver.executeScript(`
+          const card=document.querySelector('#download-tasks .download-queue-card');
+          const toggle=card.querySelector('.download-queue-toggle');
+          const title=toggle.querySelector('.download-queue-title');
+          const before={height:toggle.getBoundingClientRect().height,
+            details:getComputedStyle(card.querySelector('.download-queue-details')).display,
+            nowrap:getComputedStyle(title).whiteSpace};
+          toggle.click();before.expanded=toggle.getAttribute('aria-expanded')==='true';
+          before.after=card.getBoundingClientRect().height;toggle.click();
+          return before;
+        `);
+        assert.ok(queue.height<=40.1,'collapsed task exceeds one row: '+JSON.stringify(queue));
+        assert.equal(queue.nowrap,'nowrap');assert.equal(queue.details,'none');
+        assert.equal(queue.expanded,true);assert.ok(queue.after>queue.height+10);
         if(width>=1000)assert.ok(picker.cardHeight<=60,'product card is not compact: '+JSON.stringify(picker));
         const initial = await driver.executeScript(`const $=selector=>document.querySelector(selector);return {
           task:$('#download-timezone').value,monitor:$('#download-monitor-timezone').value,
@@ -494,6 +519,15 @@ try {
           return {opened,outside,escape:!filter.open};
         `);
         assert.deepEqual(dismissal,{opened:true,outside:true,escape:true});
+        const expander=await driver.executeScript(`
+          const editor=document.querySelector('[data-download-options]');
+          const button=editor.querySelector('summary');
+          const initial=getComputedStyle(editor.querySelector('.download-options-expand')).display;
+          button.click();
+          const opened=editor.open && getComputedStyle(editor.querySelector('.download-options-collapse')).display!=='none';
+          button.click();return {initial,opened,closed:!editor.open};
+        `);
+        assert.notEqual(expander.initial,'none');assert.equal(expander.opened,true);assert.equal(expander.closed,true);
         const temporal=await driver.executeScript('return window.downloadTemporalFixture()');
         assert.deepEqual(temporal.overflow,[],'product controls exceed card');
         assert.equal(temporal.periodClock,false);
@@ -501,6 +535,16 @@ try {
         assert.deepEqual(temporal.dekads,['01','11','21']);
         await driver.executeScript("document.querySelector('#dl-selected-products').scrollIntoView({block:'start'})");
         await writeFile('dist/visual/download-product-options-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+        assert.deepEqual(await driver.executeScript('return window.downloadSharedFixture(true)'),{time:false,band:false});
+        await driver.executeScript(`
+          const band=document.querySelector('[data-shared-option="band"]');band.value='2';band.dispatchEvent(new Event('change',{bubbles:true}));
+          const time=document.querySelector('[data-shared-option="mode"]');time.value='custom';time.dispatchEvent(new Event('change',{bubbles:true}));
+          const clock=document.querySelector('[data-shared-option="custom"]');clock.value='00:10, 12:00';clock.dispatchEvent(new Event('change',{bubbles:true}));
+        `);
+        const shared=await driver.executeScript('return window.downloadConfirmationFixture(true)');
+        assert.equal(shared.open,true);assert.match(shared.content,/00:10 \/ 12:00/);assert.match(shared.content,/0.64 µm/);
+        await driver.executeScript('return window.downloadConfirmationFixture(false)');
+        assert.deepEqual(await driver.executeScript('return window.downloadSharedFixture(false)'),{time:true,band:true});
       }
       if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));

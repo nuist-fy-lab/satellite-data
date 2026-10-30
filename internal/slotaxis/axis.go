@@ -74,6 +74,27 @@ func Known(source, collection string) (Axis, bool) {
 	return Axis{}, false
 }
 
+// WithGOESMode uses the mode recorded in each file. The current catalogue's
+// nominal ten-minute full disk must not erase historical 15/5-minute scans.
+func (a Axis) WithGOESMode(source, collection, mode string) Axis {
+	if !strings.HasPrefix(source, "goes") || !strings.HasSuffix(collection, "F") || a.CadenceMinutes == 0 {
+		return a
+	}
+	switch mode {
+	case "3":
+		a.CadenceMinutes = 15
+	case "4":
+		a.CadenceMinutes = 5
+		a.Max = min(a.Max, 2*time.Minute)
+	case "6":
+		a.CadenceMinutes = 10
+	default:
+		// An unknown mode retains actual event minutes instead of forcing a grid.
+		a.CadenceMinutes = 0
+	}
+	return a
+}
+
 func (a Axis) Mode() string {
 	if a.CadenceMinutes > 0 {
 		return "grid"

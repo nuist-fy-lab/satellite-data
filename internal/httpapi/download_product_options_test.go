@@ -88,7 +88,7 @@ func TestIndependentProductTimeBandAndVersionAreAtomicAndDeduplicated(t *testing
 	for _, bad := range []string{
 		strings.Replace(body, `"start":"2024-02-01"`, `"start":"2024-02-02"`, 1),
 		strings.Replace(body, `"times":[]`, `"times":["00:00"]`, 1),
-		strings.Replace(body, `"times":["00:00","12:00"]`, `"times":["00:05"]`, 1),
+		strings.Replace(body, `"times":["00:00","12:00"]`, `"times":["00:03"]`, 1),
 		strings.Replace(body, `"band":6`, `"band":99`, 1),
 		`{"products":["modis:swath"],"start":"2024-01-01","end":"2024-01-02","times":["00:00"]}`,
 		`{"products":["modis:day"],"start":"2024-01-01T00:00:00+08:00","end":"2024-01-02T00:00:00+08:00"}`,

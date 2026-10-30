@@ -135,6 +135,12 @@ func NormalizeProduct(item model.Product) model.Product {
 			item.Metadata["level_evidence"] = "https://user.eumetsat.int/s3/eup-strapi-media/MTG_Generic_Format_Specification_GFS_V4_A_0_01dcde093e.pdf"
 		}
 	case strings.HasPrefix(item.SourceID, "goes"):
+		if !strings.HasPrefix(item.DataType, "ABI-") {
+			item.Cadence = "event"
+			if item.AreaType == "DISK" || item.AreaType == "CONUS" || item.AreaType == "MESO" {
+				item.AreaType = ""
+			}
+		}
 		if item.Instrument == "SEIS" {
 			item.Instrument = "SEISS"
 		}
