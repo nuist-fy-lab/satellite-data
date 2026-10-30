@@ -46,13 +46,8 @@ type Axis struct {
 }
 
 func Resolve(source, collection, cadence string) Axis {
-	product, ok := strings.CutPrefix(collection, source+":")
-	if ok {
-		for _, r := range rules {
-			if strings.HasPrefix(source, r.SourcePrefix) && r.productRE.MatchString(product) {
-				return Axis{CadenceMinutes: r.CadenceMinutes, Base: time.Duration(r.BaseToleranceSeconds) * time.Second, Max: time.Duration(r.MaxToleranceSeconds) * time.Second}
-			}
-		}
+	if axis, ok := Known(source, collection); ok {
+		return axis
 	}
 	if duration, err := time.ParseDuration(cadence); err == nil && duration >= time.Minute && duration%time.Minute == 0 {
 		minutes := int(duration / time.Minute)
@@ -64,6 +59,19 @@ func Resolve(source, collection, cadence string) Axis {
 		}
 	}
 	return Axis{Base: time.Minute, Max: time.Minute}
+}
+
+// Known distinguishes explicit product scan policies from cadence guesses.
+func Known(source, collection string) (Axis, bool) {
+	product, ok := strings.CutPrefix(collection, source+":")
+	if ok {
+		for _, r := range rules {
+			if strings.HasPrefix(source, r.SourcePrefix) && r.productRE.MatchString(product) {
+				return Axis{CadenceMinutes: r.CadenceMinutes, Base: time.Duration(r.BaseToleranceSeconds) * time.Second, Max: time.Duration(r.MaxToleranceSeconds) * time.Second}, true
+			}
+		}
+	}
+	return Axis{}, false
 }
 
 func (a Axis) Mode() string {

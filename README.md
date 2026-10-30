@@ -45,7 +45,7 @@ All providers use official cloud object stores, STAC/CMR catalogues, or authenti
 
 ## Key Capabilities
 
-- **Multi-Product Batch Orders & Three-Layer Deduplication**: Group up to 32 products across a shared date window in a single order. Deduplication operates across identical user submissions, concurrent orders targeting the same upstream asset, and already-archived local files (reused only after verifying path, size, mtime, and SHA-256 against official records).
+- **Download Tasks & Three-Layer Deduplication**: Submit up to 32 products once, with independent observation intervals, calendar periods, scan times and bands. The centre schedules them automatically. Deduplication covers identical user submissions, concurrent tasks targeting the same upstream asset, and verified archived files. See [product time selection](docs/download-tasks.md).
 - **Automated Availability Calendar & Archive Indexing**: Tracks daily and sub-daily band/slot coverage across fixed-cadence geostationary grids and event-based overpass timelines. Background indexers incrementally reconcile local filesystem changes and upstream availability with adaptive per-provider rate pacing.
 - **Centralized Credential & Route Governance**: Upstream tokens, OAuth2/OIDC credentials, CDS keys, and proxy routes are encrypted at rest inside `satellited` and managed exclusively by administrators.
 - **Unified ERA5 On-Demand Retrieval**: Supports both persistent multi-day/multi-month archive orders (automatically split, polled, verified, and archived) and low-level interactive CDS job inspection.
@@ -121,7 +121,8 @@ All portal pages and API endpoints require either an authenticated web session (
 | `GET /api/v1/sources` | List configured satellite and reanalysis providers |
 | `GET /api/v1/catalog?source=<id>` | Browse stored official product catalogue |
 | `GET /api/v1/search?...` | Interactive granule search (up to 7-day window) |
-| `POST /api/v1/downloads` | Submit persistent single or multi-product acquisition order |
+| `POST /api/v1/download-tasks` | Submit one task with independent settings for each product |
+| `GET /api/v1/download-tasks?page=1` | List tasks, at most 30 per page |
 | `GET /api/v1/archive/index-status` | Local archive scan status, year coverage, and index queue state |
 | `GET /api/v1/monitor/downloads?window=1h` | Provider-isolated transfer throughput and worker metrics (`realtime` to `1w`) |
 | `GET /api/v1/era5/schema` | Official CDS parameter schema for ERA5 collections |

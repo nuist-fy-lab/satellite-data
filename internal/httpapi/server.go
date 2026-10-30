@@ -19,6 +19,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
 	"github.com/nuist-fy-lab/satellite-data/internal/linkmon"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/producttime"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 	webui "github.com/nuist-fy-lab/satellite-data/web"
@@ -687,13 +688,14 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	type option struct {
 		model.Product
-		Bands     []downloadfilter.Band `json:"bands"`
-		OrderMode string                `json:"order_mode"`
+		Bands       []downloadfilter.Band `json:"bands"`
+		OrderMode   string                `json:"order_mode"`
+		TimeProfile producttime.Profile   `json:"time_profile"`
 	}
 	items := make([]option, 0, len(products))
 	for _, product := range products {
 		product = provider.NormalizeProduct(product)
-		item := option{Product: product, Bands: []downloadfilter.Band{}, OrderMode: "archive"}
+		item := option{Product: product, Bands: []downloadfilter.Band{}, OrderMode: "archive", TimeProfile: producttime.Resolve(product)}
 		if product.SourceID == "era5" {
 			item.OrderMode = "on-demand"
 		}

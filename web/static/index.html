@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=27">
+  <link rel="stylesheet" href="/styles.css?v=28">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -203,11 +203,8 @@
             </div>
           </div>
           <label>时间基准<select id="dl-timezone"><option value="UTC">UTC</option><option value="BJT">BJT</option></select></label>
-          <label>波段<select id="dl-band"></select></label>
-          <label><span id="dl-start-label">开始日期（UTC）</span><input id="dl-start" type="date" required></label>
-          <label><span id="dl-end-label">结束日期（UTC，含当天）</span><input id="dl-end" type="date" required></label>
-          <label><span id="dl-time-label">时次（UTC）</span><select id="dl-time-mode"><option value="all">全部时次</option><option value="hourly">每小时整点</option><option value="synoptic">00 / 06 / 12 / 18</option><option value="custom">自定义</option></select></label>
-          <label id="dl-custom-field" class="hidden"><span id="dl-custom-label">自定义时次（UTC，HH:MM）</span><input id="dl-custom" placeholder="00:00, 12:00"></label>
+          <label><span id="dl-start-label">开始日期（UTC）</span><input id="dl-start" type="date"></label>
+          <label><span id="dl-end-label">结束日期（UTC，含当天）</span><input id="dl-end" type="date"></label>
           <div class="download-submit-actions"><span id="dl-submit-status" role="status"></span><button id="dl-submit" type="submit">一次提交，自动调度</button></div>
         </form>
         <div id="dl-submit-result" class="download-submit-result hidden" role="status"></div>
@@ -369,6 +366,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=34"></script>
+  <script type="module" src="/app.js?v=35"></script>
 </body>
 </html>

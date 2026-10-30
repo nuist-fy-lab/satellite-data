@@ -43,7 +43,7 @@ const state = {
   downloads: {
     displayZone: storedDisplayZone('satellite-data-download-zone', 'UTC'),
     poll: 0, pollSeq: 0, catalog: [], catalogReady: false, loading: 0,
-    selectedProducts: new Set(), filters: {}, confirmation: null, submitting: false,
+    selectedProducts: new Set(), productOptions: {}, filters: {}, confirmation: null, submitting: false,
     tasks: [], page: 1, total: 0, pages: 1, providers: [], stream: null,
     history: {
       displayZone: storedDisplayZone('satellite-data-download-monitor-zone', 'BJT'),
@@ -2324,13 +2324,15 @@ const downloadStates = {
 };
 
 const dlStages = [
-  ['source', '数据源', p => p.source_id],
+  ['source', '数据源', p => sourceFamilyID(p.source_id)],
   ['satellite', '卫星', p => p.satellite],
   ['instrument', '传感器', p => p.instrument],
   ['level', '级别', p => p.level],
   ['product', '产品', p => p.data_type || p.display_name || p.product_key],
+  ['version', '版本', p => p.version || p.metadata?.version || ''],
   ['area', '区域', p => p.area_type || p.metadata?.area_type || ''],
-  ['resolution', '分辨率', p => p.resolution || ''],
+  ['resolution', '标称分辨率', p => p.resolution || ''],
+  ['temporal', '时间类型', p => downloadTimeProfile(p).label],
 ];
 
 function downloadProductName(product) {
@@ -2343,7 +2345,50 @@ function selectedDownloadProducts() {
 }
 
 function downloadFilterValues(id, product, field) {
-  return id === 'satellite' ? collectionSatellites(product) : [field(product)].filter(Boolean);
+  if (id === 'satellite') return collectionSatellites(product).length ? collectionSatellites(product) : ['__catalog_not_provided'];
+  if (id === 'resolution') return downloadResolutions(product);
+  if ((id === 'level' && ['AUX', 'ORBIT'].includes(product.level)) ||
+      (id === 'instrument' && ['Auxiliary', 'Derived', 'Orbit'].includes(product.instrument))) return ['__not_applicable'];
+  const value = field(product);
+  return value ? [value] : ['__' + (product.metadata?.[(id === 'area' ? 'area_type' : id) + '_status'] || 'catalog_not_provided')];
+}
+
+function downloadResolutions(product) {
+  const value = product.resolution || product.metadata?.spatial_resolution || '';
+  if (!value) return ['__' + (product.metadata?.resolution_status || 'catalog_not_provided')];
+  // A slash before a number separates resolutions; a slash in arcsec/pixel is a unit.
+  const parts = value.split(/\s*(?:[,;]|\/(?=\s*\d))\s*/).filter(Boolean);
+  const units = '(km|m|degrees?|deg\\.?|arc[- ]seconds?|arcsec)(/pixel)?';
+  const inherited = parts.at(-1)?.match(new RegExp(units + '$', 'i'));
+  return uniqueSorted(parts.map(part => {
+    if (/^\d+(?:\.\d+)?$/.test(part) && inherited) part += ' ' + inherited[0];
+    const match = part.match(new RegExp('^(\\d+(?:\\.\\d+)?(?:\\s*[x×]\\s*\\d+(?:\\.\\d+)?)?)\\s*' + units + '$', 'i'));
+    if (!match) return part.trim();
+    let dimensions = match[1].split(/\s*[x×]\s*/).map(Number);
+    let unit = match[2].toLowerCase();
+    if (unit === 'm') { dimensions = dimensions.map(n => n / 1000); unit = 'km'; }
+    if (/^deg/.test(unit)) unit = 'deg';
+    if (/^arc/.test(unit)) unit = 'arcsec';
+    return dimensions.join(' × ') + ' ' + unit + (match[3] || '');
+  }));
+}
+
+function downloadFieldLabel(value) {
+  return String(value).startsWith('__') ? metadataStatusLabels[String(value).slice(2)] || '未提供' : areaLabels[value] || value;
+}
+
+function downloadResolutionLabel(product) {
+  const values = downloadResolutions(product);
+  if (product.bands?.length) return '随波段';
+  return values.map(downloadFieldLabel).join(' / ');
+}
+
+function downloadVersionLabel(product) {
+  return downloadFieldLabel(downloadFilterValues('version', product, p => p.version || p.metadata?.version || '')[0]);
+}
+
+function closeDownloadFilters(except = null) {
+  for (const filter of document.querySelectorAll('.download-filter[open]')) if (filter !== except) filter.open = false;
 }
 
 function filteredDownloadProducts() {
@@ -2352,7 +2397,7 @@ function filteredDownloadProducts() {
     const selected = state.downloads.filters[id];
     return !selected?.size || downloadFilterValues(id, product, field).some(value => selected.has(value));
   }) && (!search || [product.satellite, product.instrument, product.data_type, product.display_name,
-    product.product_key].join(' ').toLowerCase().includes(search)));
+    product.version, product.official_id, product.product_key].join(' ').toLowerCase().includes(search)));
 }
 
 function refreshDownloadFilters() {
@@ -2364,7 +2409,7 @@ function refreshDownloadFilters() {
     const values = uniqueSorted(items.flatMap(product => downloadFilterValues(id, product, field)));
     const selected = new Set([...(state.downloads.filters[id] || [])].filter(value => values.includes(value)));
     state.downloads.filters[id] = selected;
-    const optionName = value => id === 'source' ? state.sources.find(source => source.id === value)?.name || value : value;
+    const optionName = value => id === 'source' ? sourceFamilyLabels[value] || value : downloadFieldLabel(value);
     const summary = selected.size ? [...selected].map(optionName).join('、') : '全部';
     controls.push('<div class="download-filter-field"><span>' + esc(label) + '</span><details class="download-filter" data-filter="' + id + '"' + (opened.has(id) ? ' open' : '') + '>' +
       '<summary aria-label="' + esc(label + '：' + summary) + '"><span>' + esc(summary) + '</span></summary><div class="download-filter-options">' +
@@ -2382,14 +2427,19 @@ function downloadProductRow(product, selected = false) {
   const code = product.data_type || product.product_code || '';
   const heading = [...new Set([product.satellite, code].filter(Boolean))].join(' · ') || downloadProductName(product);
   const name = downloadProductName(product);
-  const fields = [product.satellite, product.instrument, product.level, code, product.area_type, product.resolution];
-  const identifier = product.metadata?.filename_pattern || product.official_id || product.product_key || product.collection_id || code;
+  const fields = [['卫星', product.satellite],
+    ['传感器', downloadFieldLabel(downloadFilterValues('instrument', product, p => p.instrument)[0])],
+    ['级别', downloadFieldLabel(downloadFilterValues('level', product, p => p.level)[0])],
+    ['产品', code], ['版本', downloadVersionLabel(product)],
+    ['区域', downloadFieldLabel(downloadFilterValues('area', product, p => p.area_type)[0])],
+    ['标称分辨率', downloadResolutionLabel(product)], ['时间类型', downloadTimeProfile(product).label]];
   const description = '<span class="download-product-copy"><span class="download-product-line">' +
-    fields.map(value => '<span class="download-product-tag" title="' + esc(value || '—') + '">' + esc(value || '—') + '</span>').join('') +
-    '<span class="download-product-name" title="' + esc(name) + '">' + esc(name) + '</span></span>' +
-    '<span class="download-product-identifier">' + esc(identifier) + '</span></span>';
-  if (selected) return '<div class="download-selected-product">' + description +
-    '<button type="button" data-download-remove="' + esc(product.product_key) + '" aria-label="移除 ' + esc(heading) + '">×</button></div>';
+    fields.map(([label, value]) => '<span class="download-product-tag" title="' + esc(label + '：' + (value || '未提供')) + '">' +
+      (label === '版本' ? '版本 ' : '') + esc(value || '未提供') + '</span>').join('') + '</span>' +
+    '<span class="download-product-name" title="' + esc(product.official_id || name) + '">' + esc(name) + '</span></span>';
+  if (selected) return '<div class="download-selected-item"><div class="download-selected-product">' + description +
+    '<button type="button" data-download-remove="' + esc(product.product_key) + '" aria-label="移除 ' + esc(heading) + '">×</button></div>' +
+    downloadProductOptions(product) + '</div>';
   return '<label class="download-product-row"><input type="checkbox" data-download-product="' + esc(product.product_key) + '"' +
     (state.downloads.selectedProducts.has(product.product_key) ? ' checked' : '') + '>' + description + '</label>';
 }
@@ -2402,21 +2452,123 @@ function renderDownloadSelection() {
   $('#dl-basket-count').textContent = String(selected.length);
   $('#dl-product-results').innerHTML = filtered.map(product => downloadProductRow(product)).join('') ||
     '<div class="download-picker-empty">' + (state.downloads.catalogLoading ? '正在读取产品目录…' : '没有匹配的产品') + '</div>';
+  const opened = new Set([...($('#dl-selected-products').querySelectorAll?.('details[open]') || [])].map(node => node.dataset.downloadOptions));
   $('#dl-selected-products').innerHTML = selected.map(product => downloadProductRow(product, true)).join('') ||
     '<div class="download-picker-empty">尚未选择产品</div>';
+  for (const editor of $('#dl-selected-products').querySelectorAll?.('details') || []) if (opened.has(editor.dataset.downloadOptions)) editor.open = true;
   const checked = filtered.filter(product => state.downloads.selectedProducts.has(product.product_key)).length;
   $('#dl-select-results').checked = filtered.length > 0 && checked === filtered.length;
   $('#dl-select-results').indeterminate = checked > 0 && checked < filtered.length;
   $('#dl-select-results').disabled = filtered.length === 0;
   $('#dl-clear-selection').disabled = selected.length === 0;
-  const band = $('#dl-band'), previous = band.value;
-  const bands = selected.length ? (selected[0].bands || []).filter(item =>
-    selected.every(product => (product.bands || []).some(other => other.number === item.number))) : [];
-  band.replaceChildren(new Option('全部波段', '0'));
-  for (const item of bands) band.add(new Option('C' + String(item.number).padStart(2, '0'), String(item.number)));
-  band.value = bands.some(item => String(item.number) === previous) ? previous : '0';
-  band.disabled = bands.length === 0;
   $('#dl-submit').disabled = state.downloads.submitting || selected.length === 0;
+}
+
+function commonDownloadSettings() {
+  return {start: $('#dl-start').value, end: $('#dl-end').value};
+}
+
+function downloadTimeProfile(product) {
+  return product.time_profile || {kind: 'observation', label: '观测区间'};
+}
+
+function downloadPeriodProduct(product) {
+  return ['daily', 'weekly', 'composite', 'dekadal', 'monthly', 'annual'].includes(downloadTimeProfile(product).kind);
+}
+
+function downloadNextDay(day) {
+  const at = new Date(day + 'T00:00:00Z');
+  if (!Number.isFinite(at.getTime())) return '';
+  at.setUTCDate(at.getUTCDate() + 1);
+  return at.toISOString().slice(0, 10);
+}
+
+function downloadSettings(product) {
+  const saved = state.downloads.productOptions[product.product_key] || {};
+  const profile = downloadTimeProfile(product), common = commonDownloadSettings();
+  const adapt = (day, end) => {
+    if (!day) return '';
+    if (profile.kind === 'monthly') return day.slice(0, 7);
+    if (profile.kind === 'annual') return day.slice(0, 4);
+    if (profile.kind === 'dekadal') return day.slice(0, 8) + (Number(day.slice(8)) <= 10 ? '01' : Number(day.slice(8)) <= 20 ? '11' : '21');
+    if (['observation', 'orbit'].includes(profile.kind)) return (end ? downloadNextDay(day) : day) + 'T00:00';
+    return day;
+  };
+  return {start: saved.customTime ? saved.start : adapt(common.start, false),
+    end: saved.customTime ? saved.end : adapt(common.end, true),
+    mode: saved.mode || 'all', custom: saved.custom || '', band: saved.band || 0, customTime: !!saved.customTime};
+}
+
+function downloadBandLabel(product, number) {
+  if (!number) return '全部波段';
+  const band = product.bands?.find(b => b.number === Number(number));
+  return ['C' + String(number).padStart(2, '0'), band?.wavelength, band?.resolution].filter(Boolean).join(' · ');
+}
+
+function downloadTimeModes(mode, product) {
+  const minutes = downloadTimeProfile(product).cadence_minutes;
+  const options = [['all', '全部扫描']];
+  if (minutes && 60 % minutes === 0) options.push(['hourly', '每小时整点'], ['synoptic', '00 / 06 / 12 / 18']);
+  options.push(['custom', '指定时次']);
+  return options
+    .map(([value, label]) => '<option value="' + value + '"' + (value === mode ? ' selected' : '') + '>' + label + '</option>').join('');
+}
+
+function downloadProductOptions(product) {
+  const settings = downloadSettings(product), common = !settings.customTime;
+  const profile = downloadTimeProfile(product), zone = downloadPeriodProduct(product) ? 'UTC' : downloadInputZone();
+  const disabled = common ? ' disabled' : '';
+  const summary = [profile.label, settings.start && settings.end ? downloadEntryPeriod({product, settings, zone}) : '待选日期',
+    profile.kind === 'scan' ? (settings.mode === 'custom' ? settings.custom || '指定时次' : ({all: '全部扫描', hourly: '每小时整点', synoptic: '00 / 06 / 12 / 18'})[settings.mode]) : '',
+    product.bands?.length ? downloadBandLabel(product, settings.band) : ''].filter(Boolean).join(' · ');
+  const type = ['observation', 'orbit'].includes(profile.kind) ? 'datetime-local' : profile.kind === 'monthly' ? 'month' : profile.kind === 'annual' ? 'number' : 'date';
+  const coverage = ['weekly', 'composite'].includes(profile.kind);
+  const startLabel = coverage ? '覆盖开始日期' : profile.kind === 'monthly' ? '开始月份' : profile.kind === 'annual' ? '开始年份' : type === 'datetime-local' ? '观测开始' : '开始日期';
+  const endLabel = coverage ? '覆盖结束日期' : profile.kind === 'monthly' ? '结束月份' : profile.kind === 'annual' ? '结束年份' : type === 'datetime-local' ? '观测结束（不含）' : '结束日期';
+  const dateField = (field, label) => {
+    if (['monthly','dekadal'].includes(profile.kind)) {
+      const dekad = profile.kind === 'dekadal';
+      const prefix = field === 'start' ? '开始' : '结束';
+      return '<label>' + prefix + (dekad ? '旬' : '月份') + '（UTC）<span class="download-period-fields">' +
+        '<input type="number" min="1900" max="9998" step="1" aria-label="' + prefix + '年份" data-option-field="' + field + '-year" value="' + esc(settings[field].slice(0, 4)) + '"' + disabled + '>' +
+        '<select aria-label="' + prefix + '月份" data-option-field="' + field + '-month"' + disabled + '>' +
+        '<option value="">月份</option>' + Array.from({length:12},(_,i) => { const value=String(i+1).padStart(2,'0'); return '<option value="' + value + '"' + (settings[field].slice(5,7) === value ? ' selected' : '') + '>' + (i+1) + ' 月</option>'; }).join('') + '</select>' +
+        (dekad ? '<select aria-label="' + prefix + '旬" data-option-field="' + field + '-dekad"' + disabled + '>' + [['01','上旬'],['11','中旬'],['21','下旬']].map(([value,name]) =>
+          '<option value="' + value + '"' + (settings[field].slice(8) === value ? ' selected' : '') + '>' + name + '</option>').join('') + '</select>' : '') + '</span></label>';
+    }
+    return '<label>' + label + '（' + zone + '）<input type="' + type + '" data-option-field="' + field + '" value="' + esc(settings[field]) + '"' +
+      (type === 'number' ? ' min="1900" max="9998" step="1"' : '') + disabled + '></label>';
+  };
+  return '<details class="download-product-options" data-download-options="' + esc(product.product_key) + '">' +
+    '<summary><span>时间与波段</span><span>' + esc(summary) + '</span></summary><div class="download-option-fields">' +
+    '<label class="download-option-inherit"><input type="checkbox" data-option-field="inherit"' + (common ? ' checked' : '') + '>使用统一日期</label>' +
+    dateField('start', startLabel) + dateField('end', endLabel) +
+    (profile.kind === 'scan' ? '<label>时次（' + zone + '）<select data-option-field="mode">' + downloadTimeModes(settings.mode, product) + '</select></label>' +
+      (settings.mode === 'custom' ? '<label>指定时次（' + zone + '）<input data-option-field="custom" value="' + esc(settings.custom) + '" placeholder="00:00, 12:00"></label>' : '') : '') +
+    (product.bands?.length ? '<label>波段<select data-option-field="band"><option value="0"' + (!settings.band ? ' selected' : '') + '>全部波段</option>' +
+      product.bands.map(band => '<option value="' + band.number + '"' + (band.number === settings.band ? ' selected' : '') + '>' +
+        esc(downloadBandLabel(product, band.number)) + '</option>').join('') + '</select></label>' : '') + '</div></details>';
+}
+
+function changeDownloadProductOption(key, field, value, checked) {
+  const product = state.downloads.catalog.find(product => product.product_key === key);
+  if (!product || !state.downloads.selectedProducts.has(key)) return;
+  const current = downloadSettings(product);
+  let settings = {...(state.downloads.productOptions[key] || {})};
+  if (field === 'inherit') settings = {...current, customTime: !checked};
+  else if (field === 'band') {
+    const number = Number(value);
+    if (number && !product.bands?.some(band => band.number === number)) return;
+    settings.band = number;
+  } else if (/^(start|end)-(year|month|dekad)$/.test(field)) {
+    const [part, unit] = field.split('-');
+    const values = [current[part]?.slice(0,4) || '', current[part]?.slice(5,7) || '', current[part]?.slice(8) || '01'];
+    values[unit === 'year' ? 0 : unit === 'month' ? 1 : 2] = value;
+    settings = {...current, customTime: true, [part]: values.slice(0,downloadTimeProfile(product).kind === 'dekadal' ? 3 : 2).join('-')};
+  } else if (['start', 'end'].includes(field)) settings = {...current, customTime: true, [field]: value};
+  else if (['mode', 'custom'].includes(field)) settings = {...current, [field]: value};
+  state.downloads.productOptions[key] = settings;
+  renderDownloadSelection();
 }
 
 function selectDownloadProduct(key, selected) {
@@ -2425,7 +2577,7 @@ function selectDownloadProduct(key, selected) {
   if (selected && !products.has(key) && products.size >= 32) {
     $('#dl-submit-status').textContent = '每个任务最多选择 32 个产品';
   } else {
-    if (selected) products.add(key); else products.delete(key);
+    if (selected) products.add(key); else { products.delete(key); delete state.downloads.productOptions[key]; }
     $('#dl-submit-status').textContent = '';
   }
   renderDownloadSelection();
@@ -2441,6 +2593,7 @@ function selectDownloadResults(selected) {
     $('#dl-submit-status').textContent = '每个任务最多选择 32 个产品，请缩小筛选范围';
   } else {
     state.downloads.selectedProducts = keys;
+    for (const key of Object.keys(state.downloads.productOptions)) if (!keys.has(key)) delete state.downloads.productOptions[key];
     $('#dl-submit-status').textContent = '';
   }
   renderDownloadSelection();
@@ -2479,26 +2632,69 @@ function downloadInputZone() {
   return selectedDownloadProducts().some(product => product.source_id === 'era5') ? 'UTC' : state.downloads.displayZone;
 }
 
-function downloadTimes() {
-  const mode = $('#dl-time-mode').value;
+function downloadTimes(settings = {mode: 'all'}, zone = downloadInputZone()) {
+  const mode = settings.mode;
   if (mode === 'all') return [];
   const times = mode === 'hourly' ? Array.from({length: 24}, (_, hour) => `${String(hour).padStart(2, '0')}:00`)
     : mode === 'synoptic' ? ['00:00', '06:00', '12:00', '18:00']
-    : $('#dl-custom').value.split(/[\s,，;；]+/).filter(Boolean);
+    : settings.custom.split(/[\s,，;；]+/).filter(Boolean);
   if (!times.length || times.some(value => !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value))) throw new Error('自定义时次须为 HH:MM，至少填一个');
   return [...new Set(times.map(value => {
-    if (downloadInputZone() !== 'BJT') return value;
+    if (zone !== 'BJT') return value;
     const hour = (Number(value.slice(0, 2)) + 16) % 24;
     return String(hour).padStart(2, '0') + value.slice(2);
   }))].sort();
 }
 
-function downloadRange(start, end) {
+function downloadProductInterval(product, settings, zone = downloadInputZone()) {
+  const profile = downloadTimeProfile(product), kind = profile.kind;
+  let start = settings.start, end = settings.end;
+  if (kind === 'monthly') {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(start) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(end)) throw new Error('请选择开始和结束月份');
+    const until = new Date(end + '-01T00:00:00Z'); until.setUTCMonth(until.getUTCMonth() + 1);
+    start += '-01'; end = until.toISOString().slice(0, 10);
+  } else if (kind === 'annual') {
+    if (![start, end].every(value => /^\d{4}$/.test(value) && Number(value) >= 1900 && Number(value) <= 9998)) throw new Error('请选择有效年份');
+    start += '-01-01'; end = String(Number(end) + 1) + '-01-01';
+  } else if (kind === 'dekadal') {
+    if (![start, end].every(value => /^\d{4}-(0[1-9]|1[0-2])-(01|11|21)$/.test(value))) throw new Error('请选择开始和结束旬');
+    const until = new Date(end + 'T00:00:00Z');
+    if (until.getUTCDate() === 21) { until.setUTCDate(1); until.setUTCMonth(until.getUTCMonth() + 1); }
+    else until.setUTCDate(until.getUTCDate() + 10);
+    end = until.toISOString().slice(0, 10);
+  } else if (['observation', 'orbit'].includes(kind)) {
+    const parse = value => {
+      if (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error('请选择完整的观测起止时间');
+      downloadRange(value.slice(0, 10), value.slice(0, 10), 'UTC');
+      return new Date(value + ':00' + (zone === 'BJT' ? '+08:00' : 'Z')).toISOString();
+    };
+    const range = {start: parse(start), end: parse(end)};
+    if (range.end <= range.start) throw new Error('观测结束时间必须晚于开始时间');
+    return {...range, zone, times: []};
+  } else {
+    const range = downloadRange(start, end, downloadPeriodProduct(product) ? 'UTC' : zone);
+    const times = kind === 'scan' ? downloadTimes(settings, zone) : [];
+    if (profile.cadence_minutes && times.some(value => (Number(value.slice(0, 2)) * 60 + Number(value.slice(3))) % profile.cadence_minutes !== 0)) {
+      throw new Error('请选择 ' + profile.cadence_minutes + ' 分钟扫描间隔对应的时次');
+    }
+    return {...range, zone: downloadPeriodProduct(product) ? 'UTC' : zone, times};
+  }
+  if (end <= start) throw new Error('结束周期不能早于开始周期');
+  return {start: start + 'T00:00:00.000Z', end: end + 'T00:00:00.000Z', zone: 'UTC', times: []};
+}
+
+function downloadEntryPeriod(entry) {
+  const {product, settings, zone} = entry;
+  const format = value => downloadTimeProfile(product).kind === 'dekadal' ? value.slice(0, 7) + ' ' + ({'01':'上旬','11':'中旬','21':'下旬'})[value.slice(8)] : value.replace('T', ' ');
+  return format(settings.start) + ' 至 ' + format(settings.end) + ' · ' + zone;
+}
+
+function downloadRange(start, end, zone = downloadInputZone()) {
   const validDay = day => /^\d{4}-\d{2}-\d{2}$/.test(day) &&
     Number.isFinite(Date.parse(day + 'T00:00:00Z')) && new Date(day + 'T00:00:00Z').toISOString().slice(0, 10) === day;
   if (!validDay(start) || !validDay(end)) throw new Error('请选择有效的开始和结束日期');
   if (end < start) throw new Error('结束日期不能早于开始日期');
-  const offset = downloadInputZone() === 'BJT' ? '+08:00' : 'Z';
+  const offset = zone === 'BJT' ? '+08:00' : 'Z';
   const nextDay = new Date(end + 'T00:00:00' + offset);
   nextDay.setUTCDate(nextDay.getUTCDate() + 1);
   return {start: new Date(start + 'T00:00:00' + offset).toISOString(), end: nextDay.toISOString()};
@@ -2511,8 +2707,6 @@ function syncDownloadTimezones() {
   $('#download-monitor-timezone').value = state.downloads.history.displayZone;
   $('#dl-start-label').textContent = `开始日期（${zone}）`;
   $('#dl-end-label').textContent = `结束日期（${zone}，含当天）`;
-  $('#dl-time-label').textContent = `时次（${zone}）`;
-  $('#dl-custom-label').textContent = `自定义时次（${zone}，HH:MM）`;
 }
 
 function setDownloadTimezone(zone) {
@@ -2520,6 +2714,7 @@ function setDownloadTimezone(zone) {
   state.downloads.displayZone = zone;
   localStorage.setItem('satellite-data-download-zone', zone);
   syncDownloadTimezones();
+  renderDownloadSelection();
   renderDownloadTasks(state.downloads.tasks);
 }
 
@@ -2540,11 +2735,18 @@ async function submitDownload(event) {
     const products = selectedDownloadProducts();
     if (!products.length) throw new Error('请选择至少一个产品');
     if (products.length > 32) throw new Error('每个任务最多选择 32 个产品');
-    const payload = {products: products.map(product => product.product_key),
-      ...downloadRange($('#dl-start').value, $('#dl-end').value),
-      band: Number($('#dl-band').value) || 0, times: downloadTimes()};
-    state.downloads.confirmation = JSON.parse(JSON.stringify({payload, products,
-      zone: downloadInputZone(), start: $('#dl-start').value, end: $('#dl-end').value}));
+    const zone = downloadInputZone();
+    const entries = products.map(product => {
+      const settings = downloadSettings(product);
+      try {
+        if (settings.band && !product.bands?.some(band => band.number === settings.band)) throw new Error('波段不可用');
+        return {product, settings, ...downloadProductInterval(product, settings, zone), band: settings.band};
+      } catch (error) { throw new Error([product.satellite, product.data_type].filter(Boolean).join(' · ') + '：' + error.message); }
+    });
+    const payload = {products: entries.map(entry => entry.product.product_key),
+      start: entries.map(entry => entry.start).sort()[0], end: entries.map(entry => entry.end).sort().at(-1),
+      options: Object.fromEntries(entries.map(({product, start, end, band, times}) => [product.product_key, {start, end, band, times}]))};
+    state.downloads.confirmation = JSON.parse(JSON.stringify({payload, products, entries, zone}));
     $('#dl-confirm-summary').innerHTML = downloadSubmissionSummary(state.downloads.confirmation);
     $('#dl-confirm-error').textContent = '';
     status.textContent = '';
@@ -2553,15 +2755,15 @@ async function submitDownload(event) {
 }
 
 function downloadSubmissionSummary(snapshot) {
-  const {payload, products, zone} = snapshot;
+  const {products, entries} = snapshot;
   const satellites = [...new Set(products.map(product => product.satellite || product.source_id))].join('、');
   return '<dl class="download-task-summary"><div><dt>卫星</dt><dd>' + esc(satellites) + '</dd></div>' +
-    '<div><dt>日期</dt><dd>' + esc(snapshot.start + ' 至 ' + snapshot.end + ' · ' + zone) + '</dd></div>' +
-    '<div><dt>时次</dt><dd>' + esc(downloadQueueTimeSelection({selection: {times: payload.times}}, zone)) + '</dd></div>' +
-    '<div><dt>波段</dt><dd>' + esc(payload.band ? 'C' + String(payload.band).padStart(2, '0') : '全部波段') + '</dd></div></dl>' +
+    '<div><dt>时间基准</dt><dd>' + esc([...new Set(entries.map(entry => entry.zone))].join(' / ')) + '</dd></div></dl>' +
     '<h3>产品清单 · ' + products.length + ' 个</h3><ul class="download-confirm-products">' +
-    products.map(product => '<li><strong>' + esc([product.satellite, product.data_type].filter(Boolean).join(' · ')) +
-      '</strong><span>' + esc(downloadProductName(product)) + '</span></li>').join('') + '</ul>';
+    entries.map(entry => { const {product, band, times} = entry; return '<li><strong>' + esc([product.satellite, product.data_type, '版本 ' + downloadVersionLabel(product)].filter(Boolean).join(' · ')) +
+      '</strong><span>' + esc(downloadProductName(product)) + '</span><span>' + esc(downloadEntryPeriod(entry)) + '</span>' +
+      '<span>' + esc(downloadQueueTimeSelection({selection: {times}, time_profile: downloadTimeProfile(product)}, entry.zone)) +
+      (product.bands?.length ? ' · ' + esc(downloadBandLabel(product, band)) : '') + '</span></li>'; }).join('') + '</ul>';
 }
 
 function closeDownloadConfirmation() {
@@ -2643,7 +2845,8 @@ function downloadQueueTimeSelection(item, zone = state.downloads.displayZone) {
     if (times.length === 24 && times.every(time => time.endsWith(':00'))) return '每小时整点 · ' + zone;
     return times.join(' / ') + ' · ' + zone;
   }
-  return '全部时次';
+  const profile = item.time_profile;
+  return profile?.kind === 'scan' ? '全部扫描' : profile?.kind === 'orbit' ? '整轨文件' : profile?.label || '全部观测';
 }
 
 function downloadQueueCard(key, stage, title, overview, content, expanded) {
@@ -2672,9 +2875,10 @@ function bindDownloadQueue(holder, expandedIDs) {
 }
 
 function downloadTaskPeriod(task) {
-  const item = task.downloads?.[0];
-  if (!item) return '—';
-  return downloadTimestamp(item.start, state.downloads.displayZone) + ' → ' + downloadTimestamp(item.end, state.downloads.displayZone);
+  const items = task.downloads || [];
+  if (!items.length) return '—';
+  const start = items.map(item => item.start).sort()[0], end = items.map(item => item.end).sort().at(-1);
+  return downloadTimestamp(start, state.downloads.displayZone) + ' → ' + downloadTimestamp(end, state.downloads.displayZone);
 }
 
 function downloadTaskDetails(task) {
@@ -2683,13 +2887,15 @@ function downloadTaskDetails(task) {
     '<div><dt>文件</dt><dd>' + esc(downloadQueueCounts(task)) + '</dd></div></dl>' +
     '<div class="download-queue-children">' + (task.downloads || []).map(item => {
       const stage = downloadQueueStage(item.state);
-      const name = [item.satellite, item.product_code].filter(Boolean).join(' · ') || downloadProductName(item);
+      const name = [item.satellite, item.product_code, item.version ? '版本 ' + item.version : ''].filter(Boolean).join(' · ') || downloadProductName(item);
+      const zone = ['daily','weekly','composite','dekadal','monthly','annual'].includes(item.time_profile?.kind) ? 'UTC' : state.downloads.displayZone;
       const scenes = Object.entries(item.selection?.scenes || {}).map(([day, times]) =>
         times.map(time => downloadTimestamp(day + 'T' + time + ':00Z', state.downloads.displayZone)).join(' / ')).join('；');
       return '<div class="download-queue-child"><div class="download-task-product"><strong>' + esc(name) + '</strong>' +
         (item.product_name && item.product_name !== name ? '<span>' + esc(item.product_name) + '</span>' : '') +
-        '<span>时次：' + esc(scenes || downloadQueueTimeSelection(item)) +
-        ' · ' + esc(item.selection?.band ? 'C' + String(item.selection.band).padStart(2, '0') : '全部波段') + '</span></div>' +
+        '<span>' + esc(downloadTimestamp(item.start, zone) + ' → ' + downloadTimestamp(item.end, zone)) + '</span>' +
+        '<span>' + esc(scenes || downloadQueueTimeSelection(item, zone)) +
+        (item.selection?.band ? ' · C' + esc(String(item.selection.band).padStart(2, '0')) : '') + '</span></div>' +
         '<span class="download-queue-stage ' + esc(stage[1]) + '">' + esc(stage[0]) + '</span>' +
         '<span class="download-queue-child-count">' + esc(downloadQueueCounts(item)) + '</span>' +
         (item.last_error ? '<div class="download-queue-error">' + esc(item.last_error) + '</div>' : '') + '</div>';
@@ -3580,10 +3786,18 @@ function bind() {
     refreshDownloadFilters();
   });
   $('#dl-filters').addEventListener('click', event => {
+    const summary = event.target.closest('.download-filter>summary');
+    if (summary) closeDownloadFilters(summary.parentElement);
     const button = event.target.closest('[data-download-filter-clear]');
     if (!button) return;
     state.downloads.filters[button.dataset.downloadFilterClear] = new Set();
     refreshDownloadFilters();
+  });
+  window.addEventListener('click', event => {
+    if (!event.target.closest('.download-filter')) closeDownloadFilters();
+  });
+  window.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeDownloadFilters();
   });
   $('#dl-search').addEventListener('input', renderDownloadSelection);
   $('#dl-reset-filters').addEventListener('click', () => {
@@ -3599,12 +3813,18 @@ function bind() {
     const button = event.target.closest('[data-download-remove]');
     if (button) selectDownloadProduct(button.dataset.downloadRemove, false);
   });
+  $('#dl-selected-products').addEventListener('change', event => {
+    const field = event.target.dataset.optionField;
+    const editor = event.target.closest('[data-download-options]');
+    if (field && editor) changeDownloadProductOption(editor.dataset.downloadOptions, field, event.target.value, event.target.checked);
+  });
   $('#dl-select-results').addEventListener('change', event => selectDownloadResults(event.target.checked));
   $('#dl-clear-selection').addEventListener('click', () => {
     state.downloads.selectedProducts.clear();
+    state.downloads.productOptions = {};
     renderDownloadSelection();
   });
-  $('#dl-time-mode').addEventListener('change', () => $('#dl-custom-field').classList.toggle('hidden', $('#dl-time-mode').value !== 'custom'));
+  for (const id of ['dl-start','dl-end']) $('#' + id).addEventListener('change', renderDownloadSelection);
   $('#download-submit-form').addEventListener('submit', submitDownload);
   $('#dl-confirm-submit').addEventListener('click', confirmDownloadSubmission);
   $('#dl-confirm-cancel').addEventListener('click', closeDownloadConfirmation);

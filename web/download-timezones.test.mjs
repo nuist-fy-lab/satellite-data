@@ -34,7 +34,8 @@ function harness(saved = {}) {
       const body = options.body ? JSON.parse(options.body) : {};
       return {ok: true, json: async () => ({created:true, task: {id:7, products:body.products?.length || 0,
         created_at:'2026-10-30T00:00:00Z', downloads:(body.products || []).map(collection_id =>
-          ({collection_id, start:body.start, end:body.end, selection:{times:body.times, band:body.band}, state:'pending'}))}})};
+          ({collection_id, start:body.options?.[collection_id]?.start || body.start, end:body.options?.[collection_id]?.end || body.end,
+            selection:body.options?.[collection_id] || {times:body.times, band:body.band}, state:'pending'}))}})};
     },
     setTimeout, clearTimeout, console,
   });
@@ -72,7 +73,7 @@ test('task control updates the form and cached request list immediately without 
   h.element('#download-timezone').listeners.change({target: {value: 'BJT'}});
   assert.match(h.element('#download-tasks').innerHTML, /2027-01-01 04:00 BJT/);
   assert.match(h.element('#download-tasks').innerHTML, /2027-01-01 10:00 BJT/);
-  assert.equal(h.element('#dl-time-label').textContent, '时次（BJT）');
+  assert.equal(h.element('#dl-start-label').textContent, '开始日期（BJT）');
   assert.equal(h.storage.get('satellite-data-download-zone'), 'BJT');
   assert.equal(h.run('state.downloads.history.displayZone'), 'BJT');
   h.element('#download-timezone').listeners.change({target: {value: 'UTC'}});
@@ -187,10 +188,8 @@ test('UTC inclusive end date remains a half-open UTC range', () => {
 test('BJT dates and custom times submit corresponding UTC values including previous-day hours', async () => {
   const h = harness();
   h.context.setDownloadTimezone('BJT');
-  h.run("state.downloads.catalog = [{product_key: 'earthcare:ACM_CAP_2B', source_id: 'earthcare'}]");
-  h.run("state.downloads.selectedProducts.add('earthcare:ACM_CAP_2B')");
-  for (const [key, value] of Object.entries({source: 'earthcare', product: 'earthcare:ACM_CAP_2B',
-    start: '2027-01-01', end: '2027-01-01', 'time-mode': 'custom', custom: '00:30, 08:00, 23:00, 00:30'})) {
+  h.run("state.downloads.catalog = [{product_key:'goes18:rad',source_id:'goes18',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10}}];state.downloads.selectedProducts.add('goes18:rad');state.downloads.productOptions['goes18:rad']={mode:'custom',custom:'00:30, 08:00, 23:00, 00:30'}");
+  for (const [key, value] of Object.entries({start: '2027-01-01', end: '2027-01-01'})) {
     h.element('#dl-' + key).value = value;
   }
   await h.context.submitDownload({preventDefault() {}});
@@ -200,9 +199,9 @@ test('BJT dates and custom times submit corresponding UTC values including previ
   await h.context.confirmDownloadSubmission();
   assert.equal(h.requests.length, 1);
   assert.deepEqual(JSON.parse(h.requests[0].body), {
-    products: ['earthcare:ACM_CAP_2B'],
+    products: ['goes18:rad'],
     start: '2026-12-31T16:00:00.000Z', end: '2027-01-01T16:00:00.000Z',
-    band: 0, times: ['00:00', '15:00', '16:30'],
+    options: {'goes18:rad': {start:'2026-12-31T16:00:00.000Z',end:'2027-01-01T16:00:00.000Z',band:0,times:['00:00','15:00','16:30']}},
   });
   assert.equal(h.requests[0].url, '/api/v1/download-tasks');
   assert.equal(h.element('#dl-submit-status').textContent, '下载任务 #7 已提交');
@@ -212,12 +211,9 @@ test('BJT dates and custom times submit corresponding UTC values including previ
 test('synoptic and hourly time modes also respect BJT while all-times remains unfiltered', () => {
   const h = harness();
   h.context.setDownloadTimezone('BJT');
-  h.element('#dl-time-mode').value = 'synoptic';
-  assert.deepEqual([...h.context.downloadTimes()], ['04:00', '10:00', '16:00', '22:00']);
-  h.element('#dl-time-mode').value = 'hourly';
-  assert.deepEqual([...h.context.downloadTimes()], Array.from({length: 24}, (_, hour) => String(hour).padStart(2, '0') + ':00'));
-  h.element('#dl-time-mode').value = 'all';
-  assert.deepEqual([...h.context.downloadTimes()], []);
+  assert.deepEqual([...h.context.downloadTimes({mode:'synoptic'})], ['04:00', '10:00', '16:00', '22:00']);
+  assert.deepEqual([...h.context.downloadTimes({mode:'hourly'})], Array.from({length: 24}, (_, hour) => String(hour).padStart(2, '0') + ':00'));
+  assert.deepEqual([...h.context.downloadTimes({mode:'all'})], []);
 });
 
 test('CDS input dates remain explicitly UTC without restricting BJT list display', () => {
@@ -227,8 +223,7 @@ test('CDS input dates remain explicitly UTC without restricting BJT list display
   assert.equal(h.element('#download-timezone').value, 'BJT');
   assert.equal(h.element('#dl-start-label').textContent, '开始日期（UTC）');
   assert.equal(h.context.downloadRange('2026-10-06', '2026-10-06').start, '2026-10-06T00:00:00.000Z');
-  h.element('#dl-time-mode').value = 'synoptic';
-  assert.deepEqual([...h.context.downloadTimes()], ['00:00', '06:00', '12:00', '18:00']);
+  assert.deepEqual([...h.context.downloadTimes({mode:'synoptic'})], ['00:00', '06:00', '12:00', '18:00']);
 });
 
 test('invalid dates, inverted ranges and invalid times cannot enqueue a request', async () => {
@@ -236,16 +231,14 @@ test('invalid dates, inverted ranges and invalid times cannot enqueue a request'
   for (const [start, end] of [['', '2026-10-06'], ['2026-02-30', '2026-03-01'], ['2026-10-07', '2026-10-06']]) {
     assert.throws(() => h.context.downloadRange(start, end));
   }
-  h.element('#dl-time-mode').value = 'custom';
   for (const times of ['', '24:00', '12:99']) {
-    h.element('#dl-custom').value = times;
-    assert.throws(() => h.context.downloadTimes());
+    assert.throws(() => h.context.downloadTimes({mode:'custom',custom:times}));
   }
   h.run("state.downloads.catalog = [{product_key: 'cloudsat:2B-GEOPROF', source_id: 'cloudsat'}]");
   h.run("state.downloads.selectedProducts.add('cloudsat:2B-GEOPROF')");
   await h.context.submitDownload({preventDefault() {}});
   assert.equal(h.requests.length, 0);
-  assert.match(h.element('#dl-submit-status').textContent, /日期/);
+  assert.match(h.element('#dl-submit-status').textContent, /观测起止时间/);
 });
 
 test('cascading multi-satellite filters retain the selected basket across searches', () => {
@@ -262,7 +255,8 @@ test('cascading multi-satellite filters retain the selected basket across search
   assert.doesNotMatch(h.element('#dl-product-results').innerHTML, /GOES-18/);
   h.context.selectDownloadResults(true);
   assert.equal(h.run('state.downloads.selectedProducts.size'), 3);
-  assert.equal(h.element('#dl-band').disabled, true);
+  assert.match(h.element('#dl-selected-products').innerHTML, /data-option-field="band"/);
+  assert.doesNotMatch(html, /id="dl-band"/);
   h.element('#dl-search').value = 'MYD06';
   h.context.renderDownloadSelection();
   assert.equal(h.element('#dl-filtered-count').textContent, '1');
@@ -296,7 +290,8 @@ test('joint products remain selectable from either real satellite', () => {
 test('confirmation can be cancelled and submits the reviewed snapshot exactly once', async () => {
   const h = harness();
   h.run("state.downloads.catalog=[{product_key:'modis:a',source_id:'modis',satellite:'Aqua',data_type:'MYD06_L2'},{product_key:'goes18:b',source_id:'goes18',satellite:'GOES-18',data_type:'ABI-L1b-RadF'}];state.downloads.selectedProducts=new Set(['modis:a','goes18:b'])");
-  for (const [id,value] of Object.entries({start:'2026-01-01',end:'2026-01-02','time-mode':'synoptic',band:'0'})) h.element('#dl-'+id).value=value;
+  h.run("state.downloads.catalog[1].time_profile={kind:'scan',label:'静止卫星时次',cadence_minutes:10};state.downloads.productOptions['goes18:b']={mode:'synoptic'}");
+  for (const [id,value] of Object.entries({start:'2026-01-01',end:'2026-01-02'})) h.element('#dl-'+id).value=value;
   await h.context.submitDownload({preventDefault(){}});
   assert.equal(h.requests.length,0);
   assert.match(h.element('#dl-confirm-summary').innerHTML,/Aqua、GOES-18/);
@@ -334,6 +329,96 @@ test('failed submission retains the reviewed selection for an explicit retry', a
   assert.equal(h.run('state.downloads.selectedProducts.size'),1);
   assert.equal(h.run('state.downloads.confirmation.payload.products[0]'),'modis:a');
   assert.equal(h.element('#dl-confirm-submit').disabled,false);
+});
+
+test('mixed temporal products submit independent observation windows and UTC calendar periods', async () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=[
+    {product_key:'goes18:scan',source_id:'goes18',satellite:'GOES-18',version:'1',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10},bands:[{number:2,wavelength:'0.64 µm',resolution:'0.5 km'}]},
+    {product_key:'modis:swath',source_id:'modis',time_profile:{kind:'observation',label:'观测区间'}},
+    ...['daily','weekly','composite','dekadal','monthly','annual'].map(kind=>({product_key:'modis:'+kind,source_id:'modis',time_profile:{kind,label:kind}}))
+  ];state.downloads.selectedProducts=new Set(state.downloads.catalog.map(p=>p.product_key));
+  state.downloads.productOptions['goes18:scan']={mode:'custom',custom:'00:10',band:2};
+  state.downloads.productOptions['modis:swath']={customTime:true,start:'2024-02-29T08:30',end:'2024-02-29T09:15'};`);
+  h.element('#dl-start').value='2024-02-29';h.element('#dl-end').value='2024-02-29';
+  h.context.setDownloadTimezone('BJT');
+  await h.context.submitDownload({preventDefault(){}});
+  assert.equal(h.element('#download-confirm').open,true);
+  const opts=h.run('JSON.parse(JSON.stringify(state.downloads.confirmation.payload.options))');
+  assert.equal(opts['goes18:scan'].start,'2024-02-28T16:00:00.000Z');
+  assert.deepEqual([...opts['goes18:scan'].times],['16:10']);
+  assert.equal(opts['goes18:scan'].band,2);
+  assert.equal(opts['modis:swath'].start,'2024-02-29T00:30:00.000Z');
+  assert.equal(opts['modis:swath'].end,'2024-02-29T01:15:00.000Z');
+  for(const kind of ['daily','weekly','composite']) {
+    assert.equal(opts['modis:'+kind].start,'2024-02-29T00:00:00.000Z');
+    assert.equal(opts['modis:'+kind].end,'2024-03-01T00:00:00.000Z');
+    assert.equal(opts['modis:'+kind].times.length,0);
+  }
+  assert.equal(opts['modis:dekadal'].start,'2024-02-21T00:00:00.000Z');
+  assert.equal(opts['modis:dekadal'].end,'2024-03-01T00:00:00.000Z');
+  assert.equal(opts['modis:monthly'].start,'2024-02-01T00:00:00.000Z');
+  assert.equal(opts['modis:monthly'].end,'2024-03-01T00:00:00.000Z');
+  assert.equal(opts['modis:annual'].start,'2024-01-01T00:00:00.000Z');
+  assert.equal(opts['modis:annual'].end,'2025-01-01T00:00:00.000Z');
+  assert.match(h.element('#dl-confirm-summary').innerHTML,/2024-02 下旬 至 2024-02 下旬 · UTC/);
+  assert.match(h.element('#dl-confirm-summary').innerHTML,/C02 · 0.64 µm · 0.5 km/);
+  assert.match(h.element('#dl-confirm-summary').innerHTML,/2024-02-29 08:30 至 2024-02-29 09:15 · BJT/);
+  assert.equal(h.requests.length,0);
+});
+
+test('each product exposes only applicable controls and independent band definitions', () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=[
+    {product_key:'goes18:a',source_id:'goes18',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10},bands:[{number:2,wavelength:'0.64 µm',resolution:'0.5 km'}]},
+    {product_key:'himawari9:b',source_id:'himawari9',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10},bands:[{number:2,wavelength:'0.51 µm',resolution:'1 km'}]},
+    ...['observation','orbit','daily','weekly','dekadal','monthly'].map(kind=>({product_key:'modis:'+kind,source_id:'modis',time_profile:{kind,label:kind}}))
+  ];state.downloads.selectedProducts=new Set(state.downloads.catalog.map(p=>p.product_key));`);
+  h.element('#dl-start').value='2026-01-01';h.element('#dl-end').value='2026-01-02';
+  h.context.changeDownloadProductOption('goes18:a','band','2');
+  h.context.changeDownloadProductOption('goes18:a','mode','custom');
+  h.context.changeDownloadProductOption('goes18:a','custom','00:10');
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[1]).band"),0);
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[1]).mode"),'all');
+  h.context.changeDownloadProductOption('goes18:a','inherit','',false);
+  h.context.changeDownloadProductOption('goes18:a','start','2025-12-31');
+  h.context.changeDownloadProductOption('goes18:a','inherit','',true);
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[0]).start"),'2026-01-01');
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[0]).band"),2);
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[0]).mode"),'custom');
+  assert.equal(h.run("downloadBandLabel(state.downloads.catalog[0],2)"),'C02 · 0.64 µm · 0.5 km');
+  assert.equal(h.run("downloadBandLabel(state.downloads.catalog[1],2)"),'C02 · 0.51 µm · 1 km');
+  const render=kind=>h.run(`downloadProductOptions(state.downloads.catalog.find(p=>p.time_profile.kind==='${kind}'))`);
+  assert.match(render('scan'),/data-option-field="mode"/);
+  for(const kind of ['observation','orbit','daily','weekly','dekadal','monthly']) assert.doesNotMatch(render(kind),/data-option-field="mode"|data-option-field="band"/);
+  assert.match(render('observation'),/type="datetime-local"/);
+  assert.match(render('monthly'),/data-option-field="start-year"/);
+  assert.match(render('monthly'),/data-option-field="start-month"/);
+  assert.match(render('dekadal'),/上旬[\s\S]*中旬[\s\S]*下旬/);
+  assert.match(render('weekly'),/覆盖开始日期/);
+  assert.throws(()=>h.run("downloadProductInterval(state.downloads.catalog[0],{start:'2026-01-01',end:'2026-01-02',mode:'custom',custom:'00:05'},'UTC')"),/扫描间隔/);
+});
+
+test('source families, satellite versions, resolution units and inapplicable metadata stay distinct', () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=[
+    {product_key:'goes16:a',source_id:'goes16',satellite:'GOES-16',data_type:'ABI',version:'1',resolution:'1000m'},
+    {product_key:'goes18:a',source_id:'goes18',satellite:'GOES-18',data_type:'ABI',version:'2',resolution:'1km'},
+    {product_key:'himawari8:a',source_id:'himawari8',satellite:'Himawari-8',version:'1'},
+    {product_key:'himawari9:a',source_id:'himawari9',satellite:'Himawari-9',version:'2'}];
+    state.downloads.filters.source=new Set(['goes']);`);
+  h.context.refreshDownloadFilters();
+  assert.equal(h.context.filteredDownloadProducts().length,2);
+  assert.doesNotMatch(h.element('#dl-filters').innerHTML,/value="goes18"|value="goes16"/);
+  h.run("state.downloads.filters.version=new Set(['2'])");
+  h.context.refreshDownloadFilters();
+  assert.deepEqual([...h.context.filteredDownloadProducts()].map(p=>p.product_key),['goes18:a']);
+  const resolutions=value=>[...h.context.downloadResolutions({resolution:value})];
+  assert.deepEqual(resolutions('1000m'),resolutions('1 km'));
+  assert.deepEqual(resolutions('0.5 / 1 / 2 km'),['0.5 km','1 km','2 km']);
+  assert.deepEqual(resolutions('1/5km'),['1 km','5 km']);
+  assert.deepEqual(resolutions('2 arcsec/pixel'),['2 arcsec/pixel']);
+  assert.deepEqual([...h.context.downloadFilterValues('level',{level:'ORBIT'},p=>p.level)],['__not_applicable']);
 });
 
 test('year grid uses all available width with proportional square-cell spacing including 54-week leap years', () => {
