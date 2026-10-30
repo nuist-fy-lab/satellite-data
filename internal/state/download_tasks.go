@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
@@ -12,7 +13,7 @@ const DownloadTaskPageSize = 30
 // Task summaries need catalogue labels, without aggregating the archive's
 // potentially millions of local slots on every progress refresh.
 func (s *Store) DownloadTaskProducts(ctx context.Context) ([]model.Product, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT product_key,source_id,satellite,instrument,data_type,display_name FROM products ORDER BY product_key`)
+	rows, err := s.db.QueryContext(ctx, `SELECT product_key,source_id,satellite,instrument,data_type,display_name,level,area_type,resolution,version,cadence,metadata_json FROM products ORDER BY product_key`)
 	if err != nil {
 		return nil, err
 	}
@@ -20,7 +21,11 @@ func (s *Store) DownloadTaskProducts(ctx context.Context) ([]model.Product, erro
 	items := make([]model.Product, 0)
 	for rows.Next() {
 		var p model.Product
-		if err := rows.Scan(&p.ProductKey, &p.SourceID, &p.Satellite, &p.Instrument, &p.DataType, &p.DisplayName); err != nil {
+		var metadata string
+		if err := rows.Scan(&p.ProductKey, &p.SourceID, &p.Satellite, &p.Instrument, &p.DataType, &p.DisplayName, &p.Level, &p.AreaType, &p.Resolution, &p.Version, &p.Cadence, &metadata); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(metadata), &p.Metadata); err != nil {
 			return nil, err
 		}
 		items = append(items, p)

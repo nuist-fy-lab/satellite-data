@@ -7,16 +7,20 @@ import (
 	"strconv"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/producttime"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
 
 type downloadTaskProduct struct {
 	state.DownloadRequest
-	Satellite   string `json:"satellite"`
-	Instrument  string `json:"instrument"`
-	ProductCode string `json:"product_code"`
-	ProductName string `json:"product_name"`
+	Satellite   string              `json:"satellite"`
+	Instrument  string              `json:"instrument"`
+	ProductCode string              `json:"product_code"`
+	ProductName string              `json:"product_name"`
+	Version     string              `json:"version"`
+	Resolution  string              `json:"resolution"`
+	TimeProfile producttime.Profile `json:"time_profile"`
 }
 
 type downloadTaskView struct {
@@ -39,7 +43,8 @@ func (s *Server) downloadTaskViews(ctx context.Context, tasks []state.DownloadGr
 		for _, request := range task.Downloads {
 			p := byKey[request.CollectionID]
 			item.Downloads = append(item.Downloads, downloadTaskProduct{DownloadRequest: request,
-				Satellite: p.Satellite, Instrument: p.Instrument, ProductCode: p.DataType, ProductName: p.DisplayName})
+				Satellite: p.Satellite, Instrument: p.Instrument, ProductCode: p.DataType, ProductName: p.DisplayName, Version: p.Version, Resolution: p.Resolution,
+				TimeProfile: producttime.Resolve(p)})
 		}
 		if len(task.Downloads) == 1 {
 			item.State = task.Downloads[0].State

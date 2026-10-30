@@ -11,6 +11,8 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/producttime"
+	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
 )
 
@@ -22,19 +24,28 @@ func (s *Server) createDownloadTask(w http.ResponseWriter, r *http.Request) {
 	s.submitDownloadTask(w, r, true)
 }
 
+type downloadProductOptions struct {
+	Start  string               `json:"start"`
+	End    string               `json:"end"`
+	Band   *int                 `json:"band"`
+	Times  *[]string            `json:"times"`
+	Scenes *map[string][]string `json:"scenes"`
+}
+
 func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, taskResponse bool) {
 	user, ok := s.orderUser(w, r)
 	if !ok {
 		return
 	}
 	var req struct {
-		Products []string                   `json:"products"`
-		Start    string                     `json:"start"`
-		End      string                     `json:"end"`
-		Band     int                        `json:"band"`
-		Times    []string                   `json:"times"`
-		Scenes   map[string][]string        `json:"scenes"`
-		Inputs   map[string]json.RawMessage `json:"inputs"`
+		Products []string                          `json:"products"`
+		Start    string                            `json:"start"`
+		End      string                            `json:"end"`
+		Band     int                               `json:"band"`
+		Times    []string                          `json:"times"`
+		Scenes   map[string][]string               `json:"scenes"`
+		Inputs   map[string]json.RawMessage        `json:"inputs"`
+		Options  map[string]downloadProductOptions `json:"options"`
 	}
 	if err := decodeRequestJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -72,10 +83,52 @@ func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, task
 			return
 		}
 		seen[key] = true
+		from, until := start, end
+		band, times, scenes := req.Band, req.Times, req.Scenes
+		if options, exists := req.Options[key]; exists {
+			if options.Start != "" {
+				from, err = parseTime(options.Start)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, errors.New("invalid product start"))
+					return
+				}
+			}
+			if options.End != "" {
+				until, err = parseTime(options.End)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, errors.New("invalid product end"))
+					return
+				}
+			}
+			if options.Band != nil {
+				band = *options.Band
+			}
+			if options.Times != nil {
+				times = *options.Times
+			}
+			if options.Scenes != nil {
+				scenes = *options.Scenes
+			}
+		}
+		if !until.After(from) {
+			writeError(w, http.StatusBadRequest, errors.New("product end must follow start"))
+			return
+		}
 		product, exists := byKey[key]
 		if !exists {
 			writeError(w, http.StatusNotFound, errors.New("unknown product "+key))
 			return
+		}
+		if taskResponse {
+			profile := producttime.Resolve(provider.NormalizeProduct(product))
+			if err := profile.ValidateRange(from, until); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := profile.ValidateTimes(times, scenes); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
 		}
 		source := product.SourceID
 		providerID, ok := downloadcoord.ProviderForSource(source)
@@ -83,14 +136,14 @@ func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, task
 			writeError(w, http.StatusBadRequest, errors.New("unsupported source "+source))
 			return
 		}
-		selection, err := (downloadfilter.Selection{Band: req.Band, Times: req.Times, Scenes: req.Scenes}).Normalize(source, key)
+		selection, err := (downloadfilter.Selection{Band: band, Times: times, Scenes: scenes}).Normalize(source, key)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		for day := range selection.Scenes {
 			at, _ := time.Parse(time.DateOnly, day)
-			if at.Before(start) || !at.Before(end) {
+			if at.Before(from) || !at.Before(until) {
 				writeError(w, http.StatusBadRequest, errors.New("scene date lies outside the requested UTC interval"))
 				return
 			}
@@ -99,12 +152,18 @@ func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, task
 			writeError(w, http.StatusBadRequest, errors.New("on-demand inputs cannot apply to ordinary archived products"))
 			return
 		}
-		if source == "era5" && req.Band != 0 {
+		if source == "era5" && band != 0 {
 			writeError(w, http.StatusBadRequest, errors.New("ERA5 uses variables, not bands"))
 			return
 		}
 		specs = append(specs, state.GroupProduct{Source: source, Provider: providerID,
-			Collection: key, Selection: selection, Inputs: req.Inputs})
+			Collection: key, Start: &from, End: &until, Selection: selection, Inputs: req.Inputs})
+	}
+	for key := range req.Options {
+		if !seen[key] {
+			writeError(w, http.StatusBadRequest, errors.New("product settings must belong to the selected products"))
+			return
+		}
 	}
 	owner := user.ID
 	if owner == "" && !s.portalAuth {

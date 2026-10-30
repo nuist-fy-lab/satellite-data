@@ -12,7 +12,7 @@ const fixture = `
 window.styleFixture = async function(view, mode, wide) {
   state.downloads.catalogReady = true;
   state.downloads.catalog = [
-    {product_key:'goes18:ABI-L1b-RadF',source_id:'goes18',satellite:'GOES-18',instrument:'ABI',level:'L1B',data_type:'ABI-L1b-RadF',display_name:'Full disk radiance',area_type:'DISK',resolution:'0.5 / 1 / 2 km',bands:[]},
+    {product_key:'goes18:ABI-L1b-RadF',source_id:'goes18',satellite:'GOES-18',instrument:'ABI',level:'L1B',data_type:'ABI-L1b-RadF',version:'6.1',display_name:'Full disk radiance with the complete official product name visible below metadata tags',area_type:'DISK',resolution:'0.5 / 1 / 2 km',time_profile:{kind:'scan',label:'静止卫星时次',cadence_minutes:10},bands:[{number:2,wavelength:'0.64 µm',resolution:'0.5 km'}]},
     {product_key:'modis:terra',source_id:'modis',satellite:'Terra',instrument:'MODIS',level:'L2',data_type:'MOD06_L2',display_name:'Cloud properties',area_type:'SWATH',resolution:'1 km',bands:[]},
     {product_key:'modis:aqua',source_id:'modis',satellite:'Aqua',instrument:'MODIS',level:'L2',data_type:'MYD06_L2',display_name:'Cloud properties',area_type:'SWATH',resolution:'1 km',bands:[]}
   ];
@@ -76,7 +76,7 @@ window.styleFixture = async function(view, mode, wide) {
   syncDownloadTimezones();
   renderDownloadTasks(state.downloads.tasks);
   refreshDownloadFilters();
-  $('#dl-start').value='2026-12-31';$('#dl-end').value='2027-01-02';
+  $('#dl-start').value='2026-12-31';$('#dl-end').value='2027-01-02';renderDownloadSelection();
   renderDownloadProviders(state.downloads.providers, true);
   if (mode === 'form') openPoolForm('account', state.access.accounts[0]);
   if (view === 'era5-view') {
@@ -106,6 +106,22 @@ window.downloadConfirmationFixture = function(open) {
   const dialog=$('#download-confirm'),box=dialog.getBoundingClientRect();
   return {open:dialog.open,content:$('#dl-confirm-summary').textContent,left:box.left,right:box.right,
     width:innerWidth,scroll:dialog.scrollWidth,client:dialog.clientWidth};
+};
+window.downloadTemporalFixture = function() {
+  for (const kind of ['observation','orbit','daily','weekly','composite','dekadal','monthly','annual']) {
+    const key='modis:'+kind;
+    state.downloads.catalog.push({product_key:key,source_id:'modis',satellite:'Terra',instrument:'MODIS',data_type:kind,version:'61',display_name:'Temporal product '+kind,time_profile:{kind,label:kind},bands:[]});
+    state.downloads.selectedProducts.add(key);
+  }
+  refreshDownloadFilters();
+  for(const editor of document.querySelectorAll('[data-download-options]'))editor.open=true;
+  const controls=[...document.querySelectorAll('.download-option-fields input,.download-option-fields select')];
+  return {types:controls.map(node=>node.type),
+    overflow:controls.filter(node=>node.getBoundingClientRect().right>node.closest('.download-selected-item').getBoundingClientRect().right+1).map(node=>node.type),
+    periodClock:!!document.querySelector('[data-download-options="modis:monthly"] [data-option-field="mode"]'),
+    monthly:document.querySelector('[data-download-options="modis:monthly"] [data-option-field="start"]').type,
+    observation:document.querySelector('[data-download-options="modis:observation"] [data-option-field="start"]').type,
+    dekads:[...document.querySelector('[data-download-options="modis:dekadal"] [data-option-field="start-dekad"]').options].map(option=>option.value)};
 };
 window.inventoryFixture = async function() {
   const module=await import('/era5-inventory.js');
@@ -410,6 +426,8 @@ try {
             stacked:panels[1].top>=panels[0].bottom,aligned:Math.abs(panels[1].left-panels[0].left)<1,
             cardHeight:rowBox.height,fontSize:parseFloat(getComputedStyle($('.download-product-name')).fontSize),
             tagCount:row.querySelectorAll('.download-product-tag').length,
+            nameBelow:row.querySelector('.download-product-name').getBoundingClientRect().top>=row.querySelector('.download-product-line').getBoundingClientRect().bottom,
+            nameClipped:row.querySelector('.download-product-name').scrollWidth>row.querySelector('.download-product-name').clientWidth+1,
             legacy:!!document.querySelector('#dl-extra-products,#download-batches,#download-requests')};
         `);
         assert.equal(picker.checked.length,2);
@@ -419,7 +437,9 @@ try {
         assert.equal(picker.stacked,true);
         assert.equal(picker.aligned,true);
         assert.ok(picker.fontSize<=12);
-        assert.equal(picker.tagCount,6);
+        assert.equal(picker.tagCount,8);
+        assert.equal(picker.nameBelow,true);
+        assert.equal(picker.nameClipped,false);
         if(width>=1000)assert.ok(picker.cardHeight<=60,'product card is not compact: '+JSON.stringify(picker));
         const initial = await driver.executeScript(`const $=selector=>document.querySelector(selector);return {
           task:$('#download-timezone').value,monitor:$('#download-monitor-timezone').value,
@@ -463,6 +483,23 @@ try {
         assert.ok(confirmation.scroll<=confirmation.client+1,'task confirmation has horizontal overflow');
         await writeFile('dist/visual/download-task-confirm-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
         await driver.executeScript('return window.downloadConfirmationFixture(false)');
+        const dismissal=await driver.executeScript(`
+          const filter=document.querySelector('.download-filter');
+          filter.querySelector('summary').click();
+          const opened=filter.open;
+          document.querySelector('#downloads-view h2').click();
+          const outside=!filter.open;
+          filter.querySelector('summary').click();
+          window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));
+          return {opened,outside,escape:!filter.open};
+        `);
+        assert.deepEqual(dismissal,{opened:true,outside:true,escape:true});
+        const temporal=await driver.executeScript('return window.downloadTemporalFixture()');
+        assert.deepEqual(temporal.overflow,[],'product controls exceed card');
+        assert.equal(temporal.periodClock,false);
+        assert.equal(temporal.monthly,'month');assert.equal(temporal.observation,'datetime-local');
+        assert.deepEqual(temporal.dekads,['01','11','21']);
+        await writeFile('dist/visual/download-product-options-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
       }
       if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));

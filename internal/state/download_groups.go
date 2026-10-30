@@ -38,6 +38,8 @@ type GroupProduct struct {
 	Source     string                     `json:"source"`
 	Provider   string                     `json:"provider"`
 	Collection string                     `json:"collection"`
+	Start      *time.Time                 `json:"start,omitempty"`
+	End        *time.Time                 `json:"end,omitempty"`
 	Selection  downloadfilter.Selection   `json:"selection"`
 	Inputs     map[string]json.RawMessage `json:"inputs,omitempty"`
 }
@@ -55,15 +57,62 @@ type DownloadGroup struct {
 }
 
 func (s *Store) EnqueueDownloadGroup(ctx context.Context, owner string, start, end time.Time, specs []GroupProduct) (DownloadGroup, bool, error) {
-	if owner == "" || len(specs) == 0 || len(specs) > 32 || !end.After(start) {
+	if owner == "" || len(specs) == 0 || len(specs) > 32 {
 		return DownloadGroup{}, false, errors.New("invalid group submission")
 	}
 	ordered := append([]GroupProduct(nil), specs...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Collection < ordered[j].Collection })
-	for i, spec := range ordered {
+	var earliest, latest time.Time
+	for i := range ordered {
+		spec := &ordered[i]
 		if spec.Collection == "" || spec.Provider == "" || spec.Source == "" ||
 			(i > 0 && spec.Collection == ordered[i-1].Collection) {
 			return DownloadGroup{}, false, errors.New("invalid or duplicated product in group")
+		}
+		from, until := start, end
+		if spec.Start != nil {
+			from = *spec.Start
+		}
+		if spec.End != nil {
+			until = *spec.End
+		}
+		from, until = from.UTC(), until.UTC()
+		if from.IsZero() || until.IsZero() || !until.After(from) {
+			return DownloadGroup{}, false, errors.New("each product requires a valid time range")
+		}
+		selection, err := spec.Selection.Normalize(spec.Source, spec.Collection)
+		if err != nil {
+			return DownloadGroup{}, false, err
+		}
+		spec.Selection = selection
+		for day := range selection.Scenes {
+			at, _ := time.Parse(time.DateOnly, day)
+			if at.Before(from) || !at.Before(until) {
+				return DownloadGroup{}, false, errors.New("scene date lies outside the requested UTC interval")
+			}
+		}
+		if spec.Source == "era5" {
+			if err := era5.ValidateOrder(spec.Collection, from, until, spec.Inputs); err != nil {
+				return DownloadGroup{}, false, err
+			}
+		}
+		spec.Start, spec.End = &from, &until
+		if earliest.IsZero() || from.Before(earliest) {
+			earliest = from
+		}
+		if latest.IsZero() || until.After(latest) {
+			latest = until
+		}
+	}
+	start, end = earliest, latest
+	// Omit redundant per-product bounds to retain the existing fingerprint for
+	// common-range tasks and deduplicate equivalent shared/individual settings.
+	for i := range ordered {
+		if ordered[i].Start.Equal(start) {
+			ordered[i].Start = nil
+		}
+		if ordered[i].End.Equal(end) {
+			ordered[i].End = nil
 		}
 	}
 	key, err := json.Marshal(struct {
@@ -109,6 +158,13 @@ func (s *Store) EnqueueDownloadGroup(ctx context.Context, owner string, start, e
 			return DownloadGroup{}, false, err
 		}
 		for _, spec := range ordered {
+			from, until := start, end
+			if spec.Start != nil {
+				from = *spec.Start
+			}
+			if spec.End != nil {
+				until = *spec.End
+			}
 			selection, err := json.Marshal(spec.Selection)
 			if err != nil {
 				return DownloadGroup{}, false, err
@@ -118,14 +174,11 @@ func (s *Store) EnqueueDownloadGroup(ctx context.Context, owner string, start, e
 				start_ts,end_ts,cursor_ts,selection_json,state,requested_at,updated_at)
 				VALUES(?,?,?,?,?,?,?,?,'pending',?,?)`,
 				owner, spec.Source, spec.Provider, spec.Collection,
-				formatTime(start), formatTime(end), formatTime(start), string(selection), now, now)
+				formatTime(from), formatTime(until), formatTime(from), string(selection), now, now)
 			if err != nil {
 				return DownloadGroup{}, false, err
 			}
 			if spec.Source == "era5" {
-				if err := era5.ValidateOrder(spec.Collection, start, end, spec.Inputs); err != nil {
-					return DownloadGroup{}, false, err
-				}
 				data, err := json.Marshal(spec.Inputs)
 				if err != nil {
 					return DownloadGroup{}, false, err

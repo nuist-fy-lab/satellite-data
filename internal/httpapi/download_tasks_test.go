@@ -60,7 +60,7 @@ func TestDownloadTasksSubmitOnceSummaryPagingAndOwnership(t *testing.T) {
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	body := `{"products":["modis:sample","goes18:ABI-L1b-RadF"],"start":"2026-01-01","end":"2026-01-03","times":["00:00","12:00"]}`
+	body := `{"products":["modis:sample","goes18:ABI-L1b-RadF"],"start":"2026-01-01","end":"2026-01-03","options":{"goes18:ABI-L1b-RadF":{"times":["00:00","12:00"]}}}`
 	var submitted struct {
 		Task    downloadTaskView `json:"task"`
 		Created bool             `json:"created"`
@@ -73,8 +73,11 @@ func TestDownloadTasksSubmitOnceSummaryPagingAndOwnership(t *testing.T) {
 		t.Fatalf("task: %+v", submitted)
 	}
 	for _, item := range submitted.Task.Downloads {
-		if item.Satellite == "" || item.ProductName == "" || item.ProductCode == "" || len(item.Selection.Times) != 2 {
+		if item.Satellite == "" || item.ProductName == "" || item.ProductCode == "" || item.TimeProfile.Kind == "" {
 			t.Fatalf("missing summary: %+v", item)
+		}
+		if item.SourceID == "goes18" && len(item.Selection.Times) != 2 || item.SourceID == "modis" && len(item.Selection.Times) != 0 {
+			t.Fatalf("scan times leaked between products: %+v", item)
 		}
 	}
 	duplicate := call("POST", "/api/v1/download-tasks", body, "alice")

@@ -14,6 +14,7 @@ import (
 
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/producttime"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/era5"
 	"github.com/nuist-fy-lab/satellite-data/internal/slotaxis"
@@ -142,6 +143,7 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 		}
 	}
 	axis := slotaxis.Resolve(request.SourceID, request.CollectionID, product.Cadence)
+	timeProfile := producttime.Resolve(product)
 	searchStart, searchEnd := request.Cursor, chunkEnd
 	if len(request.Selection.Times) > 0 || len(request.Selection.Scenes) > 0 {
 		searchStart = searchStart.Add(-axis.Max)
@@ -177,7 +179,13 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 			times = sceneTimes
 		}
 		nominal, match := axis.MatchWithin(granule.Start, times, observed, tolerance)
-		if !match || nominal.Before(request.Cursor) || !nominal.Before(chunkEnd) {
+		coverage := timeProfile.Kind != "scan" && len(times) == 0 && len(request.Selection.Scenes) == 0
+		if coverage {
+			match = producttime.OwnsCoverage(granule.Start, granule.End, request.Start, request.Cursor, chunkEnd)
+		} else {
+			match = match && !nominal.Before(request.Cursor) && nominal.Before(chunkEnd)
+		}
+		if !match {
 			continue
 		}
 		if len(request.Selection.Scenes) > 0 && nominal.Format(time.DateOnly) != request.Cursor.Format(time.DateOnly) {
