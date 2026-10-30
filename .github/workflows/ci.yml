@@ -133,7 +133,7 @@ jobs:
       - name: Check web JavaScript syntax and behavior
         run: |
           for file in web/static/*.js web/*.mjs; do node --check "$file"; done
-          node --test web/era5.test.mjs web/download-timezones.test.mjs web/calendar-index.test.mjs web/catalog-inventory.test.mjs
+          node --test web/era5.test.mjs web/download-timezones.test.mjs web/download-order-audit.test.mjs web/calendar-index.test.mjs web/catalog-inventory.test.mjs
       - name: Validate portal styles and HTML
         run: |
           npm install --prefix "$RUNNER_TEMP/satellite-web" --no-save --ignore-scripts css-tree@3.1.0 parse5@7.2.1

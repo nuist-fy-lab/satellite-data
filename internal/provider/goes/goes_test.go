@@ -1,8 +1,16 @@
 package goes
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/nuist-fy-lab/satellite-data/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/objectstore"
 )
 
 func TestParseGOESObjectTime(t *testing.T) {
@@ -30,11 +38,73 @@ func TestGOESCadence(t *testing.T) {
 		"ABI-L1b-RadC": "5m",
 		"ABI-L1b-RadM": "1m",
 		"GLM-L2-LCFA":  "event",
+		"MAG-L1b-GEOF": "event",
 	}
 	for product, want := range cases {
 		if got := goesCadence(product); got != want {
 			t.Fatalf("%s cadence=%q want=%q", product, got, want)
 		}
+	}
+	if got := goesArea("MAG-L1b-GEOF"); got != "" {
+		t.Fatalf("MAG area=%q", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSearchOverlappingFilesAndScanModes(t *testing.T) {
+	product := "ABI-L1b-RadF"
+	prior := product + "/2026/001/23/"
+	current := product + "/2026/002/00/"
+	files := map[string][]string{
+		prior: {
+			"OR_ABI-L1b-RadF-M3C01_G18_s20260012350000_e20260020001000_c20260020002000.nc",
+			"OR_ABI-L1b-RadF-M3C02_G18_s20260012350000_e20260020001000_c20260020002000.nc",
+			"OR_ABI-L1b-RadF-M6C01_G18_s20260012340000_e20260020000000_c20260020001000.nc",
+		},
+		current: {
+			"OR_ABI-L1b-RadF-M4C01_G18_s20260020001000_e20260020005000_c20260020006000.nc",
+			"OR_ABI-L1b-RadF-M6C01_G18_s20260020006000_e20260020009000_c20260020010000.nc",
+			"OR_ABI-L1b-RadF-M6C01_G18_s20260020006000_e20260020009000_c20260020010000.nc",
+			"OR_ABI-L1b-RadF-M6C01_G18_s20260020010000_e20260020015000_c20260020016000.nc",
+		},
+	}
+	requested := map[string]bool{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		prefix := r.URL.Query().Get("prefix")
+		requested[prefix] = true
+		items := make([]map[string]string, 0)
+		for _, name := range files[prefix] {
+			items = append(items, map[string]string{"name": prefix + name})
+		}
+		body, _ := json.Marshal(map[string]any{"items": items})
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	})}
+	p, err := New(18, objectstore.NewClient(client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	got, err := p.Search(context.Background(), model.Query{CollectionID: "goes18:" + product, Start: start, End: start.Add(10 * time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requested[prior] || !requested[current] {
+		t.Fatalf("requested prefixes: %v", requested)
+	}
+	if len(got) != 3 {
+		t.Fatalf("granules=%+v", got)
+	}
+	if got[0].Metadata["scan_mode"] != "3" || len(got[0].Assets) != 2 || !got[0].End.Equal(start.Add(time.Minute)) {
+		t.Fatalf("overlapping granule=%+v", got[0])
+	}
+	if got[1].Metadata["scan_mode"] != "4" {
+		t.Fatalf("second granule=%+v", got[1])
+	}
+	if got[2].Metadata["scan_mode"] != "6" || len(got[2].Assets) != 1 {
+		t.Fatalf("duplicate or mode error: %+v", got[2])
 	}
 }
 

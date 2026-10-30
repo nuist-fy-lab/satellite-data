@@ -48,9 +48,7 @@ const instruments = {
 };
 const familyNames = {goes:'GOES',himawari:'Himawari',modis:'MODIS',viirs:'VIIRS',cloudsat:'CloudSat',calipso:'CALIPSO',earthcare:'EarthCARE',mtg:'MTG'};
 export const family = id => id.replace(/^goes\d+$/,'goes').replace(/^himawari\d+$/,'himawari');
-const statuses = {not_applicable:'不适用',catalog_not_provided:'目录未提供',per_file:'依文件',subsetting:'依子集'};
-const field = (item,name,value) => value || statuses[item.metadata?.[name+'_status']] || '目录未提供';
-export const dateText = value => !value ? '目录未提供' : /^\d{4}-\d{2}-\d{2}$/.test(value) ? value+' · 日期精度' : value.replace('T',' ').replace(/Z$/,' UTC');
+export const dateText = value => !value ? '' : /^\d{4}-\d{2}-\d{2}$/.test(value) ? value+' · 日期精度' : value.replace('T',' ').replace(/Z$/,' UTC');
 export function safeURL(value) {
   try { const url=new URL(value); return url.protocol==='https:' && !url.username && !url.password ? url.href : ''; } catch { return ''; }
 }
@@ -169,7 +167,8 @@ function render() {
     }
     for(const product of own.sort((a,b)=>(a.data_type || '').localeCompare(b.data_type || '') || (a.version || '').localeCompare(b.version || ''))) {
       const details=document.createElement('details');details.className='catalog-product';details.dataset.product=product.product_key;
-      const rows=[['官方集合 ID',product.official_id],['处理级别',field(product,'level',product.level)],['集合版本',field(product,'version',product.version)],['名义分辨率',field(product,'resolution',product.resolution)],['空间范围',field(product,'area_type',product.area_type)],['名义频率',product.cadence==='event'?'按轨道 / 事件':product.cadence || '目录未提供'],['官方时间范围',dateText(product.metadata?.time_start)+' 至 '+dateText(product.metadata?.time_end)]];
+      const range=[dateText(product.metadata?.time_start),dateText(product.metadata?.time_end)].filter(Boolean).join(' 至 ');
+      const rows=[['官方集合 ID',product.official_id],['处理级别',['AUX','ORBIT'].includes(product.level)?'':product.level],['集合版本',product.version],['分辨率',product.resolution],['空间范围',product.area_type],['数据频率',product.cadence==='event'?'':product.cadence],['官方时间范围',range]].filter(([,value])=>value);
       details.innerHTML=`<summary><strong>${esc(product.data_type)}</strong><span>${esc([product.level,product.version,product.metadata?.access_class].filter(Boolean).join(' · '))}</span></summary><div class="catalog-product-body"><h3>${esc(product.display_name || product.data_type)}</h3><p>${esc(productDescription(product))}</p><dl>${rows.map(([label,value])=>`<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('')}</dl>${product.metadata?.description?`<details class="catalog-official-description"><summary>官方摘要</summary><p>${esc(product.metadata.description)}</p></details>`:''}<div class="catalog-product-links">${link(product.metadata?.official_product_url,'官方产品目录')}${link(product.metadata?.official_documentation_url,'官方产品说明')}${link(product.metadata?.level_evidence,'元数据依据')}</div></div>`;
       section.append(details);
     }

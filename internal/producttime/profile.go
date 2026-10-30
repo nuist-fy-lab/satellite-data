@@ -15,10 +15,12 @@ import (
 )
 
 type Profile struct {
-	Kind           string `json:"kind"`
-	Label          string `json:"label"`
-	CadenceMinutes int    `json:"cadence_minutes,omitempty"`
-	Days           int    `json:"days,omitempty"`
+	Kind             string `json:"kind"`
+	Label            string `json:"label"`
+	CadenceMinutes   int    `json:"cadence_minutes,omitempty"`
+	SelectionMinutes int    `json:"selection_minutes,omitempty"`
+	SelectionBasis   string `json:"selection_basis,omitempty"`
+	Days             int    `json:"days,omitempty"`
 }
 
 var nDays = regexp.MustCompile(`(?i)\b(\d+)[ -]days?\b`)
@@ -52,7 +54,11 @@ func Resolve(p model.Product) Profile {
 		return Profile{Kind: "composite", Label: strconv.Itoa(days) + "日合成", Days: days}
 	}
 	if strings.EqualFold(p.AreaType, "ORBIT") || strings.EqualFold(p.Level, "ORBIT") || p.SourceID == "cloudsat" || p.SourceID == "calipso" {
-		return Profile{Kind: "orbit", Label: "轨道产品"}
+		profile := Profile{Kind: "orbit", Label: "轨道产品"}
+		if p.SourceID == "cloudsat" {
+			profile.SelectionBasis = "file_start"
+		}
+		return profile
 	}
 	axis, known := slotaxis.Known(p.SourceID, p.ProductKey)
 	// MTG's catalogue advertises a fixed cadence only for FCI Level 1C.
@@ -60,9 +66,13 @@ func Resolve(p model.Product) Profile {
 		axis, known = slotaxis.Resolve(p.SourceID, p.ProductKey, p.Cadence), true
 	}
 	if known {
-		return Profile{Kind: "scan", Label: "静止卫星时次", CadenceMinutes: axis.CadenceMinutes}
+		profile := Profile{Kind: "scan", Label: "扫描时次", CadenceMinutes: axis.CadenceMinutes, SelectionMinutes: axis.CadenceMinutes}
+		if strings.HasPrefix(p.SourceID, "goes") && strings.HasSuffix(p.ProductKey, "F") {
+			profile.SelectionMinutes = 5
+		}
+		return profile
 	}
-	return Profile{Kind: "observation", Label: "观测区间"}
+	return Profile{Kind: "observation", Label: "数据时间"}
 }
 
 func (p Profile) IsPeriod() bool {
@@ -107,12 +117,20 @@ func (p Profile) ValidateTimes(times []string, scenes map[string][]string) error
 	if p.IsPeriod() && len(scenes) > 0 {
 		return errors.New("period products use coverage intervals, not minute scenes")
 	}
-	for _, value := range times {
+	all := append([]string(nil), times...)
+	for _, selected := range scenes {
+		all = append(all, selected...)
+	}
+	step := p.SelectionMinutes
+	if step == 0 {
+		step = p.CadenceMinutes
+	}
+	for _, value := range all {
 		at, err := time.Parse("15:04", value)
 		if err != nil {
 			return err
 		}
-		if p.CadenceMinutes > 0 && (at.Hour()*60+at.Minute())%p.CadenceMinutes != 0 {
+		if step > 0 && (at.Hour()*60+at.Minute())%step != 0 {
 			return errors.New("requested time is outside this product's nominal scan schedule")
 		}
 	}

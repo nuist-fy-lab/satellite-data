@@ -1,7 +1,7 @@
 [
   {
     "source_prefix": "goes",
-    "product_pattern": "^ABI-L1b-Rad[FMC]$",
+    "product_pattern": "^ABI-(L1b-Rad|L2-CMIP)[FMC]$",
     "asset_band_pattern": "-M[0-9]+C{band}_G[0-9]{2}_",
     "bands": [
       {"number":1,"wavelength":"0.47 µm","resolution":"1 km"},

@@ -91,8 +91,15 @@ func TestEverySnapshotProductHasFieldStatusAndEvidence(t *testing.T) {
 		original := model.Product{ProductKey: field("product_key"), OfficialID: field("official_id"), SourceID: field("source_id"), Satellite: field("satellite"), Instrument: field("instrument"), Level: field("level"), DataType: field("product"), DisplayName: field("title"), Cadence: field("cadence"), Resolution: field("resolution"), Version: field("version"), AreaType: field("area_type")}
 		got := NormalizeProduct(original)
 		sources[got.SourceID] = true
-		if got.ProductKey != original.ProductKey || got.OfficialID != original.OfficialID || got.DataType != original.DataType || got.DisplayName != original.DisplayName || got.Cadence != original.Cadence {
+		if got.ProductKey != original.ProductKey || got.OfficialID != original.OfficialID || got.DataType != original.DataType || got.DisplayName != original.DisplayName {
 			t.Fatalf("identity changed: %s", original.ProductKey)
+		}
+		if strings.HasPrefix(original.SourceID, "goes") && !strings.HasPrefix(original.DataType, "ABI-") {
+			if got.Cadence != "event" || got.AreaType == "DISK" || got.AreaType == "CONUS" || got.AreaType == "MESO" {
+				t.Fatalf("non-ABI inherited Earth scan: %+v", got)
+			}
+		} else if got.Cadence != original.Cadence {
+			t.Fatalf("declared cadence changed: %s", original.ProductKey)
 		}
 		if original.Resolution != "" && got.Resolution != original.Resolution || original.Version != "" && got.Version != original.Version {
 			t.Fatalf("declared metadata changed: %s", original.ProductKey)
