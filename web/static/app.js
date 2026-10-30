@@ -42,8 +42,9 @@ const state = {
   },
   downloads: {
     displayZone: storedDisplayZone('satellite-data-download-zone', 'UTC'),
-    poll: 0, pollSeq: 0, catalog: [], source: '', loading: 0,
-    cursor: '', requests: [], page: 1, total: 0, pages: 1, providers: [], stream: null,
+    poll: 0, pollSeq: 0, catalog: [], catalogReady: false, loading: 0,
+    selectedProducts: new Set(), filters: {}, confirmation: null, submitting: false,
+    tasks: [], page: 1, total: 0, pages: 1, providers: [], stream: null,
     history: {
       displayZone: storedDisplayZone('satellite-data-download-monitor-zone', 'BJT'),
       window: localStorage.getItem('satellite-data-download-window') || '1h',
@@ -2317,97 +2318,159 @@ function renderMonitor() {
 }
 
 const downloadStates = {
-  pending: '等待发现', discovering: '正在发现', retry_wait: '等待重试', transferring: '传输中',
+  pending: '等待查询', discovering: '正在查询', retry_wait: '等待重试', transferring: '传输中',
   verifying: '待校验', verify_wait: '校验重试', promoting: '校验/归档中',
   waiting_auth: '等待授权', done: '已完成', failed: '失败',
 };
 
 const dlStages = [
+  ['source', '数据源', p => p.source_id],
   ['satellite', '卫星', p => p.satellite],
   ['instrument', '传感器', p => p.instrument],
   ['level', '级别', p => p.level],
+  ['product', '产品', p => p.data_type || p.display_name || p.product_key],
   ['area', '区域', p => p.area_type || p.metadata?.area_type || ''],
+  ['resolution', '分辨率', p => p.resolution || ''],
 ];
 
-function downloadSelect(id, values, placeholder) {
-  const node = $('#dl-' + id), old = node.value;
-  node.replaceChildren(new Option(placeholder, ''));
-  for (const value of values) node.add(new Option(value, value));
-  if (values.includes(old)) node.value = old;
+function downloadProductName(product) {
+  return product.product_name || product.display_name || product.product_code || product.data_type ||
+    (product.product_key || product.collection_id || '').split(':').at(-1);
 }
 
-function refreshDownloadFilters(changed = 'source') {
+function selectedDownloadProducts() {
+  return state.downloads.catalog.filter(product => state.downloads.selectedProducts.has(product.product_key));
+}
+
+function filteredDownloadProducts() {
+  const search = ($('#dl-search').value || '').trim().toLowerCase();
+  return state.downloads.catalog.filter(product => dlStages.every(([id, , field]) => {
+    const selected = state.downloads.filters[id];
+    return !selected?.size || selected.has(field(product));
+  }) && (!search || [product.satellite, product.instrument, product.data_type, product.display_name,
+    product.product_key].join(' ').toLowerCase().includes(search)));
+}
+
+function refreshDownloadFilters() {
+  const holder = $('#dl-filters');
+  const opened = new Set([...(holder.querySelectorAll?.('details[open]') || [])].map(node => node.dataset.filter));
   let items = state.downloads.catalog;
+  const controls = [];
   for (const [id, label, field] of dlStages) {
-    if (changed === 'source' || dlStages.some(([earlier]) => earlier === changed && dlStages.findIndex(([current]) => current === earlier) < dlStages.findIndex(([current]) => current === id))) {
-      downloadSelect(id, uniqueSorted(items.map(field)), '全部' + label);
-    }
-    const chosen = $('#dl-' + id).value;
-    if (chosen) items = items.filter(item => field(item) === chosen);
+    const values = uniqueSorted(items.map(field).filter(Boolean));
+    const selected = new Set([...(state.downloads.filters[id] || [])].filter(value => values.includes(value)));
+    state.downloads.filters[id] = selected;
+    const optionName = value => id === 'source' ? state.sources.find(source => source.id === value)?.name || value : value;
+    const summary = selected.size ? [...selected].map(optionName).join('、') : '全部';
+    controls.push('<div class="download-filter-field"><span>' + esc(label) + '</span><details class="download-filter" data-filter="' + id + '"' + (opened.has(id) ? ' open' : '') + '>' +
+      '<summary aria-label="' + esc(label + '：' + summary) + '"><span>' + esc(summary) + '</span></summary><div class="download-filter-options">' +
+      '<button type="button" data-download-filter-clear="' + id + '">全部' + esc(label) + '</button>' +
+      values.map(value => '<label><input type="checkbox" data-download-filter="' + id + '" value="' + esc(value) + '"' +
+        (selected.has(value) ? ' checked' : '') + '><span>' + esc(optionName(value)) + '</span></label>').join('') +
+      '</div></details></div>');
+    if (selected.size) items = items.filter(product => selected.has(field(product)));
   }
-  if (changed !== 'product' && changed !== 'band' && changed !== 'resolution') {
-    const node = $('#dl-product'), old = node.value;
-    node.replaceChildren(new Option('选择产品', ''));
-    for (const item of items) {
-      const label = [...new Set([item.level, item.data_type, item.version, item.resolution, item.metadata?.access_class].filter(Boolean))].join(' · ');
-      const option = new Option(label || item.product_key, item.product_key);
-      option.title = item.display_name || item.data_type;
-      node.add(option);
-    }
-    if (items.some(item => item.product_key === old)) node.value = old;
-  }
-  const product = state.downloads.catalog.find(item => item.product_key === $('#dl-product').value);
-  const bands = product?.bands || [];
-  const band = $('#dl-band');
-  const resolutionNode = $('#dl-resolution');
-  if (changed !== 'resolution') {
-    const values = uniqueSorted(bands.map(item => item.resolution).concat(product?.resolution || []));
-    downloadSelect('resolution', values, values.length ? '全部' : metadataStatusLabels[product?.metadata?.resolution_status] || '目录未提供');
-    if (!bands.length && values.length === 1) resolutionNode.value = values[0];
-    if (changed === 'band' && Number(band.value)) {
-      resolutionNode.value = bands.find(item => item.number === Number(band.value))?.resolution || '';
-    }
-  }
-  if (changed !== 'band') {
-    const old = band.value;
-    band.replaceChildren(new Option('全部波段', '0'));
-    const eligible = bands.filter(item => !resolutionNode.value || item.resolution === resolutionNode.value);
-    for (const item of eligible) band.add(new Option(`C${String(item.number).padStart(2, '0')} · ${item.wavelength}`, String(item.number)));
-    band.value = eligible.some(item => String(item.number) === old) ? old : '0';
-  }
+  holder.innerHTML = controls.join('');
+  renderDownloadSelection();
+}
+
+function downloadProductRow(product, selected = false) {
+  const code = product.data_type || product.product_code || '';
+  const heading = [...new Set([product.satellite, code].filter(Boolean))].join(' · ') || downloadProductName(product);
+  const name = downloadProductName(product);
+  const metadata = [...new Set([product.instrument, product.level, product.area_type, product.resolution].filter(Boolean))].join(' · ');
+  const description = '<span class="download-product-copy"><strong>' + esc(heading) + '</strong>' +
+    (name !== heading && name !== code ? '<span>' + esc(name) + '</span>' : '') +
+    (metadata ? '<span class="download-product-metadata">' + esc(metadata) + '</span>' : '') + '</span>';
+  if (selected) return '<div class="download-selected-product">' + description +
+    '<button type="button" data-download-remove="' + esc(product.product_key) + '" aria-label="移除 ' + esc(heading) + '">×</button></div>';
+  return '<label class="download-product-row"><input type="checkbox" data-download-product="' + esc(product.product_key) + '"' +
+    (state.downloads.selectedProducts.has(product.product_key) ? ' checked' : '') + '>' + description + '</label>';
+}
+
+function renderDownloadSelection() {
+  const filtered = filteredDownloadProducts();
+  const selected = selectedDownloadProducts();
+  $('#dl-filtered-count').textContent = String(filtered.length);
+  $('#dl-selected-count').textContent = '已选 ' + selected.length + ' 个';
+  $('#dl-basket-count').textContent = String(selected.length);
+  $('#dl-product-results').innerHTML = filtered.map(product => downloadProductRow(product)).join('') ||
+    '<div class="download-picker-empty">' + (state.downloads.catalogLoading ? '正在读取产品目录…' : '没有匹配的产品') + '</div>';
+  $('#dl-selected-products').innerHTML = selected.map(product => downloadProductRow(product, true)).join('') ||
+    '<div class="download-picker-empty">尚未选择产品</div>';
+  const checked = filtered.filter(product => state.downloads.selectedProducts.has(product.product_key)).length;
+  $('#dl-select-results').checked = filtered.length > 0 && checked === filtered.length;
+  $('#dl-select-results').indeterminate = checked > 0 && checked < filtered.length;
+  $('#dl-select-results').disabled = filtered.length === 0;
+  $('#dl-clear-selection').disabled = selected.length === 0;
+  const band = $('#dl-band'), previous = band.value;
+  const bands = selected.length ? (selected[0].bands || []).filter(item =>
+    selected.every(product => (product.bands || []).some(other => other.number === item.number))) : [];
+  band.replaceChildren(new Option('全部波段', '0'));
+  for (const item of bands) band.add(new Option('C' + String(item.number).padStart(2, '0'), String(item.number)));
+  band.value = bands.some(item => String(item.number) === previous) ? previous : '0';
   band.disabled = bands.length === 0;
+  $('#dl-submit').disabled = state.downloads.submitting || selected.length === 0;
+}
+
+function selectDownloadProduct(key, selected) {
+  if (!state.downloads.catalog.some(product => product.product_key === key)) return;
+  const products = state.downloads.selectedProducts;
+  if (selected && !products.has(key) && products.size >= 32) {
+    $('#dl-submit-status').textContent = '每个任务最多选择 32 个产品';
+  } else {
+    if (selected) products.add(key); else products.delete(key);
+    $('#dl-submit-status').textContent = '';
+  }
+  renderDownloadSelection();
+}
+
+function selectDownloadResults(selected) {
+  const products = filteredDownloadProducts();
+  const keys = new Set(state.downloads.selectedProducts);
+  for (const product of products) {
+    if (selected) keys.add(product.product_key); else keys.delete(product.product_key);
+  }
+  if (keys.size > 32) {
+    $('#dl-submit-status').textContent = '每个任务最多选择 32 个产品，请缩小筛选范围';
+  } else {
+    state.downloads.selectedProducts = keys;
+    $('#dl-submit-status').textContent = '';
+  }
+  renderDownloadSelection();
 }
 
 async function loadDownloadCatalog() {
-  const source = $('#dl-source').value;
   syncDownloadTimezones();
   const ticket = ++state.downloads.loading;
-  state.downloads.catalog = [];
+  state.downloads.catalogLoading = true;
   $('#dl-submit-status').textContent = '';
   refreshDownloadFilters();
-  if (!source) return;
   try {
-    const catalog = await json('/api/v1/downloads/catalog?source=' + encodeURIComponent(source));
+    const catalog = await json('/api/v1/downloads/catalog');
     if (ticket !== state.downloads.loading) return;
-    state.downloads.catalog = (catalog.products || []).map(normalizeCatalogProduct);
-    state.downloads.source = source;
-    refreshDownloadFilters();
+    const allowed = new Set(state.sources.filter(source => source.capabilities?.includes('download')).map(source => source.id));
+    state.downloads.catalog = (catalog.products || []).filter(product => product.source_id !== 'era5' &&
+      (!allowed.size || allowed.has(product.source_id))).map(normalizeCatalogProduct);
+    state.downloads.catalogReady = true;
   } catch (error) {
     if (ticket === state.downloads.loading) $('#dl-submit-status').textContent = '产品目录读取失败：' + error.message;
+  } finally {
+    if (ticket === state.downloads.loading) {
+      state.downloads.catalogLoading = false;
+      refreshDownloadFilters();
+    }
   }
 }
 
 function initializeDownloadSubmit() {
-  const node = $('#dl-source'), old = node.value;
-  node.replaceChildren(new Option('选择数据源', ''));
-  for (const source of state.sources.filter(item => item.id !== 'era5' && item.capabilities?.includes('download'))) node.add(new Option(source.name, source.id));
-  if ([...node.options].some(option => option.value === old)) node.value = old;
-  if (node.value && node.value !== state.downloads.source) loadDownloadCatalog();
+  syncDownloadTimezones();
+  if (!state.downloads.catalogReady && !state.downloads.catalogLoading) loadDownloadCatalog();
 }
 
 function downloadInputZone() {
   // CDS orders require whole UTC dates, regardless of the list display zone.
-  return $('#dl-source').value === 'era5' ? 'UTC' : state.downloads.displayZone;
+  return selectedDownloadProducts().some(product => product.source_id === 'era5') ? 'UTC' : state.downloads.displayZone;
 }
 
 function downloadTimes() {
@@ -2438,6 +2501,7 @@ function downloadRange(start, end) {
 function syncDownloadTimezones() {
   const zone = downloadInputZone();
   $('#download-timezone').value = state.downloads.displayZone;
+  $('#dl-timezone').value = state.downloads.displayZone;
   $('#download-monitor-timezone').value = state.downloads.history.displayZone;
   $('#dl-start-label').textContent = `开始日期（${zone}）`;
   $('#dl-end-label').textContent = `结束日期（${zone}，含当天）`;
@@ -2450,7 +2514,7 @@ function setDownloadTimezone(zone) {
   state.downloads.displayZone = zone;
   localStorage.setItem('satellite-data-download-zone', zone);
   syncDownloadTimezones();
-  renderDownloadRequests(state.downloads.requests);
+  renderDownloadTasks(state.downloads.tasks);
 }
 
 function setDownloadMonitorTimezone(zone) {
@@ -2464,33 +2528,72 @@ function setDownloadMonitorTimezone(zone) {
 
 async function submitDownload(event) {
   event.preventDefault();
-  const status = $('#dl-submit-status'), button = $('#dl-submit');
-  const product = state.downloads.catalog.find(item => item.product_key === $('#dl-product').value);
-  if (!product || product.source_id !== $('#dl-source').value) { status.textContent = '请选择产品'; return; }
-  let range, times;
+  if (state.downloads.submitting) return;
+  const status = $('#dl-submit-status');
   try {
-    range = downloadRange($('#dl-start').value, $('#dl-end').value);
-    times = downloadTimes();
+    const products = selectedDownloadProducts();
+    if (!products.length) throw new Error('请选择至少一个产品');
+    if (products.length > 32) throw new Error('每个任务最多选择 32 个产品');
+    const payload = {products: products.map(product => product.product_key),
+      ...downloadRange($('#dl-start').value, $('#dl-end').value),
+      band: Number($('#dl-band').value) || 0, times: downloadTimes()};
+    state.downloads.confirmation = JSON.parse(JSON.stringify({payload, products,
+      zone: downloadInputZone(), start: $('#dl-start').value, end: $('#dl-end').value}));
+    $('#dl-confirm-summary').innerHTML = downloadSubmissionSummary(state.downloads.confirmation);
+    $('#dl-confirm-error').textContent = '';
+    status.textContent = '';
+    $('#download-confirm').showModal();
   } catch (error) { status.textContent = error.message; return; }
-  button.disabled = true;
-  status.textContent = '正在提交…';
+}
+
+function downloadSubmissionSummary(snapshot) {
+  const {payload, products, zone} = snapshot;
+  const satellites = [...new Set(products.map(product => product.satellite || product.source_id))].join('、');
+  return '<dl class="download-task-summary"><div><dt>卫星</dt><dd>' + esc(satellites) + '</dd></div>' +
+    '<div><dt>日期</dt><dd>' + esc(snapshot.start + ' 至 ' + snapshot.end + ' · ' + zone) + '</dd></div>' +
+    '<div><dt>时次</dt><dd>' + esc(downloadQueueTimeSelection({selection: {times: payload.times}}, zone)) + '</dd></div>' +
+    '<div><dt>波段</dt><dd>' + esc(payload.band ? 'C' + String(payload.band).padStart(2, '0') : '全部波段') + '</dd></div></dl>' +
+    '<h3>产品清单 · ' + products.length + ' 个</h3><ul class="download-confirm-products">' +
+    products.map(product => '<li><strong>' + esc([product.satellite, product.data_type].filter(Boolean).join(' · ')) +
+      '</strong><span>' + esc(downloadProductName(product)) + '</span></li>').join('') + '</ul>';
+}
+
+function closeDownloadConfirmation() {
+  if (state.downloads.submitting) return;
+  $('#download-confirm').close();
+  state.downloads.confirmation = null;
+}
+
+async function confirmDownloadSubmission() {
+  const snapshot = state.downloads.confirmation;
+  if (!snapshot || state.downloads.submitting) return;
+  state.downloads.submitting = true;
+  for (const id of ['dl-confirm-submit', 'dl-confirm-cancel', 'dl-confirm-close', 'dl-submit']) $('#' + id).disabled = true;
+  $('#dl-confirm-submit').textContent = '正在提交…';
+  $('#dl-confirm-error').textContent = '';
   try {
-    const extras = ($('#dl-extra-products').value || '').split(/[,，\n]+/).map(s => s.trim()).filter(Boolean);
-    const products = [product.product_key, ...extras];
-    if (new Set(products).size !== products.length) throw new Error('附加产品不能重复');
-    const batch = products.length > 1;
-    const payload = await json(batch ? '/api/v1/downloads/batch' : '/api/v1/downloads', {
+    const payload = await json('/api/v1/download-tasks', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(batch ? {products, ...range, band: Number($('#dl-band').value) || 0, times} :
-        {source: product.source_id, collection: product.product_key, ...range,
-          band: Number($('#dl-band').value) || 0, times}),
+      body: JSON.stringify(snapshot.payload),
     });
-    status.textContent = batch ?
-      (payload.created ? '已创建批量订单 #' : '已去重复用批量订单 #') + payload.group.id :
-      '已提交 #' + payload.download.id;
+    const task = payload.task;
+    if (!task?.id) throw new Error('提交结果缺少任务信息，请重试');
+    const title = payload.created ? '下载任务 #' + task.id + ' 已提交' : '已复用下载任务 #' + task.id;
+    $('#dl-submit-status').textContent = title;
+    $('#dl-submit-result').innerHTML = '<h3>' + esc(title) + '</h3>' + downloadTaskDetails(task);
+    $('#dl-submit-result').classList.remove('hidden');
+    $('#download-confirm').close();
+    state.downloads.confirmation = null;
+    state.downloads.page = 1;
     loadDownloads(true);
-  } catch (error) { status.textContent = '提交失败：' + error.message; }
-  finally { button.disabled = false; }
+  } catch (error) {
+    $('#dl-confirm-error').textContent = '提交失败：' + error.message;
+  } finally {
+    state.downloads.submitting = false;
+    for (const id of ['dl-confirm-submit', 'dl-confirm-cancel', 'dl-confirm-close']) $('#' + id).disabled = false;
+    $('#dl-confirm-submit').textContent = '确认提交';
+    $('#dl-submit').disabled = selectedDownloadProducts().length === 0;
+  }
 }
 
 function downloadRate(value) {
@@ -2502,8 +2605,7 @@ function downloadRate(value) {
 
 // Match the compact, expandable task queue on the NSMC downloads page.
 // Expansion is retained across the regular three-second refresh.
-const expandedDownloadBatches = new Set();
-const expandedDownloadRequests = new Set();
+const expandedDownloadTasks = new Set();
 function downloadQueueStage(value) {
   if (value === 'running') return ['执行中', 'active'];
   if (value === 'waiting_auth') return ['等待授权', 'wait'];
@@ -2523,24 +2625,28 @@ function downloadQueueCounts(item) {
   return parts.join(' · ');
 }
 
-function downloadQueueTimeSelection(item) {
+function downloadQueueTimeSelection(item, zone = state.downloads.displayZone) {
   const days = Object.keys(item.selection?.scenes || {});
   if (days.length) {
     const slots = days.reduce((count, day) => count + (item.selection.scenes[day]?.length || 0), 0);
     return days.length + ' 天 · ' + slots + ' 个指定时次';
   }
-  if (item.selection?.times?.length) return item.selection.times.length + ' 个时次/天';
+  if (item.selection?.times?.length) {
+    const times = item.selection.times.map(time => zone === 'BJT' ?
+      String((Number(time.slice(0, 2)) + 8) % 24).padStart(2, '0') + time.slice(2) : time).sort();
+    if (times.length === 24 && times.every(time => time.endsWith(':00'))) return '每小时整点 · ' + zone;
+    return times.join(' / ') + ' · ' + zone;
+  }
   return '全部时次';
 }
 
-function downloadQueueCard(key, stage, title, period, summary, content, expanded) {
+function downloadQueueCard(key, stage, title, overview, content, expanded) {
   return '<div class="download-queue-card' + (expanded ? ' expanded' : '') + '" data-queue-key="' + esc(key) + '">' +
     '<button class="download-queue-toggle" type="button" aria-expanded="' + expanded + '">' +
     '<span class="download-queue-chevron" aria-hidden="true">›</span>' +
     '<span class="download-queue-stage ' + esc(stage[1]) + '">' + esc(stage[0]) + '</span>' +
     '<span class="download-queue-title">' + esc(title) + '</span>' +
-    '<span class="download-queue-period">' + esc(period) + '</span>' +
-    '<span class="download-queue-summary">' + esc(summary) + '</span></button>' +
+    '<span class="download-task-overview">' + overview + '</span></button>' +
     '<div class="download-queue-details">' + content + '</div></div>';
 }
 
@@ -2559,36 +2665,29 @@ function bindDownloadQueue(holder, expandedIDs) {
   };
 }
 
-function renderDownloadBatches(groups) {
-  const holder = $('#download-batches');
-  if (!holder) return;
-  if (!groups.length) {
-    holder.textContent = '暂无多产品订单';
-    return;
-  }
-  holder.innerHTML = groups.map(group => {
-    const children = group.downloads || [];
-    const first = children[0];
-    const period = first ? downloadTimestamp(first.start, state.downloads.displayZone) + ' → ' +
-      downloadTimestamp(first.end, state.downloads.displayZone) : '—';
-    const details = '<div class="download-queue-detail-title">批量订单 #' + esc(group.id) + '</div>' +
-      '<div class="download-queue-meta">' + esc(period) + ' · 创建于 ' +
-      esc(downloadTimestamp(group.created_at, state.downloads.displayZone)) + '</div>' +
-      '<div class="download-queue-metrics">' + esc(downloadQueueCounts(group)) +
-      ' · ' + esc(group.products) + ' 个产品</div>' +
-      '<div class="download-queue-children">' + children.map(item => {
-        const stage = downloadQueueStage(item.state);
-        return '<div class="download-queue-child"><code>' + esc(item.collection_id) + '</code>' +
-          '<span class="download-queue-stage ' + esc(stage[1]) + '">' + esc(stage[0]) + '</span>' +
-          '<span class="download-queue-child-count">' + esc(downloadQueueCounts(item)) + '</span>' +
-          (item.last_error ? '<div class="download-queue-error">' + esc(item.last_error) + '</div>' : '') +
-          '</div>';
-      }).join('') + '</div>';
-    return downloadQueueCard('batch-' + group.id, downloadQueueStage(group.state),
-      '批量订单 #' + group.id + ' · ' + group.products + ' 个产品',
-      period, downloadQueueCounts(group), details, expandedDownloadBatches.has('batch-' + group.id));
-  }).join('');
-  bindDownloadQueue(holder, expandedDownloadBatches);
+function downloadTaskPeriod(task) {
+  const item = task.downloads?.[0];
+  if (!item) return '—';
+  return downloadTimestamp(item.start, state.downloads.displayZone) + ' → ' + downloadTimestamp(item.end, state.downloads.displayZone);
+}
+
+function downloadTaskDetails(task) {
+  return '<dl class="download-task-summary"><div><dt>时间范围</dt><dd>' + esc(downloadTaskPeriod(task)) + '</dd></div>' +
+    '<div><dt>提交时间</dt><dd>' + esc(downloadTimestamp(task.created_at, state.downloads.displayZone)) + '</dd></div>' +
+    '<div><dt>文件</dt><dd>' + esc(downloadQueueCounts(task)) + '</dd></div></dl>' +
+    '<div class="download-queue-children">' + (task.downloads || []).map(item => {
+      const stage = downloadQueueStage(item.state);
+      const name = [item.satellite, item.product_code].filter(Boolean).join(' · ') || downloadProductName(item);
+      const scenes = Object.entries(item.selection?.scenes || {}).map(([day, times]) =>
+        times.map(time => downloadTimestamp(day + 'T' + time + ':00Z', state.downloads.displayZone)).join(' / ')).join('；');
+      return '<div class="download-queue-child"><div class="download-task-product"><strong>' + esc(name) + '</strong>' +
+        (item.product_name && item.product_name !== name ? '<span>' + esc(item.product_name) + '</span>' : '') +
+        '<span>时次：' + esc(scenes || downloadQueueTimeSelection(item)) +
+        ' · ' + esc(item.selection?.band ? 'C' + String(item.selection.band).padStart(2, '0') : '全部波段') + '</span></div>' +
+        '<span class="download-queue-stage ' + esc(stage[1]) + '">' + esc(stage[0]) + '</span>' +
+        '<span class="download-queue-child-count">' + esc(downloadQueueCounts(item)) + '</span>' +
+        (item.last_error ? '<div class="download-queue-error">' + esc(item.last_error) + '</div>' : '') + '</div>';
+    }).join('') + '</div>';
 }
 
 const downloadWindowSeconds = {realtime: 300, '1h': 3600, '3h': 10800, '6h': 21600, '12h': 43200, '1d': 86400, '2d': 172800, '1w': 604800};
@@ -2784,41 +2883,38 @@ function renderDownloadProviders(statuses, liveAvailable = true) {
   }).join('') || '<div class="pool-empty">暂无 Provider 状态</div>';
 }
 
-function renderDownloadRequests(items) {
-  const holder = $('#download-requests');
-  holder.innerHTML = items.slice(0, 50).map(item => {
-    const period = downloadTimestamp(item.start, state.downloads.displayZone) + ' → ' +
-      downloadTimestamp(item.end, state.downloads.displayZone);
-    const details = '<div class="download-queue-detail-title">#' + esc(item.id) + ' · ' +
-      esc(item.collection_id) + '</div>' +
-      '<div class="download-queue-meta">' + esc(downloadTimestamp(item.start, state.downloads.displayZone)) +
-      ' → ' + esc(downloadTimestamp(item.end, state.downloads.displayZone)) +
-      ' · ' + esc(downloadQueueTimeSelection(item)) +
-      ' · ' + esc(item.selection?.band ? `C${String(item.selection.band).padStart(2, '0')}` : '全波段') + '</div>' +
-      '<div class="download-queue-metrics">' + esc(downloadQueueCounts(item)) +
-      ' · 已识别时次 ' + esc(item.granules_discovered || 0) + '</div>' +
-      (item.last_error ? '<div class="download-queue-error">' + esc(item.last_error) + '</div>' : '');
-    return downloadQueueCard('request-' + item.id, downloadQueueStage(item.state),
-      '#' + item.id + ' · ' + item.collection_id, period, downloadQueueCounts(item),
-      details, expandedDownloadRequests.has('request-' + item.id));
+function renderDownloadTasks(items) {
+  const holder = $('#download-tasks');
+  holder.innerHTML = items.slice(0, 30).map(task => {
+    const products = task.downloads || [];
+    const satellites = [...new Set(products.map(item => item.satellite ||
+      state.sources.find(source => source.id === item.source_id)?.name || item.source_id).filter(Boolean))];
+    const names = [...new Set(products.map(item => item.product_code || downloadProductName(item)).filter(Boolean))];
+    const title = satellites.join(' / ') + ' · ' + names.slice(0, 3).join('、') +
+      (names.length > 3 ? ' 等 ' + names.length + ' 个产品' : '');
+    const times = [...new Set(products.map(item => downloadQueueTimeSelection(item)))].join('；');
+    const overview = '<span class="download-task-reference">任务 #' + esc(task.id) + ' · ' + products.length + ' 个产品</span>' +
+      '<span>时间：' + esc(downloadTaskPeriod(task)) + '</span><span>时次：' + esc(times) + '</span>' +
+      '<span>' + esc(downloadQueueCounts(task)) + '</span>';
+    return downloadQueueCard('task-' + task.id, downloadQueueStage(task.state), title,
+      overview, downloadTaskDetails(task), expandedDownloadTasks.has('task-' + task.id));
   }).join('') || '<div class="pool-empty">暂无下载任务</div>';
-  bindDownloadQueue(holder, expandedDownloadRequests);
+  bindDownloadQueue(holder, expandedDownloadTasks);
   const {page, pages, total} = state.downloads;
   const pager = $('#download-pages');
-  pager.classList.toggle('hidden', total <= 50);
-  $('#download-page-summary').textContent = `共 ${total} 条，每页最多 50 条`;
+  pager.classList.toggle('hidden', total <= 30);
+  $('#download-page-summary').textContent = `共 ${total} 个任务，每页最多 30 项`;
   $('#download-page-current').textContent = `第 ${page} / ${Math.max(1, pages)} 页`;
   $('#download-page-prev').disabled = page <= 1;
   $('#download-page-next').disabled = page >= pages;
 }
 
 function applyDownloadPage(payload) {
-  // Query only 50 rows on the server; never retain the entire download history.
-  state.downloads.requests = (payload.downloads || []).slice(0, 50);
+  state.downloads.tasks = (payload.tasks || []).slice(0, 30);
   state.downloads.page = payload.page || state.downloads.page;
   state.downloads.total = payload.total || 0;
   state.downloads.pages = Math.max(1, payload.pages || 1);
-  renderDownloadRequests(state.downloads.requests);
+  renderDownloadTasks(state.downloads.tasks);
 }
 
 function changeDownloadPage(direction) {
@@ -2826,14 +2922,6 @@ function changeDownloadPage(direction) {
   if (next === state.downloads.page) return;
   state.downloads.page = next;
   loadDownloads(true);
-}
-
-function mergeDownloadUpdates(payload, reset = false) {
-  const byID = new Map((reset ? [] : state.downloads.requests).map(item => [item.id, item]));
-  for (const item of payload.downloads || []) byID.set(item.id, item);
-  state.downloads.requests = [...byID.values()].sort((a, b) => Number(b.id) - Number(a.id)).slice(0, 50);
-  state.downloads.cursor = payload.cursor || state.downloads.cursor;
-  renderDownloadRequests(state.downloads.requests);
 }
 
 function ensureDownloadProviderStream() {
@@ -2890,28 +2978,22 @@ async function loadDownloads(schedule = true, forceHistory = false) {
   if (!downloadWindowSeconds[history.window]) history.window = '1h';
   const cacheFresh = !forceHistory && history.payload?.window === history.window && Date.now() - history.loadedAt < 15_000;
   const historySince = !forceHistory && history.payload?.window === history.window ? incrementalSeriesSince(history.payload, 'providers') : '';
-  const requestURL = '/api/v1/downloads?limit=50&page=' + encodeURIComponent(state.downloads.page);
-  const batchFresh = state.downloads.batchLoadedAt && Date.now() - state.downloads.batchLoadedAt < 15_000;
-  const [requests, samples, batches] = await Promise.allSettled([
+  const requestURL = '/api/v1/download-tasks?page=' + encodeURIComponent(state.downloads.page);
+  const [requests, samples] = await Promise.allSettled([
     json(requestURL),
     cacheFresh ? Promise.resolve(history.payload) : json('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window) +
       (historySince ? '&since=' + encodeURIComponent(historySince) : '')),
-    batchFresh ? Promise.resolve(null) : json('/api/v1/downloads/batch?limit=10'),
   ]);
   if (ticket !== state.downloads.pollSeq) return;
   state.downloads.requestError = requests.status === 'rejected' ? requests.reason.message : '';
   $('#downloads-error').textContent = [state.downloads.requestError, state.downloads.providerError].filter(Boolean).join(' · ');
   if (requests.status === 'fulfilled') {
     applyDownloadPage(requests.value);
-    if (!state.downloads.requests.length && state.downloads.page > 1) {
+    if (!state.downloads.tasks.length && state.downloads.page > 1) {
       state.downloads.page = Math.max(1, state.downloads.pages);
       loadDownloads(schedule, forceHistory);
       return;
     }
-  }
-  if (batches.status === 'fulfilled' && batches.value) {
-    renderDownloadBatches(batches.value.groups || []);
-    state.downloads.batchLoadedAt = Date.now();
   }
   if (samples.status === 'fulfilled') {
     history.payload = cacheFresh ? samples.value : mergeDownloadHistory(history.payload, samples.value, history.window);
@@ -3482,13 +3564,49 @@ function bind() {
     state.downloads.history.chartKey = '';
     loadDownloads(true, true);
   });
-  $('#dl-source').addEventListener('change', loadDownloadCatalog);
-  for (const [id] of dlStages) $('#dl-' + id).addEventListener('change', () => refreshDownloadFilters(id));
-  $('#dl-product').addEventListener('change', () => refreshDownloadFilters('product'));
-  $('#dl-band').addEventListener('change', () => refreshDownloadFilters('band'));
-  $('#dl-resolution').addEventListener('change', () => refreshDownloadFilters('resolution'));
+  $('#dl-timezone').addEventListener('change', event => setDownloadTimezone(event.target.value));
+  $('#dl-filters').addEventListener('change', event => {
+    const id = event.target.dataset.downloadFilter;
+    if (!dlStages.some(([field]) => field === id)) return;
+    const selected = state.downloads.filters[id] || new Set();
+    if (event.target.checked) selected.add(event.target.value); else selected.delete(event.target.value);
+    state.downloads.filters[id] = selected;
+    refreshDownloadFilters();
+  });
+  $('#dl-filters').addEventListener('click', event => {
+    const button = event.target.closest('[data-download-filter-clear]');
+    if (!button) return;
+    state.downloads.filters[button.dataset.downloadFilterClear] = new Set();
+    refreshDownloadFilters();
+  });
+  $('#dl-search').addEventListener('input', renderDownloadSelection);
+  $('#dl-reset-filters').addEventListener('click', () => {
+    state.downloads.filters = {};
+    $('#dl-search').value = '';
+    refreshDownloadFilters();
+  });
+  $('#dl-product-results').addEventListener('change', event => {
+    const key = event.target.dataset.downloadProduct;
+    if (key) selectDownloadProduct(key, event.target.checked);
+  });
+  $('#dl-selected-products').addEventListener('click', event => {
+    const button = event.target.closest('[data-download-remove]');
+    if (button) selectDownloadProduct(button.dataset.downloadRemove, false);
+  });
+  $('#dl-select-results').addEventListener('change', event => selectDownloadResults(event.target.checked));
+  $('#dl-clear-selection').addEventListener('click', () => {
+    state.downloads.selectedProducts.clear();
+    renderDownloadSelection();
+  });
   $('#dl-time-mode').addEventListener('change', () => $('#dl-custom-field').classList.toggle('hidden', $('#dl-time-mode').value !== 'custom'));
   $('#download-submit-form').addEventListener('submit', submitDownload);
+  $('#dl-confirm-submit').addEventListener('click', confirmDownloadSubmission);
+  $('#dl-confirm-cancel').addEventListener('click', closeDownloadConfirmation);
+  $('#dl-confirm-close').addEventListener('click', closeDownloadConfirmation);
+  $('#download-confirm').addEventListener('cancel', event => {
+    event.preventDefault();
+    closeDownloadConfirmation();
+  });
   $('#monitor-window-tabs').addEventListener('click', event => {
     const button = event.target.closest('[data-monitor-window]');
     if (!button) return;

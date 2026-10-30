@@ -10,6 +10,13 @@ const app = (await readFile(new URL('./static/app.js', import.meta.url), 'utf8')
 // Synthetic data exercises the real renderers without accounts or upstream APIs.
 const fixture = `
 window.styleFixture = async function(view, mode, wide) {
+  state.downloads.catalogReady = true;
+  state.downloads.catalog = [
+    {product_key:'goes18:ABI-L1b-RadF',source_id:'goes18',satellite:'GOES-18',instrument:'ABI',level:'L1B',data_type:'ABI-L1b-RadF',display_name:'Full disk radiance',area_type:'DISK',resolution:'0.5 / 1 / 2 km',bands:[]},
+    {product_key:'modis:terra',source_id:'modis',satellite:'Terra',instrument:'MODIS',level:'L2',data_type:'MOD06_L2',display_name:'Cloud properties',area_type:'SWATH',resolution:'1 km',bands:[]},
+    {product_key:'modis:aqua',source_id:'modis',satellite:'Aqua',instrument:'MODIS',level:'L2',data_type:'MYD06_L2',display_name:'Cloud properties',area_type:'SWATH',resolution:'1 km',bands:[]}
+  ];
+  state.downloads.selectedProducts = new Set(['goes18:ABI-L1b-RadF','modis:aqua']);
   stopIndexStream(); state.satelliteYears.clear();
   $('#satellite-year-calendars').replaceChildren(); $('#year-product-heading').classList.add('hidden');
   setView(view);
@@ -59,14 +66,17 @@ window.styleFixture = async function(view, mode, wide) {
   state.downloads.displayZone = 'UTC';
   state.downloads.history.displayZone = 'BJT';
   state.downloads.history.chartKey = '';
-  state.downloads.requests = [{id:20,collection_id:'goes18:ABI-L1b-RadF',state:'done',files_done:720,assets_queued:720,
-    start:'2026-12-31T20:00:00Z',end:'2027-01-01T02:00:00Z',band:6,times_count:24}];
+  state.downloads.tasks = [{id:20,state:'done',products:1,files_done:720,assets_queued:720,created_at:'2026-10-30T00:00:00Z',downloads:[{
+    id:1,collection_id:'goes18:ABI-L1b-RadF',satellite:'GOES-18',product_code:'ABI-L1b-RadF',product_name:'Full disk radiance',state:'done',files_done:720,assets_queued:720,
+    start:'2026-12-31T20:00:00Z',end:'2027-01-01T02:00:00Z',selection:{band:6,times:['00:00','12:00']}}]}];
   const transferPoints = Array.from({length:24}, (_, i) => ({sampled_at:new Date(Date.now()-(23-i)*150000).toISOString(),bytes_per_second:1048576,active_transfers:2,adaptive_concurrency:4}));
   state.downloads.providers = [{source_id:'goes',enabled:true,bytes_per_second:1048576,active_transfers:2,adaptive_concurrency:4,states:{done:720}}];
   state.downloads.history.payload = {window:'1h',generated_at:new Date().toISOString(),bucket_seconds:15,
     providers:[{source_id:'goes',latest:transferPoints.at(-1),points:transferPoints}]};
   syncDownloadTimezones();
-  renderDownloadRequests(state.downloads.requests);
+  renderDownloadTasks(state.downloads.tasks);
+  refreshDownloadFilters();
+  $('#dl-start').value='2026-12-31';$('#dl-end').value='2027-01-02';
   renderDownloadProviders(state.downloads.providers, true);
   if (mode === 'form') openPoolForm('account', state.access.accounts[0]);
   if (view === 'era5-view') {
@@ -384,9 +394,18 @@ try {
       assert.ok(metrics.scroll<=metrics.width+1,view+' '+mode+' overflows: '+JSON.stringify(metrics));
       assert.deepEqual(metrics.bad,[],view+' has collapsed controls');
       if (view === 'downloads-view') {
+        const picker = await driver.executeScript(`
+          const checked=[...document.querySelectorAll('[data-download-product]:checked')].map(node=>node.dataset.downloadProduct);
+          return {checked,selected:$('#dl-selected-count').textContent,results:$('#dl-filtered-count').textContent,
+            legacy:!!document.querySelector('#dl-extra-products,#download-batches,#download-requests')};
+        `);
+        assert.equal(picker.checked.length,2);
+        assert.equal(picker.selected,'已选 2 个');
+        assert.equal(picker.results,'3');
+        assert.equal(picker.legacy,false);
         const initial = await driver.executeScript(`const $=selector=>document.querySelector(selector);return {
           task:$('#download-timezone').value,monitor:$('#download-monitor-timezone').value,
-          request:$('#download-requests').textContent,
+          request:$('#download-tasks').textContent,
           axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)
         }`);
         assert.equal(initial.task, 'UTC');
@@ -397,7 +416,7 @@ try {
           const $=selector=>document.querySelector(selector);
           $('#download-timezone').value='BJT';
           $('#download-timezone').dispatchEvent(new Event('change'));
-          return {request:$('#download-requests').textContent,
+          return {request:$('#download-tasks').textContent,
             label:$('#dl-start-label').textContent,
             axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)};
         `);
@@ -408,7 +427,7 @@ try {
           const $=selector=>document.querySelector(selector);
           $('#download-monitor-timezone').value='UTC';
           $('#download-monitor-timezone').dispatchEvent(new Event('change'));
-          return {request:$('#download-requests').textContent,
+          return {request:$('#download-tasks').textContent,
             axis:[...document.querySelectorAll('#download-chart-rate .plot-time span')].map(node=>node.textContent)};
         `);
         assert.equal(monitorChanged.request, changed.request);
@@ -418,6 +437,19 @@ try {
             const node=document.getElementById(id);node.value=value;node.dispatchEvent(new Event('change'));
           }
         `);
+        const confirmation=await driver.executeScript(`
+          submitDownload({preventDefault(){}});
+          const dialog=$('#download-confirm'),box=dialog.getBoundingClientRect();
+          return {open:dialog.open,content:$('#dl-confirm-summary').textContent,left:box.left,right:box.right,
+            width:innerWidth,scroll:dialog.scrollWidth,client:dialog.clientWidth};
+        `);
+        assert.equal(confirmation.open,true);
+        assert.match(confirmation.content,/GOES-18、Aqua/);
+        assert.match(confirmation.content,/产品清单 · 2 个/);
+        assert.ok(confirmation.left>=0&&confirmation.right<=confirmation.width+1,'task confirmation exceeds viewport');
+        assert.ok(confirmation.scroll<=confirmation.client+1,'task confirmation has horizontal overflow');
+        await writeFile('dist/visual/download-task-confirm-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+        await driver.executeScript('closeDownloadConfirmation()');
       }
       if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));

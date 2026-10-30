@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
@@ -13,6 +14,14 @@ import (
 )
 
 func (s *Server) createDownloadGroup(w http.ResponseWriter, r *http.Request) {
+	s.submitDownloadTask(w, r, false)
+}
+
+func (s *Server) createDownloadTask(w http.ResponseWriter, r *http.Request) {
+	s.submitDownloadTask(w, r, true)
+}
+
+func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, taskResponse bool) {
 	user, ok := s.orderUser(w, r)
 	if !ok {
 		return
@@ -68,6 +77,13 @@ func (s *Server) createDownloadGroup(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		for day := range selection.Scenes {
+			at, _ := time.Parse(time.DateOnly, day)
+			if at.Before(start) || !at.Before(end) {
+				writeError(w, http.StatusBadRequest, errors.New("scene date lies outside the requested UTC interval"))
+				return
+			}
+		}
 		if source != "era5" && len(req.Inputs) > 0 {
 			writeError(w, http.StatusBadRequest, errors.New("on-demand inputs cannot apply to ordinary archived products"))
 			return
@@ -79,7 +95,11 @@ func (s *Server) createDownloadGroup(w http.ResponseWriter, r *http.Request) {
 		specs = append(specs, state.GroupProduct{Source: source, Provider: providerID,
 			Collection: key, Selection: selection, Inputs: req.Inputs})
 	}
-	group, created, err := s.store.EnqueueDownloadGroup(r.Context(), user.ID, start, end, specs)
+	owner := user.ID
+	if owner == "" && !s.portalAuth {
+		owner = "local"
+	}
+	group, created, err := s.store.EnqueueDownloadGroup(r.Context(), owner, start, end, specs)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -88,6 +108,15 @@ func (s *Server) createDownloadGroup(w http.ResponseWriter, r *http.Request) {
 	// synchronous indexing step held a committed response behind a busy
 	// SQLite writer for >30 seconds, leading reverse proxies to return 502
 	// even though the order was safely persisted.
+	if taskResponse {
+		tasks, err := s.downloadTaskViews(r.Context(), []state.DownloadGroup{group})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"task": tasks[0], "created": created})
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"group": group, "created": created})
 }
 
