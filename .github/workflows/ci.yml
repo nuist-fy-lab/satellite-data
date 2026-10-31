@@ -219,7 +219,7 @@ jobs:
       - name: Verify lossless PostgreSQL indexing and idempotent batch submission
         env:
           SATELLITE_TEST_POSTGRES_DSN: "host=127.0.0.1 port=5432 user=postgres password=ci-disposable-password dbname=satellite_test sslmode=disable"
-        run: go test ./internal/state -run '^TestPostgres(CompactStateRoundTrip|RegionalOfficialProgress)$' -count=1 -v
+        run: go test ./internal/state -run '^TestPostgres(CompactStateRoundTrip|RegionalOfficialProgress|DownloadTasksLegacyProjection)$' -count=1 -v
       - name: Check migration tool parses on Python 3.6
         run: docker run --rm -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace python:3.6.15-slim python3 -c "import ast; [ast.parse(open(p).read()) for p in ['deploy/migrate-satellite-state.py', 'deploy/plan-normalization.py', 'deploy/prepare-satellite-copy.py', 'deploy/migrate-satellite-bulk-shadow.py']]"
       - name: Verify complete SQLite to PostgreSQL import, normalization and reconciliation

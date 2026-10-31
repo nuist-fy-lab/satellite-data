@@ -294,6 +294,12 @@ window.granuleFixtureSetup = function() {
  document.querySelector('[data-granule-load]').click();
 };
 window.granuleFixtureSubmit = () => submitDownload({preventDefault(){}});
+window.legacyQueueFixture = function() {
+ const child={source_id:'modis',satellite:'Aqua',product_code:'MYD06',start:'2024-01-01T00:00:00Z',end:'2024-01-02T00:00:00Z',state:'transferring',assets_queued:9,files_done:2};
+ expandedDownloadTasks.clear();
+ applyDownloadPage({tasks:[{id:7,kind:'group',key:'group:7',state:'done',assets_queued:4,files_done:4,downloads:[{...child,state:'done',assets_queued:4,files_done:4}]},
+   {id:7,request_id:7,kind:'legacy',key:'legacy:7',state:'transferring',assets_queued:9,files_done:2,downloads:[child]}],page:2,pages:2,total:32});
+};
 window.regionalFixtureSetup = function() {
  const p={product_key:'himawari9:AHI-L1b-Japan',source_id:'himawari9',satellite:'Himawari-9',data_type:'AHI-L1b-Japan',available_granules:true,available_granules_window:'10m',time_profile:{kind:'observation'}};
  state.downloads.catalog=[p];state.downloads.selectedProducts=new Set([p.product_key]);state.downloads.productOptions={};
@@ -510,6 +516,25 @@ try {
         assert.ok(queue.height<=40.1,'collapsed task exceeds one row: '+JSON.stringify(queue));
         assert.equal(queue.nowrap,'nowrap');assert.equal(queue.details,'none');
         assert.equal(queue.expanded,true);assert.ok(queue.after>queue.height+10);
+        if ([320,390,1440].includes(width)) {
+          await driver.executeScript('window.legacyQueueFixture()');
+          const legacy=await driver.executeScript(`
+            const cards=[...document.querySelectorAll('#download-tasks .download-queue-card')];
+            const [group,old]=cards, a=group.querySelector('button'),b=old.querySelector('button');
+            const heights=cards.map(card=>card.querySelector('button').getBoundingClientRect().height);
+            b.click();const first=[a.getAttribute('aria-expanded'),b.getAttribute('aria-expanded')];
+            a.click();const second=[a.getAttribute('aria-expanded'),b.getAttribute('aria-expanded')];
+            b.click();const third=[a.getAttribute('aria-expanded'),b.getAttribute('aria-expanded')];
+            return {heights,first,second,third,text:old.textContent,links:old.querySelectorAll('a').length,page:document.querySelector('#download-page-current').textContent};
+          `);
+          assert.ok(legacy.heights.every(height=>height<=40.1),JSON.stringify(legacy));
+          assert.deepEqual(legacy.first,['false','true']);assert.deepEqual(legacy.second,['true','true']);assert.deepEqual(legacy.third,['true','false']);
+          assert.match(legacy.text,/历史请求 #7/);assert.match(legacy.text,/传输中/);assert.match(legacy.text,/已发现 9 · 已完成 2/);
+          assert.equal(legacy.links,0);assert.equal(legacy.page,'第 2 / 2 页');
+          await driver.executeScript("document.querySelector('#download-tasks').scrollIntoView({block:'center'})");
+          await writeFile('dist/visual/download-legacy-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
+          await driver.executeScript('return window.styleFixture("downloads-view","year",arguments[0])',width>820);
+        }
         if(width>=1000)assert.ok(picker.cardHeight<=60,'product card is not compact: '+JSON.stringify(picker));
         const initial = await driver.executeScript(`const $=selector=>document.querySelector(selector);return {
           task:$('#download-timezone').value,monitor:$('#download-monitor-timezone').value,

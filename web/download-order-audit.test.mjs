@@ -310,6 +310,26 @@ test('queue and product renderers expose native keyboard-operable expanders', ()
   assert.match(css,/\.download-queue-toggle[^{}]*\{[^}]*\}/);
 });
 
+test('legacy requests share paging and keep expansion separate from same-number groups', () => {
+  const h=harness();
+  h.run(`state.downloads.displayZone='UTC'; expandedDownloadTasks.add('legacy:7');`);
+  const child={source_id:'modis',satellite:'Aqua',product_code:'MYD06',start:'2024-01-01T00:00:00Z',end:'2024-01-02T00:00:00Z',state:'transferring',assets_queued:9,files_done:2};
+  h.context.applyDownloadPage({tasks:[
+    {id:7,kind:'group',key:'group:7',state:'done',assets_queued:4,files_done:4,downloads:[{...child,state:'done',assets_queued:4,files_done:4}]},
+    {id:7,request_id:7,kind:'legacy',key:'legacy:7',state:'transferring',assets_queued:9,files_done:2,downloads:[child]},
+  ],page:2,pages:2,total:32});
+  const html=h.element('#download-tasks').innerHTML;
+  assert.match(html,/data-queue-key="group:7"/);assert.match(html,/data-queue-key="legacy:7"/);
+  assert.match(html,/历史请求 #7/);assert.match(html,/传输中/);assert.match(html,/已发现 9 · 已完成 2/);
+  assert.match(html,/download-queue-card expanded" data-queue-key="legacy:7"/);
+  assert.doesNotMatch(html,/download-queue-card expanded" data-queue-key="group:7"/);
+  assert.doesNotMatch(html,/href=|\/downloads\/batch/);
+  assert.equal(h.element('#download-page-current').textContent,'第 2 / 2 页');
+  assert.equal(h.element('#download-page-prev').disabled,false);assert.equal(h.element('#download-page-next').disabled,true);
+  h.context.renderDownloadTasks(h.run('state.downloads.tasks'));
+  assert.match(h.element('#download-tasks').innerHTML,/download-queue-card expanded" data-queue-key="legacy:7"/);
+});
+
 test('timezone changes preserve minute-exact observation overrides through midnight and back', async () => {
   const h=harness();
   h.run(`state.downloads.catalog=[{product_key:'orbit',time_profile:{kind:'orbit'}},
