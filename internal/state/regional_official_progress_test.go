@@ -206,3 +206,26 @@ func TestRegionalOfficialProductScope(t *testing.T) {
 		}
 	}
 }
+
+func TestEnqueueRangeKeepsHighestPriority(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const key = "himawari9:AHI-L1b-Japan"
+	if err := s.UpsertProducts(ctx, "himawari9", []model.Product{{ProductKey: key, SourceID: "himawari9"}}); err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, priority := range []int{10, 5, 20, 12} {
+		if err := s.EnqueueRange(ctx, key, day, day.AddDate(0, 0, 1), priority); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got int
+	if err := s.db.QueryRowContext(ctx, `SELECT priority FROM official_work WHERE product_key=? AND day=?`, key, day.Format(time.DateOnly)).Scan(&got); err != nil || got != 20 {
+		t.Fatalf("priority=%d err=%v", got, err)
+	}
+}

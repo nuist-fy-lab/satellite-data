@@ -954,7 +954,7 @@ func (s *Store) EnqueueRange(ctx context.Context, product string, start, end tim
 			INSERT INTO official_work(product_key,day,state,priority,requested_at,updated_at)
 			VALUES(?,?,'pending',?,?,?)
 			ON CONFLICT(product_key,day) DO UPDATE SET
-			  priority=max(official_work.priority,excluded.priority),
+			  priority=CASE WHEN official_work.priority > excluded.priority THEN official_work.priority ELSE excluded.priority END,
 			  state=CASE WHEN official_work.state='running' THEN official_work.state ELSE 'pending' END,
 			  requested_at=excluded.requested_at,updated_at=excluded.updated_at`,
 			product, key, priority, now, now)
