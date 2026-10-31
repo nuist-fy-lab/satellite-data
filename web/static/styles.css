@@ -427,6 +427,7 @@ main.calendar-wide{width:100%}
 .download-options-heading{font-weight:600}
 .download-options-summary{flex:1;overflow-wrap:anywhere;min-width:0}
 .download-options-toggle{flex:0 0 auto;border:1px solid var(--line);border-radius:4px;padding:2px 6px;color:var(--blue);background:#fff;white-space:nowrap}
+@media(max-width:480px){.download-options-summary{flex:1 0 100%;order:3}.download-options-toggle{margin-left:auto}}
 .download-options-collapse{display:none}
 .download-product-options[open] .download-options-expand{display:none}
 .download-product-options[open] .download-options-collapse{display:inline}

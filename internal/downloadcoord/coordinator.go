@@ -121,7 +121,12 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 	if err != nil {
 		return fmt.Errorf("resolve product metadata: %w", err)
 	}
+	regional := (request.SourceID == "himawari8" || request.SourceID == "himawari9") &&
+		(request.CollectionID == request.SourceID+":AHI-L1b-Japan" || request.CollectionID == request.SourceID+":AHI-L1b-Target")
 	chunkEnd := request.Cursor.Add(discoveryChunk(request.ProviderID))
+	if regional {
+		chunkEnd = request.Cursor.UTC().Truncate(10 * time.Minute).Add(10 * time.Minute)
+	}
 	if chunkEnd.After(request.End) {
 		chunkEnd = request.End
 	}
@@ -138,9 +143,13 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 		if next.After(request.Cursor) {
 			return c.store.AdvanceDownloadRequest(ctx, request.ID, next, 0, nil, false)
 		}
-		chunkEnd = next.AddDate(0, 0, 1)
-		if chunkEnd.After(request.End) {
-			chunkEnd = request.End
+		if !regional {
+			chunkEnd = next.AddDate(0, 0, 1)
+			if chunkEnd.After(request.End) {
+				chunkEnd = request.End
+			}
+		} else if !sceneInWindow(sceneTimes, next, request.Cursor, chunkEnd) {
+			return c.store.AdvanceDownloadRequest(ctx, request.ID, chunkEnd, 0, nil, !chunkEnd.Before(request.End))
 		}
 	}
 	axis := slotaxis.Resolve(request.SourceID, request.CollectionID, product.Cadence)
@@ -259,6 +268,23 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 		}
 	}
 	return c.store.AdvanceDownloadRequest(ctx, request.ID, chunkEnd, selected, refs, !chunkEnd.Before(request.End))
+}
+
+func sceneInWindow(times []string, day, start, end time.Time) bool {
+	for _, value := range times {
+		clock, err := time.Parse("15:04", value)
+		if err != nil {
+			clock, err = time.Parse("15:04:05", value)
+		}
+		if err != nil {
+			continue
+		}
+		at := day.Add(time.Duration(clock.Hour())*time.Hour + time.Duration(clock.Minute())*time.Minute + time.Duration(clock.Second())*time.Second)
+		if !at.Before(start) && at.Before(end) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Coordinator) monitorLoop(ctx context.Context) {

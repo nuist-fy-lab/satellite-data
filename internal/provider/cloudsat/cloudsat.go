@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
@@ -22,7 +23,24 @@ const (
 )
 
 type Provider struct {
-	client *http.Client
+	client       *http.Client
+	metadata     MetadataReader
+	cacheMu      sync.Mutex
+	cache        map[string]orbitCacheEntry
+	metadataGate chan struct{}
+}
+
+// MetadataReader retrieves bounded authenticated OPeNDAP responses.
+type MetadataReader interface {
+	Fetch(context.Context, string, int64) ([]byte, error)
+}
+
+func NewWithMetadata(client *http.Client, reader MetadataReader) *Provider {
+	p := New(client)
+	p.metadata = reader
+	p.cache = make(map[string]orbitCacheEntry)
+	p.metadataGate = make(chan struct{}, 4)
+	return p
 }
 
 func New(client *http.Client) *Provider {
@@ -124,8 +142,14 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	if product == "3F-RMCP.R05_V0002" || product == "3S-RMCP.R05_V0002" {
 		return p.searchRMCP(ctx, q, product)
 	}
-	startDay := time.Date(q.Start.UTC().Year(), q.Start.UTC().Month(), q.Start.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	withCoverage := p.metadata != nil && (product == "2B-GEOPROF.P1_R05" || product == "2B-CLDCLASS.P1_R05")
+	start := q.Start.UTC()
+	if withCoverage {
+		start = start.Add(-6001 * time.Second)
+	}
+	startDay := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
 	out := make([]model.Granule, 0, 128)
+	seen := make(map[string]bool)
 	for day := startDay; day.Before(q.End); day = day.AddDate(0, 0, 1) {
 		catalogURL := fmt.Sprintf("%s/%s/%04d/%03d/catalog.xml", catalogRoot, url.PathEscape(product), day.Year(), day.YearDay())
 		cat, status, err := p.fetchCatalog(ctx, catalogURL)
@@ -138,14 +162,32 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 		if status != http.StatusOK {
 			return nil, fmt.Errorf("CloudSat THREDDS day catalog returned HTTP %d", status)
 		}
+		if withCoverage && len(flattenRefs(cat.Datasets)) > 0 {
+			return nil, fmt.Errorf("CloudSat orbit day catalog contains unsupported catalog references")
+		}
 		for _, item := range flattenDatasets(cat.Datasets) {
-			if item.URLPath == "" || item.Name == "" {
+			if item.URLPath == "" || item.Name == "" || seen[item.URLPath] {
 				continue
 			}
 			start, ok := parseFilenameTime(item.Name)
-			if !ok || start.Before(q.Start) || !start.Before(q.End) {
+			if !ok && withCoverage {
+				return nil, fmt.Errorf("invalid CloudSat orbit filename: %s", item.Name)
+			}
+			if !ok || !start.Before(q.End) || (!withCoverage && start.Before(q.Start)) || (withCoverage && start.Before(q.Start.Add(-6001*time.Second))) {
 				continue
 			}
+			var end time.Time
+			var last time.Time
+			if withCoverage {
+				start, end, last, err = p.orbitCoverage(ctx, product, item, start)
+				if err != nil {
+					return nil, err
+				}
+				if !start.Before(q.End) || !end.After(q.Start) {
+					continue
+				}
+			}
+			seen[item.URLPath] = true
 			metadata := map[string]string{
 				"thredds_url_path": item.URLPath,
 			}
@@ -155,11 +197,16 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 			if modified := modifiedDate(item.Dates); modified != "" {
 				metadata["modified"] = modified
 			}
+			if withCoverage {
+				metadata["last_profile_time"] = last.Format(time.RFC3339Nano)
+				metadata["coverage_basis"] = "profile_centres"
+			}
 			out = append(out, model.Granule{
 				ID:           "cloudsat:" + item.Name,
 				SourceID:     "cloudsat",
 				CollectionID: q.CollectionID,
 				Start:        start,
+				End:          end,
 				Assets: []model.Asset{
 					{
 						ID:        item.URLPath,
@@ -173,7 +220,12 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 			})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Start.Equal(out[j].Start) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Start.Before(out[j].Start)
+	})
 	return out, nil
 }
 

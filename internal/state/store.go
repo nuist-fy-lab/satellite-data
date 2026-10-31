@@ -330,8 +330,9 @@ type DayResponse struct {
 }
 
 type WorkBatch struct {
-	Product string
-	Days    []string
+	Product   string
+	Days      []string
+	ClaimedAt string
 }
 
 type LocalFile struct {
@@ -477,6 +478,10 @@ func Open(path string) (*Store, error) {
 		_ = writer.Close()
 		return nil, fmt.Errorf("initialize download monitor schema: %w", err)
 	}
+	if _, err := writer.Exec(regionalOfficialSchema); err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		_ = writer.Close()
@@ -526,7 +531,7 @@ func openPostgres(dsn string) (*Store, error) {
 	stateDDL := pgSlotDDL.ReplaceAllString(schema, "")
 	stateDDL = pgAssetDDL.ReplaceAllString(stateDDL, "")
 	for _, ddl := range []string{postgresDDL(stateDDL), postgresCompactSchema, postgresDDL(downloadSchema), postgresDDL(downloadGroupsSchema),
-		postgresDDL(era5OrderSchema)} {
+		postgresDDL(era5OrderSchema), regionalOfficialSchema} {
 		if _, err := db.ExecContext(ctx, ddl); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("initialize PostgreSQL satellite state: %w", err)
@@ -949,7 +954,7 @@ func (s *Store) EnqueueRange(ctx context.Context, product string, start, end tim
 			INSERT INTO official_work(product_key,day,state,priority,requested_at,updated_at)
 			VALUES(?,?,'pending',?,?,?)
 			ON CONFLICT(product_key,day) DO UPDATE SET
-			  priority=max(official_work.priority,excluded.priority),
+			  priority=CASE WHEN official_work.priority > excluded.priority THEN official_work.priority ELSE excluded.priority END,
 			  state=CASE WHEN official_work.state='running' THEN official_work.state ELSE 'pending' END,
 			  requested_at=excluded.requested_at,updated_at=excluded.updated_at`,
 			product, key, priority, now, now)
@@ -978,10 +983,14 @@ func (s *Store) ClaimBatch(ctx context.Context, maxDays int) (WorkBatch, error) 
 	}
 	defer tx.Rollback()
 	var product, firstDay string
-	err = tx.QueryRowContext(ctx, `
+	claimQuery := `
 		SELECT product_key,day FROM official_work
 		WHERE state='pending' AND next_attempt_ns<=?
-		ORDER BY priority DESC,requested_at DESC,day DESC LIMIT 1`, nowNS).Scan(&product, &firstDay)
+		ORDER BY priority DESC,requested_at DESC,day DESC LIMIT 1`
+	if s.postgres {
+		claimQuery += ` FOR UPDATE SKIP LOCKED`
+	}
+	err = tx.QueryRowContext(ctx, claimQuery, nowNS).Scan(&product, &firstDay)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkBatch{}, nil
 	}
@@ -992,11 +1001,24 @@ func (s *Store) ClaimBatch(ctx context.Context, maxDays int) (WorkBatch, error) 
 	if err != nil {
 		return WorkBatch{}, err
 	}
+	if IsRegionalOfficialProduct(product) {
+		maxDays = 1
+	}
 	days := make([]string, 0, maxDays)
 	for offset := 0; offset < maxDays; offset++ {
 		day := first.AddDate(0, 0, -offset).Format(time.DateOnly)
 		var exists int
-		if err := tx.QueryRowContext(ctx, `
+		if s.postgres {
+			err := tx.QueryRowContext(ctx, `SELECT 1 FROM official_work
+				WHERE product_key=? AND day=? AND state='pending' AND next_attempt_ns<=?
+				FOR UPDATE SKIP LOCKED`, product, day, nowNS).Scan(&exists)
+			if errors.Is(err, sql.ErrNoRows) {
+				break
+			}
+			if err != nil {
+				return WorkBatch{}, err
+			}
+		} else if err := tx.QueryRowContext(ctx, `
 			SELECT count(*) FROM official_work
 			WHERE product_key=? AND day=? AND state='pending' AND next_attempt_ns<=?`, product, day, nowNS).Scan(&exists); err != nil {
 			return WorkBatch{}, err
@@ -1018,12 +1040,18 @@ func (s *Store) ClaimBatch(ctx context.Context, maxDays int) (WorkBatch, error) 
 	if err := tx.Commit(); err != nil {
 		return WorkBatch{}, err
 	}
-	return WorkBatch{Product: product, Days: days}, nil
+	return WorkBatch{Product: product, Days: days, ClaimedAt: now}, nil
 }
 
 func (s *Store) MarkBatchError(ctx context.Context, batch WorkBatch, cause error) error {
 	now := time.Now()
 	for _, day := range batch.Days {
+		if IsRegionalOfficialProduct(batch.Product) && batch.ClaimedAt != "" {
+			if err := s.markRegionalBatchError(ctx, batch, day, cause); err != nil {
+				return err
+			}
+			continue
+		}
 		var failures int
 		_ = s.db.QueryRowContext(ctx, `SELECT failure_count FROM official_work WHERE product_key=? AND day=?`, batch.Product, day).Scan(&failures)
 		failures++
@@ -1049,16 +1077,23 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 	if len(batch.Days) == 0 {
 		return nil
 	}
-	byDay := make(map[string][]model.Granule, len(batch.Days))
-	for _, granule := range granules {
-		day := granule.Start.UTC().Format(time.DateOnly)
-		byDay[day] = append(byDay[day], granule)
-	}
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.saveOfficialBatchTx(ctx, tx, batch, granules); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) saveOfficialBatchTx(ctx context.Context, tx *sql.Tx, batch WorkBatch, granules []model.Granule) error {
+	byDay := make(map[string][]model.Granule, len(batch.Days))
+	for _, granule := range granules {
+		day := granule.Start.UTC().Format(time.DateOnly)
+		byDay[day] = append(byDay[day], granule)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	prefixIDs := map[string]int64{}
 	for _, day := range batch.Days {
@@ -1177,7 +1212,7 @@ func (s *Store) SaveOfficialBatch(ctx context.Context, batch WorkBatch, granules
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func splitOfficialURL(url string) (string, string) {

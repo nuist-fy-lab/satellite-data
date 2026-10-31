@@ -87,7 +87,7 @@ func main() {
 		return
 	}
 
-	registry, err := app.NewRegistry()
+	registry, err := app.NewRegistryWithCloudSatMetadata(central.NewCloudSatMetadataClient(runtimeConfig.CentralSocket))
 	if err != nil {
 		slog.Error("initialize providers", "error", err)
 		os.Exit(1)

@@ -2693,7 +2693,9 @@ function downloadGranulePicker(product) {
   for (const item of items) counts.set(item.start, (counts.get(item.start) || 0) + 1);
   return '<fieldset class="download-granules"><legend>实际可用场景</legend><div class="download-granule-tools">' +
     '<label>查询日期（UTC）<input type="date" data-granule-date aria-label="场景日期 UTC" value="' + esc(picker.date || commonDownloadSettings().start || '') + '"></label>' +
+    (product.available_granules_window === '10m' ? '<label>时段（UTC）<input type="time" step="600" data-granule-time aria-label="查询时段 UTC" value="' + esc(picker.time || '') + '"></label>' : '') +
     '<button type="button" data-granule-load="' + esc(product.product_key) + '">查询</button>' +
+    (picker.loading ? '<button type="button" data-granule-cancel="' + esc(product.product_key) + '">取消查询</button>' : '') +
     '<button type="button" data-granule-clear="' + esc(product.product_key) + '">清除选择</button></div>' +
     '<div role="status">' + esc(picker.status || (selected.size ? '已选 ' + selected.size + ' 个场景' : '未选择场景')) + '</div>' +
     '<div class="download-granule-list">' + items.map((item, i) => {
@@ -2702,27 +2704,29 @@ function downloadGranulePicker(product) {
       return '<label><input type="checkbox" data-granule-index="' + i + '"' + (selected.has(item.id) ? ' checked' : '') + '><span>' + esc(label) + (counts.get(item.start) > 1 ? ' · ' + position : '') + '</span></label>';
     }).join('') + '</div></fieldset>';
 }
-async function loadDownloadGranules(key, date) {
+async function loadDownloadGranules(key, date, time = '') {
   const product = state.downloads.catalog.find(p => p.product_key === key);
   if (!product?.available_granules) return;
   if (!date) { $('#dl-submit-status').textContent = '请选择查询日期（UTC）'; return; }
+  if (product.available_granules_window === '10m' && (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time) || Number(time.slice(3)) % 10 !== 0)) { $('#dl-submit-status').textContent = '请选择十分钟对齐的查询时段（UTC）'; return; }
   downloadGranuleRequests.get(key)?.abort();
   const controller = new AbortController(); downloadGranuleRequests.set(key, controller);
   const saved = state.downloads.productOptions[key] || {};
-  saved.granules = {...saved.granules, date, items: [], status: '正在查询'};
+  saved.granules = {...saved.granules, date, time, items: [], loading:true, status: '正在查询'};
   state.downloads.productOptions[key] = saved; renderDownloadSelection();
   try {
-    const response = await fetch('/api/v1/downloads/available-times?' + new URLSearchParams({product:key, date}), {signal:controller.signal});
+    const query = {product:key, date}; if (product.available_granules_window === '10m') query.time = time;
+    const response = await fetch('/api/v1/downloads/available-times?' + new URLSearchParams(query), {signal:controller.signal});
     if (!response.ok) throw new Error(response.status === 429 ? '查询繁忙，请稍后重试' : '查询失败，请重试');
     const data = await response.json();
     if (downloadGranuleRequests.get(key) !== controller || !state.downloads.selectedProducts.has(key)) return;
     const current = state.downloads.productOptions[key];
-    current.granules = {...current.granules, items:data.granules, status:data.granules.length ? '选择场景' : '该日无可用场景'};
+    current.granules = {...current.granules, loading:false, items:data.granules, status:data.granules.length ? '选择场景' : '该时段无可用场景'};
   } catch (error) {
     if (error.name === 'AbortError' || downloadGranuleRequests.get(key) !== controller) return;
     const current = state.downloads.productOptions[key];
     if (!current) return;
-    current.granules = {...current.granules, items:[], status:error.message || '查询失败，请重试'};
+    current.granules = {...current.granules, loading:false, items:[], status:(error.message || '查询失败，请重试') + ((current.granules.selected || []).length ? '，已选场景来自先前查询' : '')};
   }
   renderDownloadSelection();
 }
@@ -2953,7 +2957,7 @@ async function submitDownload(event) {
         if (settings.band && !product.bands?.some(band => band.number === settings.band)) throw new Error('波段不可用');
         const granules = [...(state.downloads.productOptions[product.product_key]?.granules?.selected || [])];
         const interval = downloadProductInterval(product, granules.length ? {...settings, mode:'all'} : settings, zone);
-        if (granules.some(item => Date.parse(item.start) < Date.parse(interval.start) || Date.parse(item.start) >= Date.parse(interval.end))) throw new Error('所选场景不在时间范围内');
+        if (granules.some(item => Date.parse(item.start) >= Date.parse(interval.end) || (item.end ? Date.parse(item.end) <= Date.parse(interval.start) : Date.parse(item.start) < Date.parse(interval.start)))) throw new Error('所选场景不在时间范围内');
         return {product, settings, ...interval, band: settings.band, granules};
       } catch (error) { throw new Error([product.satellite, product.data_type].filter(Boolean).join(' · ') + '：' + error.message); }
     });
@@ -4032,7 +4036,14 @@ function bind() {
     if (add) changeDownloadTimeSelection(add.dataset.downloadTimeAdd, add.closest('.download-time-picker').querySelector('[data-download-slot]').value);
     if (remove) changeDownloadTimeSelection(remove.dataset.downloadTimeRemove, remove.dataset.time, true);
     const load = event.target.closest('[data-granule-load]'), clear = event.target.closest('[data-granule-clear]');
-    if (load) loadDownloadGranules(load.dataset.granuleLoad, load.closest('.download-granules').querySelector('[data-granule-date]').value);
+    if (load) { const panel=load.closest('.download-granules'); loadDownloadGranules(load.dataset.granuleLoad, panel.querySelector('[data-granule-date]').value, panel.querySelector('[data-granule-time]')?.value || ''); }
+    const cancel = event.target.closest('[data-granule-cancel]');
+    if (cancel) {
+      const key=cancel.dataset.granuleCancel; downloadGranuleRequests.get(key)?.abort(); downloadGranuleRequests.delete(key);
+      const picker=state.downloads.productOptions[key]?.granules;
+      if (picker) { picker.loading=false; picker.status='查询已取消' + (picker.selected?.length ? '，已选场景来自先前查询' : ''); }
+      renderDownloadSelection();
+    }
     if (clear) {
       const saved = state.downloads.productOptions[clear.dataset.granuleClear];
       if (saved?.granules) { saved.granules.selected = []; saved.granules.status = '未选择场景'; }
@@ -4055,11 +4066,11 @@ function bind() {
       const replacement = document.createElement('div'); replacement.innerHTML = downloadProductOptions(product);
       editor.querySelector('.download-options-summary').textContent = replacement.querySelector('.download-options-summary').textContent;
     }
-    if (editor && event.target.matches('[data-granule-date]')) {
+    if (editor && event.target.matches('[data-granule-date], [data-granule-time]')) {
       downloadGranuleRequests.get(editor.dataset.downloadOptions)?.abort();
       downloadGranuleRequests.delete(editor.dataset.downloadOptions);
       const saved = state.downloads.productOptions[editor.dataset.downloadOptions];
-      if (saved?.granules) { saved.granules.date = event.target.value; saved.granules.items = []; saved.granules.status = ''; }
+      if (saved?.granules) { saved.granules[event.target.matches('[data-granule-date]') ? 'date' : 'time'] = event.target.value; saved.granules.items = []; saved.granules.loading = false; saved.granules.status = saved.granules.selected?.length ? '已选场景来自先前查询' : ''; renderDownloadSelection(); }
     }
   });
   $('#dl-shared-options').addEventListener('change', event => {
