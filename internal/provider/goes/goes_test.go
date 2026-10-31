@@ -108,6 +108,100 @@ func TestSearchOverlappingFilesAndScanModes(t *testing.T) {
 	}
 }
 
+func TestSearchFloodCalendarPathsAndDistinctComposites(t *testing.T) {
+	product := "ABI-Flood-Hourly"
+	prefix := product + "/2025/08/25/"
+	names := []string{
+		"ABI-Flood-HCOM-AOI002_v1r1_g19_s202508251140210_e202508251549519_c202508251610025.nc",
+		"ABI-Flood-HCOM-AOI002_v1r1_g19_s202508251140210_e202508251649519_c202508251710024.nc",
+		"ABI-Flood-HCOM-AOI002_v1r1_g19_s202508251140210_e202508251649519_c202508251720024.nc",
+	}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		data := map[string]any{}
+		if r.URL.Query().Get("prefix") == prefix {
+			if r.URL.Query().Get("pageToken") == "" {
+				data["nextPageToken"] = "second"
+				data["items"] = []map[string]string{{"name": prefix + names[0]}}
+			} else {
+				data["items"] = []map[string]string{{"name": prefix + names[0]}, {"name": prefix + names[1]}, {"name": prefix + names[2]}}
+			}
+		}
+		body, _ := json.Marshal(data)
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	})}
+	p, _ := New(19, objectstore.NewClient(client))
+	start := time.Date(2025, 8, 25, 15, 0, 0, 0, time.UTC)
+	got, err := p.Search(context.Background(), model.Query{CollectionID: "goes19:" + product, Start: start, End: start.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || len(got[0].Assets) != 1 || len(got[1].Assets) != 1 || len(got[2].Assets) != 1 {
+		t.Fatalf("granules=%+v", got)
+	}
+	if !got[0].Start.Equal(time.Date(2025, 8, 25, 11, 40, 21, 0, time.UTC)) || !got[0].End.Equal(time.Date(2025, 8, 25, 15, 49, 51, 900000000, time.UTC)) {
+		t.Fatalf("granule=%+v", got[0])
+	}
+	got, err = p.Search(context.Background(), model.Query{CollectionID: "goes19:" + product, Start: time.Date(2025, 8, 25, 15, 49, 51, 900000000, time.UTC), End: time.Date(2025, 8, 25, 15, 50, 0, 0, time.UTC)})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("exclusive end: granules=%+v err=%v", got, err)
+	}
+	got, err = p.Search(context.Background(), model.Query{CollectionID: "goes19:" + product, Start: time.Date(2025, 8, 25, 11, 39, 0, 0, time.UTC), End: time.Date(2025, 8, 25, 11, 40, 21, 0, time.UTC)})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("exclusive query end: granules=%+v err=%v", got, err)
+	}
+}
+
+func TestSearchFloodYearBoundaryAndMedia(t *testing.T) {
+	for _, tc := range []struct{ product, extension, media string }{
+		{"ABI-Flood-Day", ".nc", "application/x-netcdf"},
+		{"ABI-Flood-Day-TIF", ".tif", "image/tiff"},
+		{"ABI-Flood-Day-Shapefiles", ".zip", "application/zip"},
+	} {
+		t.Run(tc.product, func(t *testing.T) {
+			prior := tc.product + "/2025/12/31/"
+			requested := map[string]bool{}
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				prefix := r.URL.Query().Get("prefix")
+				requested[prefix] = true
+				data := map[string]any{}
+				if prefix == prior {
+					data["items"] = []map[string]string{{"name": prior + "ABI-Flood-DCOM-AOI002_v1r1_g19_s202512312300000_e202601010100000_c202601010200000" + tc.extension}}
+				}
+				body, _ := json.Marshal(data)
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+			})}
+			p, _ := New(19, objectstore.NewClient(client))
+			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			got, err := p.Search(context.Background(), model.Query{CollectionID: "goes19:" + tc.product, Start: start, End: start.Add(time.Minute)})
+			if err != nil || len(got) != 1 || got[0].Assets[0].MediaType != tc.media || !requested[prior] || !requested[tc.product+"/2026/01/01/"] {
+				t.Fatalf("granules=%+v requested=%v err=%v", got, requested, err)
+			}
+		})
+	}
+}
+
+func TestSearchFloodLeapDayBoundary(t *testing.T) {
+	product := "ABI-Flood-Day"
+	prefix := product + "/2024/02/29/"
+	requested := map[string]bool{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		path := r.URL.Query().Get("prefix")
+		requested[path] = true
+		data := map[string]any{}
+		if path == prefix {
+			data["items"] = []map[string]string{{"name": prefix + "ABI-Flood-DCOM-AOI002_v1r1_g19_s202402292300000_e202403010100000_c202403010200000.nc"}}
+		}
+		body, _ := json.Marshal(data)
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	})}
+	p, _ := New(19, objectstore.NewClient(client))
+	start := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	got, err := p.Search(context.Background(), model.Query{CollectionID: "goes19:" + product, Start: start, End: start.Add(time.Minute)})
+	if err != nil || len(got) != 1 || !requested[prefix] || !requested[product+"/2024/03/01/"] {
+		t.Fatalf("granules=%+v requested=%v err=%v", got, requested, err)
+	}
+}
+
 func TestArchiveIdentity(t *testing.T) {
 	for prefix, want := range map[string]string{
 		"OR_ABI-L1b-RadF-M6C02_G18":  "goes18:ABI-L1b-RadF",

@@ -3,6 +3,7 @@ package viirs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -194,7 +195,9 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	}
 	endpoint := cmrBase + "/granules.json?" + values.Encode()
 	searchAfter := ""
+	seenTokens := make(map[string]bool)
 	out := make([]model.Granule, 0, 512)
+	rawCount := 0
 	for pageNumber := 0; pageNumber < 1000; pageNumber++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
@@ -215,22 +218,36 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 		if resp.StatusCode/100 != 2 {
 			return nil, fmt.Errorf("CMR VIIRS granule search returned HTTP %d", resp.StatusCode)
 		}
+		if strings.EqualFold(resp.Header.Get("CMR-Timed-Out"), "true") {
+			return nil, errors.New("CMR VIIRS granule search timed out")
+		}
 		if decodeErr != nil {
 			return nil, fmt.Errorf("decode CMR VIIRS granule search: %w", decodeErr)
 		}
+		rawCount += len(payload.Feed.Entries)
 		for _, item := range payload.Feed.Entries {
 			granule, ok := cmrGranuleModel(item, q.CollectionID)
 			if ok && granule.End.After(q.Start) && granule.Start.Before(q.End) {
 				out = append(out, granule)
 			}
 		}
-		if len(payload.Feed.Entries) == 0 || nextSearchAfter == "" || nextSearchAfter == searchAfter {
-			break
+		if len(payload.Feed.Entries) < 2000 {
+			if hits := resp.Header.Get("CMR-Hits"); hits != "" {
+				count, err := strconv.Atoi(hits)
+				if err != nil || rawCount < count {
+					return nil, errors.New("CMR VIIRS granule search returned incomplete results")
+				}
+			}
+			sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
+			return out, nil
 		}
+		if nextSearchAfter == "" || seenTokens[nextSearchAfter] {
+			return nil, errors.New("CMR VIIRS granule search returned missing or repeated pagination token")
+		}
+		seenTokens[nextSearchAfter] = true
 		searchAfter = nextSearchAfter
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
-	return out, nil
+	return nil, errors.New("CMR VIIRS granule search exceeded page limit")
 }
 
 func (p *Provider) knownCollection(ctx context.Context, id string) bool {

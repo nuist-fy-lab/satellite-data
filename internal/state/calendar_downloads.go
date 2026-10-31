@@ -28,12 +28,15 @@ func (i *calendarDownloadIntent) matches(at time.Time, band int) bool {
 	if _, ok := i.allBands[band]; ok {
 		return true
 	}
-	selected := i.times[at.UTC().Format("15:04")]
-	if _, ok := selected[0]; ok {
-		return true
+	for _, selected := range i.bandsAt(at) {
+		if _, ok := selected[0]; ok {
+			return true
+		}
+		if _, ok := selected[band]; ok {
+			return true
+		}
 	}
-	_, ok := selected[band]
-	return ok
+	return false
 }
 
 func (i *calendarDownloadIntent) count() int {
@@ -47,7 +50,24 @@ func (i *calendarDownloadIntent) matchesAny(at time.Time) bool {
 	if i == nil {
 		return false
 	}
-	return len(i.allBands) > 0 || len(i.times[at.UTC().Format("15:04")]) > 0
+	if len(i.allBands) > 0 {
+		return true
+	}
+	for _, bands := range i.bandsAt(at) {
+		if len(bands) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (i *calendarDownloadIntent) bandsAt(at time.Time) []map[int]struct{} {
+	at = at.UTC()
+	bands := []map[int]struct{}{i.times[at.Format("15:04")]}
+	if at.Second() != 0 && at.Nanosecond() == 0 {
+		bands = append(bands, i.times[at.Format("15:04:05")])
+	}
+	return bands
 }
 
 // Stable request selection signature for the coverage cache. Rebuilding a
@@ -113,6 +133,11 @@ func (s *Store) activeCalendarDownloads(ctx context.Context, product string, sta
 		if err := json.Unmarshal([]byte(encoded), &selection); err != nil {
 			return nil, err
 		}
+		// Granule IDs have no reliable time mapping in the request record.
+		// Actual file states are overlaid separately by the calendar.
+		if len(selection.GranuleIDs) > 0 {
+			continue
+		}
 		if from.Before(start) {
 			from = start
 		}
@@ -121,18 +146,35 @@ func (s *Store) activeCalendarDownloads(ctx context.Context, product string, sta
 		}
 		for day := dayFloor(from); day.Before(until); day = day.AddDate(0, 0, 1) {
 			key := day.Format(time.DateOnly)
+			clocks := selection.Times
+			if len(selection.Scenes) > 0 {
+				clocks = selection.Scenes[key]
+				if len(clocks) == 0 {
+					continue
+				}
+			}
 			intent := result[key]
 			if intent == nil {
 				intent = &calendarDownloadIntent{allBands: make(map[int]struct{}), times: make(map[string]map[int]struct{})}
 				result[key] = intent
 			}
-			if len(selection.Times) == 0 {
+			if len(clocks) == 0 {
 				intent.allBands[selection.Band] = struct{}{}
 				continue
 			}
-			for _, clock := range selection.Times {
-				at, parseErr := time.Parse(time.RFC3339, key+"T"+clock+":00Z")
-				if parseErr == nil && !at.Before(from) && at.Before(until) {
+			for _, clock := range clocks {
+				clockTime, parseErr := time.Parse("15:04", clock)
+				if parseErr != nil {
+					clockTime, parseErr = time.Parse("15:04:05", clock)
+				}
+				if parseErr != nil {
+					continue
+				}
+				at := day.Add(time.Duration(clockTime.Hour())*time.Hour + time.Duration(clockTime.Minute())*time.Minute + time.Duration(clockTime.Second())*time.Second)
+				if !at.Before(from) && at.Before(until) {
+					if clockTime.Second() == 0 {
+						clock = clockTime.Format("15:04")
+					}
 					if intent.times[clock] == nil {
 						intent.times[clock] = make(map[int]struct{})
 					}

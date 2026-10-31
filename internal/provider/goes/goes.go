@@ -132,9 +132,14 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	}
 	groups := map[string]*grouped{}
 	seen := map[string]bool{}
+	flood := floodProduct(product)
 	consume := func(page objectstore.Page) {
 		for _, object := range page.Objects {
 			start, end, key, ok := parseGOESObjectTime(filepath.Base(object.Name))
+			if flood {
+				start, end, key, ok = parseFloodObjectTime(filepath.Base(object.Name))
+				key = object.Name
+			}
 			if !ok || !start.Before(q.End) || (start.Before(q.Start) && (end.IsZero() || !end.After(q.Start))) || seen[object.Name] {
 				continue
 			}
@@ -153,9 +158,15 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 			if end.After(g.end) {
 				g.end = end
 			}
+			mediaType := "application/x-netcdf"
+			if flood && strings.HasSuffix(object.Name, ".tif") {
+				mediaType = "image/tiff"
+			} else if flood && strings.HasSuffix(object.Name, ".zip") {
+				mediaType = "application/zip"
+			}
 			g.assets = append(g.assets, model.Asset{
 				ID: object.Name, Name: filepath.Base(object.Name), URL: objectstore.GCSObjectURL(p.bucket, object.Name),
-				Size: object.Size, ETag: object.ETag, MediaType: "application/x-netcdf",
+				Size: object.Size, ETag: object.ETag, MediaType: mediaType,
 			})
 		}
 	}
@@ -164,7 +175,24 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 		lookback = time.Hour
 	}
 	first := q.Start.Add(-lookback)
-	if q.End.Sub(q.Start) <= 3*time.Hour {
+	if flood {
+		firstDay := time.Date(first.UTC().Year(), first.UTC().Month(), first.UTC().Day(), 0, 0, 0, 0, time.UTC)
+		for day := firstDay; day.Before(q.End); day = day.AddDate(0, 0, 1) {
+			prefix := fmt.Sprintf("%s/%04d/%02d/%02d/", product, day.Year(), day.Month(), day.Day())
+			token := ""
+			for {
+				page, err := p.objects.ListGCS(ctx, p.bucket, prefix, "", token)
+				if err != nil {
+					return nil, err
+				}
+				consume(page)
+				if page.NextToken == "" {
+					break
+				}
+				token = page.NextToken
+			}
+		}
+	} else if q.End.Sub(q.Start) <= 3*time.Hour {
 		for hour := first.UTC().Truncate(time.Hour); hour.Before(q.End); hour = hour.Add(time.Hour) {
 			prefix := fmt.Sprintf("%s/%04d/%03d/%02d/", product, hour.Year(), hour.YearDay(), hour.Hour())
 			token := ""
@@ -216,8 +244,45 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 			Metadata:     metadata,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Start.Equal(out[j].Start) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Start.Before(out[j].Start)
+	})
 	return out, nil
+}
+
+func floodProduct(product string) bool {
+	switch product {
+	case "ABI-Flood-Day", "ABI-Flood-Day-TIF", "ABI-Flood-Day-Shapefiles", "ABI-Flood-Hourly", "ABI-Flood-Hourly-TIF", "ABI-Flood-Hourly-Shapefiles":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseFloodObjectTime(name string) (time.Time, time.Time, string, bool) {
+	startCode, ok := markerCode(name, "_s")
+	if !ok || len(startCode) != 15 {
+		return time.Time{}, time.Time{}, "", false
+	}
+	parse := func(code string) time.Time {
+		if len(code) != 15 {
+			return time.Time{}
+		}
+		t, err := time.Parse("20060102150405.0", code[:14]+"."+code[14:])
+		if err != nil {
+			return time.Time{}
+		}
+		return t
+	}
+	start := parse(startCode)
+	if start.IsZero() {
+		return time.Time{}, time.Time{}, "", false
+	}
+	endCode, _ := markerCode(name, "_e")
+	return start, parse(endCode), name, true
 }
 
 func goesArea(product string) string {

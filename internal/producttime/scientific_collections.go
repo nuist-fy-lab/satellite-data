@@ -3,6 +3,7 @@ package producttime
 // These exact snapshot collections describe scientific content, not cadence.
 // Sources: https://portal.maap.eo.esa.int/earthcare/earthcare-data-offer/
 // https://ladsweb.modaps.eosdis.nasa.gov/missions-and-measurements/products/MODFNSS
+// https://ladsweb.modaps.eosdis.nasa.gov/missions-and-measurements/products/CLDMSK_L2_VIIRS-CRIS_NOAA20
 // https://user.eumetsat.int/resources/user-guides/mtg-fci-l2-fir-data-guide
 // https://www.ospo.noaa.gov/data/messages/2023/12/MSG_20231215_0000.html
 type scientificDescription struct {
@@ -34,6 +35,7 @@ var remainingScientificCollections = map[string]scientificDescription{
 	"modis:C1444624388-LAADS":                          {"observation", "station_subset", "站点观测子集"},
 	"modis:C1444771617-LAADS":                          {"observation", "station_subset", "站点观测子集"},
 	"modis:C1444780364-LAADS":                          {"observation", "station_subset", "站点观测子集"},
+	"viirs:C3860041042-LAADS":                          {"derived", "cloud_mask", "云掩膜和光谱测试"},
 	"mtg:EO:EUM:DAT:0676":                              {"derived", "motion_wind", "大气运动风"},
 	"mtg:EO:EUM:DAT:0677":                              {"derived", "all_sky_radiation", "全天空辐射"},
 	"mtg:EO:EUM:DAT:0678":                              {"derived", "cloud_mask", "云掩膜"},

@@ -6,6 +6,77 @@ import vm from 'node:vm';
 const app = (await readFile(new URL('./static/app.js', import.meta.url), 'utf8')).replace(/\nboot\(\);\s*$/, '\n');
 const css = await readFile(new URL('./static/styles.css', import.meta.url), 'utf8');
 
+test('actual granule snapshot retains ID and BJT instant across midnight', async () => {
+  const h = harness();
+  h.run(`state.downloads.catalog=[{product_key:'viirs:C3860041042-LAADS',source_id:'viirs',available_granules:true,time_profile:{kind:'observation'}}];
+    state.downloads.selectedProducts=new Set(['viirs:C3860041042-LAADS']);
+    state.downloads.displayZone='BJT';
+    state.downloads.productOptions['viirs:C3860041042-LAADS']={granules:{selected:[{id:'viirs:g1',start:'2024-01-01T16:02:30.123Z'}]}};`);
+  h.element('#dl-start').value='2024-01-02'; h.element('#dl-end').value='2024-01-02';
+  await h.context.submitDownload({preventDefault(){}});
+  assert.deepEqual([...h.run("state.downloads.confirmation.payload.options['viirs:C3860041042-LAADS'].granule_ids")], ['viirs:g1']);
+  assert.match(h.element('#dl-confirm-summary').innerHTML,/2024-01-02 00:02:30\.123 BJT/);
+  h.run("state.downloads.productOptions['viirs:C3860041042-LAADS'].granules.selected=[]");
+  assert.equal(h.run("state.downloads.confirmation.payload.options['viirs:C3860041042-LAADS'].granule_ids.length"),1);
+});
+
+test('derived GOES observation submits listed group without a scan grid', async () => {
+  for (const code of ['ABI-L2-ACHAF','ABI-L2-ACMF']) {
+    const h=harness();
+    h.run(`state.downloads.catalog=[{product_key:'goes18:${code}',source_id:'goes18',available_granules:true,time_profile:{kind:'observation'}}];state.downloads.selectedProducts=new Set(['goes18:${code}']);state.downloads.productOptions['goes18:${code}']={granules:{selected:[{id:'group',start:'2024-01-01T00:00:20.9Z'}]}}`);
+    h.element('#dl-start').value='2024-01-01';h.element('#dl-end').value='2024-01-01';
+    assert.match(h.context.downloadProductOptions(h.run('state.downloads.catalog[0]')),/实际可用场景/);
+    await h.context.submitDownload({preventDefault(){}});
+    assert.deepEqual([...h.run(`state.downloads.confirmation.payload.options['goes18:${code}'].granule_ids`)],['group']);
+    assert.deepEqual([...h.run(`state.downloads.confirmation.payload.options['goes18:${code}'].times`)],[]);
+    assert.match(h.element('#dl-confirm-summary').innerHTML,/00:00:20\.9 UTC/);
+  }
+});
+
+test('stale actual granule response cannot replace the newer date', async () => {
+  const h = harness(), pending = [];
+  h.context.AbortController = AbortController; h.context.URLSearchParams = URLSearchParams;
+  h.context.fetch = () => new Promise(resolve => pending.push(resolve));
+  h.run("state.downloads.catalog=[{product_key:'viirs:C3860041042-LAADS',available_granules:true,time_profile:{kind:'observation'}}];state.downloads.selectedProducts=new Set(['viirs:C3860041042-LAADS'])");
+  const first = h.context.loadDownloadGranules('viirs:C3860041042-LAADS','2024-01-01');
+  const second = h.context.loadDownloadGranules('viirs:C3860041042-LAADS','2024-01-02');
+  pending[1]({ok:true,json:async()=>({granules:[{id:'new',start:'2024-01-02T00:00:00Z'}]})}); await second;
+  pending[0]({ok:true,json:async()=>({granules:[{id:'old',start:'2024-01-01T00:00:00Z'}]})}); await first;
+  assert.equal(h.run("state.downloads.productOptions['viirs:C3860041042-LAADS'].granules.items[0].id"),'new');
+});
+
+test('granule response preserves edits made while loading', async () => {
+  const h = harness(); let resolve;
+  h.context.AbortController=AbortController; h.context.URLSearchParams=URLSearchParams;
+  h.context.fetch=()=>new Promise(r=>{resolve=r;});
+  h.run(`state.downloads.catalog=[{product_key:'goes18:ABI-L1b-RadF',available_granules:true,time_profile:{kind:'scan',cadence_minutes:10},bands:[{number:2}]}];state.downloads.selectedProducts=new Set(['goes18:ABI-L1b-RadF']);`);
+  h.element('#dl-start').value='2024-01-01'; h.element('#dl-end').value='2024-01-01';
+  const pending=h.context.loadDownloadGranules('goes18:ABI-L1b-RadF','2024-01-01');
+  h.context.changeDownloadProductOption('goes18:ABI-L1b-RadF','band','2');
+  h.context.changeDownloadProductOption('goes18:ABI-L1b-RadF','inherit','',false);
+  h.context.setDownloadTimezone('BJT');
+  resolve({ok:true,json:async()=>({granules:[{id:'g',start:'2024-01-01T00:00:00Z'}]})}); await pending;
+  assert.equal(h.run("state.downloads.productOptions['goes18:ABI-L1b-RadF'].band"),2);
+  assert.equal(h.run("state.downloads.productOptions['goes18:ABI-L1b-RadF'].customTime"),true);
+  assert.equal(h.run("state.downloads.productOptions['goes18:ABI-L1b-RadF'].granules.items[0].id"),'g');
+  assert.match(h.element('#dl-selected-products').innerHTML,/查询日期（UTC）/);
+});
+
+test('actual selection preserves prior scan mode until explicitly changed', async () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=[{product_key:'g',available_granules:true,time_profile:{kind:'scan',cadence_minutes:10}}];state.downloads.selectedProducts=new Set(['g']);state.downloads.productOptions.g={mode:'custom',custom:'12:00',granules:{selected:[{id:'g1',start:'2024-01-01T00:00:00Z'}]}}`);
+  h.element('#dl-start').value='2024-01-01';h.element('#dl-end').value='2024-01-01';
+  await h.context.submitDownload({preventDefault(){}});
+  assert.deepEqual([...h.run('state.downloads.confirmation.payload.options.g.granule_ids')],['g1']);
+  assert.equal(h.run('state.downloads.productOptions.g.custom'),'12:00');
+  h.run('state.downloads.productOptions.g.granules.selected=[]');
+  await h.context.submitDownload({preventDefault(){}});
+  assert.deepEqual([...h.run('state.downloads.confirmation.payload.options.g.times')],['12:00']);
+  h.run("state.downloads.productOptions.g.granules.selected=[{id:'g1',start:'2024-01-01T00:00:00Z'}]");
+  h.context.changeDownloadProductOption('g','mode','hourly');
+  assert.equal(h.run('state.downloads.productOptions.g.granules.selected.length'),0);
+});
+
 function harness() {
   const nodes = new Map(), requests = [];
   const element = key => {

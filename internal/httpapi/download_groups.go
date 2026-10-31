@@ -25,11 +25,23 @@ func (s *Server) createDownloadTask(w http.ResponseWriter, r *http.Request) {
 }
 
 type downloadProductOptions struct {
-	Start  string               `json:"start"`
-	End    string               `json:"end"`
-	Band   *int                 `json:"band"`
-	Times  *[]string            `json:"times"`
-	Scenes *map[string][]string `json:"scenes"`
+	Start      string               `json:"start"`
+	End        string               `json:"end"`
+	Band       *int                 `json:"band"`
+	Times      *[]string            `json:"times"`
+	Scenes     *map[string][]string `json:"scenes"`
+	GranuleIDs json.RawMessage      `json:"granule_ids"`
+}
+
+func parseGranuleIDs(raw json.RawMessage) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	var ids []string
+	if string(raw) == "null" || json.Unmarshal(raw, &ids) != nil || len(ids) == 0 {
+		return nil, errors.New("granule_ids must be a nonempty array")
+	}
+	return ids, nil
 }
 
 func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, taskResponse bool) {
@@ -38,14 +50,15 @@ func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, task
 		return
 	}
 	var req struct {
-		Products []string                          `json:"products"`
-		Start    string                            `json:"start"`
-		End      string                            `json:"end"`
-		Band     int                               `json:"band"`
-		Times    []string                          `json:"times"`
-		Scenes   map[string][]string               `json:"scenes"`
-		Inputs   map[string]json.RawMessage        `json:"inputs"`
-		Options  map[string]downloadProductOptions `json:"options"`
+		Products   []string                          `json:"products"`
+		Start      string                            `json:"start"`
+		End        string                            `json:"end"`
+		Band       int                               `json:"band"`
+		Times      []string                          `json:"times"`
+		Scenes     map[string][]string               `json:"scenes"`
+		GranuleIDs json.RawMessage                   `json:"granule_ids"`
+		Inputs     map[string]json.RawMessage        `json:"inputs"`
+		Options    map[string]downloadProductOptions `json:"options"`
 	}
 	if err := decodeRequestJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -85,6 +98,7 @@ func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, task
 		seen[key] = true
 		from, until := start, end
 		band, times, scenes := req.Band, req.Times, req.Scenes
+		granuleRaw := req.GranuleIDs
 		if options, exists := req.Options[key]; exists {
 			if options.Start != "" {
 				from, err = parseTime(options.Start)
@@ -109,6 +123,14 @@ func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, task
 			if options.Scenes != nil {
 				scenes = *options.Scenes
 			}
+			if options.GranuleIDs != nil {
+				granuleRaw = options.GranuleIDs
+			}
+		}
+		granuleIDs, err := parseGranuleIDs(granuleRaw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
 		if !until.After(from) {
 			writeError(w, http.StatusBadRequest, errors.New("product end must follow start"))
@@ -131,12 +153,16 @@ func (s *Server) submitDownloadTask(w http.ResponseWriter, r *http.Request, task
 			}
 		}
 		source := product.SourceID
+		if len(granuleIDs) > 0 && !availableGranuleProduct(source, key) {
+			writeError(w, http.StatusBadRequest, errors.New("granule selection unavailable for product"))
+			return
+		}
 		providerID, ok := downloadcoord.ProviderForSource(source)
 		if !ok {
 			writeError(w, http.StatusBadRequest, errors.New("unsupported source "+source))
 			return
 		}
-		selection, err := (downloadfilter.Selection{Band: band, Times: times, Scenes: scenes}).Normalize(source, key)
+		selection, err := (downloadfilter.Selection{Band: band, Times: times, Scenes: scenes, GranuleIDs: granuleIDs}).Normalize(source, key)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

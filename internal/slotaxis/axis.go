@@ -216,10 +216,13 @@ func (a Axis) MatchWithin(at time.Time, times []string, observed []time.Time, to
 	for _, value := range times {
 		clock, err := time.Parse("15:04", value)
 		if err != nil {
-			continue
+			clock, err = time.Parse("15:04:05", value)
+			if err != nil {
+				continue
+			}
 		}
 		for _, delta := range []int{-1, 0, 1} {
-			want := base.AddDate(0, 0, delta).Add(time.Duration(clock.Hour())*time.Hour + time.Duration(clock.Minute())*time.Minute)
+			want := base.AddDate(0, 0, delta).Add(time.Duration(clock.Hour())*time.Hour + time.Duration(clock.Minute())*time.Minute + time.Duration(clock.Second())*time.Second)
 			if d := distance(at, want); d < bestDelta {
 				best, bestDelta = want, d
 			}

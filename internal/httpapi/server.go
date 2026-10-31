@@ -28,13 +28,14 @@ import (
 const accessSessionCookie = "satellite_access_session"
 
 type Server struct {
-	registry   *provider.Registry
-	store      *state.Store
-	downloader *downloader.Client
-	auth       *authstore.Store
-	sessionTTL time.Duration
-	central    *central.Service
-	portalAuth bool
+	registry      *provider.Registry
+	store         *state.Store
+	downloader    *downloader.Client
+	auth          *authstore.Store
+	sessionTTL    time.Duration
+	central       *central.Service
+	portalAuth    bool
+	availableGate chan struct{}
 }
 
 func New(registry *provider.Registry, store *state.Store, clients ...*downloader.Client) http.Handler {
@@ -50,7 +51,7 @@ func NewWithAuth(registry *provider.Registry, store *state.Store, downloaderClie
 }
 
 func newHandler(registry *provider.Registry, store *state.Store, downloaderClient *downloader.Client, auth *authstore.Store, sessionTTL time.Duration, portalAuth bool, services ...*central.Service) http.Handler {
-	s := &Server{registry: registry, store: store, downloader: downloaderClient, auth: auth, sessionTTL: sessionTTL, portalAuth: portalAuth}
+	s := &Server{registry: registry, store: store, downloader: downloaderClient, auth: auth, sessionTTL: sessionTTL, portalAuth: portalAuth, availableGate: make(chan struct{}, 2)}
 	if len(services) > 0 {
 		s.central = services[0]
 	}
@@ -78,6 +79,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/downloads", s.downloads)
 	mux.HandleFunc("GET /api/v1/downloads/updates", s.downloadUpdates)
 	mux.HandleFunc("GET /api/v1/downloads/catalog", s.downloadCatalog)
+	mux.HandleFunc("GET /api/v1/downloads/available-times", s.availableTimes)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.download)
 	mux.HandleFunc("GET /api/v1/downloader/providers", s.downloaderProviders)
 	mux.HandleFunc("GET /api/v1/downloader/providers/stream", s.downloaderProviderStream)
@@ -688,14 +690,15 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	type option struct {
 		model.Product
-		Bands       []downloadfilter.Band `json:"bands"`
-		OrderMode   string                `json:"order_mode"`
-		TimeProfile producttime.Profile   `json:"time_profile"`
+		Bands             []downloadfilter.Band `json:"bands"`
+		OrderMode         string                `json:"order_mode"`
+		TimeProfile       producttime.Profile   `json:"time_profile"`
+		AvailableGranules bool                  `json:"available_granules"`
 	}
 	items := make([]option, 0, len(products))
 	for _, product := range products {
 		product = provider.NormalizeProduct(product)
-		item := option{Product: product, Bands: []downloadfilter.Band{}, OrderMode: "archive", TimeProfile: producttime.Resolve(product)}
+		item := option{Product: product, Bands: []downloadfilter.Band{}, OrderMode: "archive", TimeProfile: producttime.Resolve(product), AvailableGranules: availableGranuleProduct(product.SourceID, product.ProductKey)}
 		if product.SourceID == "era5" {
 			item.OrderMode = "on-demand"
 		}
