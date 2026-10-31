@@ -72,3 +72,5 @@ NASA documents different composite coverage behavior, including intervals crossi
 ```
 
 An explicit `band: 0`, `times: []`, or `scenes: {}` clears that shared selection for the product. Omitted fields inherit the top-level value. Period products reject recurring minute times and partial calendar periods. The browser reviews and submits an immutable per-product summary, and task history displays each product's actual range and version. Lists contain at most 30 tasks per page.
+
+Selected ABI collections and `viirs:C3860041042-LAADS` also offer provider-listed granule groups. `GET /api/v1/downloads/available-times?product=<key>&date=YYYY-MM-DD` lists one UTC day under the same authentication as orders. Each entry contains the provider's `id`, `start`, and an `end` only when known. The per-product `granule_ids` option selects those IDs exactly and cannot be combined with `times` or `scenes`; it does not select individual assets within a provider group. The normal band filter still applies. IDs are sorted and deduplicated, with a maximum of 2,000 IDs and 1,024 bytes per ID. A listed group is not proof that its assets can be downloaded.

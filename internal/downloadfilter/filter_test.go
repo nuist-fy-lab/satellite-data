@@ -1,10 +1,39 @@
 package downloadfilter
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
 )
+
+func TestSceneSecondsAndDailyLimit(t *testing.T) {
+	times := make([]string, 576)
+	for i := range times {
+		seconds := i * 150
+		times[i] = fmt.Sprintf("%02d:%02d:%02d", seconds/3600, seconds%3600/60, seconds%60)
+	}
+	times = append(times, "00:00")
+	got, err := (Selection{Scenes: map[string][]string{"2024-01-01": times}}).Normalize("viirs", "viirs:test")
+	if err != nil || len(got.Scenes["2024-01-01"]) != 576 || got.Scenes["2024-01-01"][0] != "00:00" || got.Scenes["2024-01-01"][1] != "00:02:30" {
+		t.Fatalf("seconds or deduplication: %+v, %v", got, err)
+	}
+	if _, err := (Selection{Scenes: map[string][]string{"2024-01-01": make([]string, 1441)}}).Normalize("viirs", "viirs:test"); err == nil {
+		t.Fatal("accepted excessive scene count")
+	}
+}
+
+func TestGranuleSelectionNormalization(t *testing.T) {
+	s, err := (Selection{GranuleIDs: []string{"b", "a", "b"}}).Normalize("viirs", "viirs:test")
+	if err != nil || !reflect.DeepEqual(s.GranuleIDs, []string{"a", "b"}) {
+		t.Fatalf("selection=%+v err=%v", s, err)
+	}
+	for _, s := range []Selection{{GranuleIDs: []string{"a"}, Times: []string{"00:00"}}, {GranuleIDs: []string{"a"}, Scenes: map[string][]string{"2024-01-01": {"00:00"}}}, {GranuleIDs: []string{" a"}}} {
+		if _, err := s.Normalize("viirs", "viirs:test"); err == nil {
+			t.Fatalf("accepted %+v", s)
+		}
+	}
+}
 
 func TestSparseResearchScenesPreserveExactObservations(t *testing.T) {
 	selection, err := (Selection{Scenes: map[string][]string{

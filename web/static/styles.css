@@ -631,3 +631,12 @@ main.calendar-wide{width:100%}
 @media(max-width:820px){.monitor-link-grid{grid-template-columns:minmax(0,1fr)}.monitor-chart-card+.monitor-chart-card{border-left:0;border-top:1px solid var(--line)}.monitor-metric:nth-child(2){border-right:0}.monitor-metric:nth-child(n+3){border-top:1px solid var(--line)}}
 @media(max-width:600px){.simple-header,.product-head{flex-wrap:wrap}.simple-header>div{flex:1 1 180px}.calendar-actions,.monitor-head-actions{flex-wrap:wrap}.source-summary{gap:12px}.pool-row-main{flex-wrap:wrap}.pool-actions{margin-left:auto}.access-summary{gap:12px}.era5-options{grid-template-columns:minmax(0,1fr)}.cli-key-row{flex-wrap:wrap}.legend-item{white-space:normal}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+.download-granules{grid-column:1/-1;margin:0;padding:8px;border:1px solid var(--line);min-width:0}
+.download-granules legend{font-weight:600}
+.download-granule-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.download-granule-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));max-height:220px;overflow:auto;gap:3px;margin-top:6px}
+.download-submit-form .download-granule-list label{display:flex;flex-direction:row;align-items:center;gap:8px;min-width:0;min-height:28px}
+.download-submit-form .download-granule-list input[type="checkbox"]{box-sizing:border-box;width:16px;height:16px;min-width:16px;min-height:16px;max-width:16px;flex:0 0 16px;margin:0;padding:0}
+.download-granule-list label span{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+.download-granule-tools label{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.download-confirm-granules{max-height:180px;overflow:auto;overflow-wrap:anywhere}

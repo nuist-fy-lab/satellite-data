@@ -147,9 +147,12 @@ func (p Profile) ValidateTimes(times []string, scenes map[string][]string) error
 	for _, value := range all {
 		at, err := time.Parse("15:04", value)
 		if err != nil {
-			return err
+			at, err = time.Parse("15:04:05", value)
+			if err != nil {
+				return err
+			}
 		}
-		if step > 0 && (at.Hour()*60+at.Minute())%step != 0 {
+		if step > 0 && ((at.Hour()*60+at.Minute())%step != 0 || at.Second() != 0) {
 			return errors.New("requested time is outside this product's nominal scan schedule")
 		}
 	}

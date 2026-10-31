@@ -2515,6 +2515,7 @@ function changeSharedDownloadOption(field, value) {
     if (field === 'band') saved.band = Number(value);
     else {
       saved[field] = value;
+      if (saved.granules) saved.granules = {...saved.granules, selected:[]};
       if (field === 'custom') saved.mode = 'custom';
       if (field === 'mode' && value === 'custom') saved.custom = downloadSettings(products[0]).custom;
     }
@@ -2635,6 +2636,7 @@ function changeDownloadTimeSelection(key, value, remove = false, shared = false)
     }
     for (const product of products) state.downloads.productOptions[product.product_key] = {
       ...(state.downloads.productOptions[product.product_key] || {}), mode: 'custom', custom,
+      granules: state.downloads.productOptions[product.product_key]?.granules ? {...state.downloads.productOptions[product.product_key].granules, selected:[]} : undefined,
     };
     $('#dl-submit-status').textContent = '';
     renderDownloadSelection();
@@ -2644,9 +2646,10 @@ function changeDownloadTimeSelection(key, value, remove = false, shared = false)
 function downloadProductOptions(product) {
   const settings = downloadSettings(product), common = !settings.customTime;
   const profile = downloadTimeProfile(product), zone = downloadPeriodProduct(product) ? 'UTC' : downloadInputZone();
+  const granuleCount = state.downloads.productOptions[product.product_key]?.granules?.selected?.length || 0;
   const disabled = common ? ' disabled' : '';
   const summary = [settings.start && settings.end ? downloadEntryPeriod({product, settings, zone}) : '待选日期',
-    profile.kind === 'scan' ? (settings.mode === 'custom' ? settings.custom || '指定时次' : ({all: '全部扫描', hourly: '每小时整点', synoptic: '00 / 06 / 12 / 18'})[settings.mode]) : '',
+    granuleCount ? granuleCount + ' 个实际可用场景' : profile.kind === 'scan' ? (settings.mode === 'custom' ? settings.custom || '指定时次' : ({all: '全部扫描', hourly: '每小时整点', synoptic: '00 / 06 / 12 / 18'})[settings.mode]) : '',
     product.bands?.length ? downloadBandLabel(product, settings.band) : ''].filter(Boolean).join(' · ');
   const type = ['observation', 'orbit'].includes(profile.kind) || (profile.kind === 'scan' && settings.customTime) ? 'datetime-local' : profile.kind === 'monthly' ? 'month' : profile.kind === 'annual' ? 'number' : 'date';
   const coverage = profile.kind === 'composite';
@@ -2671,9 +2674,57 @@ function downloadProductOptions(product) {
     (!common ? dateField('start', startLabel) + dateField('end', endLabel) : '') +
     (profile.kind === 'scan' ? '<label>时次（' + zone + '）<select data-option-field="mode">' + downloadTimeModes(settings.mode, product) + '</select></label>' +
       (settings.mode === 'custom' ? '<div class="download-custom-times"><span>指定时次（' + zone + '）</span>' + downloadTimePicker(product, settings) + '</div>' : '') : '') +
+    (product.available_granules ? downloadGranulePicker(product) : '') +
     (product.bands?.length ? '<label>波段<select data-option-field="band"><option value="0"' + (!settings.band ? ' selected' : '') + '>全部波段</option>' +
       product.bands.map(band => '<option value="' + band.number + '"' + (band.number === settings.band ? ' selected' : '') + '>' +
         esc(downloadBandLabel(product, band.number)) + '</option>').join('') + '</select></label>' : '') + '</div></details>';
+}
+
+const downloadGranuleRequests = new Map();
+function downloadGranuleTime(value, zone = downloadInputZone()) {
+  const at = new Date(Date.parse(value) + (zone === 'BJT' ? 8 * 3600000 : 0));
+  const fraction = /\.(\d+)(?:Z|[+-]\d\d:\d\d)$/.exec(value)?.[1]?.replace(/0+$/, '') || '';
+  return Number.isFinite(at.getTime()) ? at.toISOString().slice(0,19).replace('T', ' ') + (fraction ? '.' + fraction : '') + ' ' + zone : value;
+}
+function downloadGranulePicker(product) {
+  const saved = state.downloads.productOptions[product.product_key] || {}, picker = saved.granules || {};
+  const selected = new Set((picker.selected || []).map(item => item.id));
+  const items = picker.items || [], counts = new Map(), positions = new Map();
+  for (const item of items) counts.set(item.start, (counts.get(item.start) || 0) + 1);
+  return '<fieldset class="download-granules"><legend>实际可用场景</legend><div class="download-granule-tools">' +
+    '<label>查询日期（UTC）<input type="date" data-granule-date aria-label="场景日期 UTC" value="' + esc(picker.date || commonDownloadSettings().start || '') + '"></label>' +
+    '<button type="button" data-granule-load="' + esc(product.product_key) + '">查询</button>' +
+    '<button type="button" data-granule-clear="' + esc(product.product_key) + '">清除选择</button></div>' +
+    '<div role="status">' + esc(picker.status || (selected.size ? '已选 ' + selected.size + ' 个场景' : '未选择场景')) + '</div>' +
+    '<div class="download-granule-list">' + items.map((item, i) => {
+      const full = downloadGranuleTime(item.start), label = full.startsWith(picker.date + ' ') ? full.slice(11) : full;
+      const position = (positions.get(item.start) || 0) + 1; positions.set(item.start, position);
+      return '<label><input type="checkbox" data-granule-index="' + i + '"' + (selected.has(item.id) ? ' checked' : '') + '><span>' + esc(label) + (counts.get(item.start) > 1 ? ' · ' + position : '') + '</span></label>';
+    }).join('') + '</div></fieldset>';
+}
+async function loadDownloadGranules(key, date) {
+  const product = state.downloads.catalog.find(p => p.product_key === key);
+  if (!product?.available_granules) return;
+  if (!date) { $('#dl-submit-status').textContent = '请选择查询日期（UTC）'; return; }
+  downloadGranuleRequests.get(key)?.abort();
+  const controller = new AbortController(); downloadGranuleRequests.set(key, controller);
+  const saved = state.downloads.productOptions[key] || {};
+  saved.granules = {...saved.granules, date, items: [], status: '正在查询'};
+  state.downloads.productOptions[key] = saved; renderDownloadSelection();
+  try {
+    const response = await fetch('/api/v1/downloads/available-times?' + new URLSearchParams({product:key, date}), {signal:controller.signal});
+    if (!response.ok) throw new Error(response.status === 429 ? '查询繁忙，请稍后重试' : '查询失败，请重试');
+    const data = await response.json();
+    if (downloadGranuleRequests.get(key) !== controller || !state.downloads.selectedProducts.has(key)) return;
+    const current = state.downloads.productOptions[key];
+    current.granules = {...current.granules, items:data.granules, status:data.granules.length ? '选择场景' : '该日无可用场景'};
+  } catch (error) {
+    if (error.name === 'AbortError' || downloadGranuleRequests.get(key) !== controller) return;
+    const current = state.downloads.productOptions[key];
+    if (!current) return;
+    current.granules = {...current.granules, items:[], status:error.message || '查询失败，请重试'};
+  }
+  renderDownloadSelection();
 }
 
 function changeDownloadProductOption(key, field, value, checked) {
@@ -2681,7 +2732,7 @@ function changeDownloadProductOption(key, field, value, checked) {
   if (!product || !state.downloads.selectedProducts.has(key)) return;
   const current = downloadSettings(product);
   let settings = {...(state.downloads.productOptions[key] || {})};
-  if (field === 'inherit') settings = {...current, customTime: !checked};
+  if (field === 'inherit') settings = {...settings, ...current, customTime: !checked};
   else if (field === 'band') {
     const number = Number(value);
     if (number && !product.bands?.some(band => band.number === number)) return;
@@ -2690,9 +2741,12 @@ function changeDownloadProductOption(key, field, value, checked) {
     const [part, unit] = field.split('-');
     const values = [current[part]?.slice(0,4) || '', current[part]?.slice(5,7) || ''];
     values[unit === 'year' ? 0 : 1] = value;
-    settings = {...current, customTime: true, [part]: values.join('-')};
-  } else if (['start', 'end'].includes(field)) settings = {...current, customTime: true, [field]: value};
-  else if (['mode', 'custom'].includes(field)) settings = {...current, [field]: value};
+    settings = {...settings, ...current, customTime: true, [part]: values.join('-')};
+  } else if (['start', 'end'].includes(field)) settings = {...settings, ...current, customTime: true, [field]: value};
+  else if (['mode', 'custom'].includes(field)) {
+    settings = {...settings, ...current, [field]: value};
+    if (settings.granules) settings.granules = {...settings.granules, selected:[]};
+  }
   state.downloads.productOptions[key] = settings;
   renderDownloadSelection();
 }
@@ -2703,7 +2757,7 @@ function selectDownloadProduct(key, selected) {
   if (selected && !products.has(key) && products.size >= 32) {
     $('#dl-submit-status').textContent = '每个任务最多选择 32 个产品';
   } else {
-    if (selected) products.add(key); else { products.delete(key); delete state.downloads.productOptions[key]; }
+    if (selected) products.add(key); else { downloadGranuleRequests.get(key)?.abort(); downloadGranuleRequests.delete(key); products.delete(key); delete state.downloads.productOptions[key]; }
     $('#dl-submit-status').textContent = '';
   }
   renderDownloadSelection();
@@ -2719,7 +2773,7 @@ function selectDownloadResults(selected) {
     $('#dl-submit-status').textContent = '每个任务最多选择 32 个产品，请缩小筛选范围';
   } else {
     state.downloads.selectedProducts = keys;
-    for (const key of Object.keys(state.downloads.productOptions)) if (!keys.has(key)) delete state.downloads.productOptions[key];
+    for (const key of Object.keys(state.downloads.productOptions)) if (!keys.has(key)) { downloadGranuleRequests.get(key)?.abort(); downloadGranuleRequests.delete(key); delete state.downloads.productOptions[key]; }
     $('#dl-submit-status').textContent = '';
   }
   renderDownloadSelection();
@@ -2888,7 +2942,7 @@ async function submitDownload(event) {
   if (state.downloads.submitting) return;
   const status = $('#dl-submit-status');
   try {
-    if ([...document.querySelectorAll('[data-download-slot]')].some(input => input.value)) throw new Error('请先添加已输入的时次，或清空时刻');
+    if ([...document.querySelectorAll('[data-download-slot]')].some(input => input.value && !state.downloads.productOptions[input.closest?.('[data-download-options]')?.dataset.downloadOptions]?.granules?.selected?.length)) throw new Error('请先添加已输入的时次，或清空时刻');
     const products = selectedDownloadProducts();
     if (!products.length) throw new Error('请选择至少一个产品');
     if (products.length > 32) throw new Error('每个任务最多选择 32 个产品');
@@ -2897,12 +2951,15 @@ async function submitDownload(event) {
       const settings = downloadSettings(product);
       try {
         if (settings.band && !product.bands?.some(band => band.number === settings.band)) throw new Error('波段不可用');
-        return {product, settings, ...downloadProductInterval(product, settings, zone), band: settings.band};
+        const granules = [...(state.downloads.productOptions[product.product_key]?.granules?.selected || [])];
+        const interval = downloadProductInterval(product, granules.length ? {...settings, mode:'all'} : settings, zone);
+        if (granules.some(item => Date.parse(item.start) < Date.parse(interval.start) || Date.parse(item.start) >= Date.parse(interval.end))) throw new Error('所选场景不在时间范围内');
+        return {product, settings, ...interval, band: settings.band, granules};
       } catch (error) { throw new Error([product.satellite, product.data_type].filter(Boolean).join(' · ') + '：' + error.message); }
     });
     const payload = {products: entries.map(entry => entry.product.product_key),
       start: entries.map(entry => entry.start).sort()[0], end: entries.map(entry => entry.end).sort().at(-1),
-      options: Object.fromEntries(entries.map(({product, start, end, band, times}) => [product.product_key, {start, end, band, times}]))};
+      options: Object.fromEntries(entries.map(({product, start, end, band, times, granules}) => [product.product_key, {start, end, band, times:granules.length ? [] : times, ...(granules.length ? {granule_ids:granules.map(item => item.id)} : {})}]))};
     state.downloads.confirmation = JSON.parse(JSON.stringify({payload, products, entries, zone}));
     $('#dl-confirm-summary').innerHTML = downloadSubmissionSummary(state.downloads.confirmation);
     $('#dl-confirm-error').textContent = '';
@@ -2919,8 +2976,9 @@ function downloadSubmissionSummary(snapshot) {
     '<h3>产品清单 · ' + products.length + ' 个</h3><ul class="download-confirm-products">' +
     entries.map(entry => { const {product, band, times} = entry; const version=downloadVersionLabel(product); return '<li><strong>' + esc([product.satellite, product.data_type, version ? '版本 ' + version : ''].filter(Boolean).join(' · ')) +
       '</strong><span>' + esc(downloadProductName(product)) + '</span><span>' + esc(downloadEntryPeriod(entry)) + '</span>' +
-      '<span>' + esc(downloadQueueTimeSelection({selection: {times}, time_profile: downloadTimeProfile(product)}, entry.zone)) +
-      (product.bands?.length ? ' · ' + esc(downloadBandLabel(product, band)) : '') + '</span></li>'; }).join('') + '</ul>';
+      '<span>' + esc(entry.granules?.length ? entry.granules.length + ' 个实际可用场景' : downloadQueueTimeSelection({selection: {times}, time_profile: downloadTimeProfile(product)}, entry.zone)) +
+      (product.bands?.length ? ' · ' + esc(downloadBandLabel(product, band)) : '') + '</span>' +
+      (entry.granules?.length ? '<details><summary>场景明细</summary><div class="download-confirm-granules">' + entry.granules.map(item => '<div>' + esc(downloadGranuleTime(item.start, entry.zone)) + '</div>').join('') + '</div></details>' : '') + '</li>'; }).join('') + '</ul>';
 }
 
 function closeDownloadConfirmation() {
@@ -2991,6 +3049,7 @@ function downloadQueueCounts(item) {
 }
 
 function downloadQueueTimeSelection(item, zone = state.downloads.displayZone) {
+  if (item.selection?.granule_ids?.length) return item.selection.granule_ids.length + ' 个实际可用场景';
   const days = Object.keys(item.selection?.scenes || {});
   if (days.length) {
     const slots = days.reduce((count, day) => count + (item.selection.scenes[day]?.length || 0), 0);
@@ -3972,11 +4031,36 @@ function bind() {
     const add = event.target.closest('[data-download-time-add]'), remove = event.target.closest('[data-download-time-remove]');
     if (add) changeDownloadTimeSelection(add.dataset.downloadTimeAdd, add.closest('.download-time-picker').querySelector('[data-download-slot]').value);
     if (remove) changeDownloadTimeSelection(remove.dataset.downloadTimeRemove, remove.dataset.time, true);
+    const load = event.target.closest('[data-granule-load]'), clear = event.target.closest('[data-granule-clear]');
+    if (load) loadDownloadGranules(load.dataset.granuleLoad, load.closest('.download-granules').querySelector('[data-granule-date]').value);
+    if (clear) {
+      const saved = state.downloads.productOptions[clear.dataset.granuleClear];
+      if (saved?.granules) { saved.granules.selected = []; saved.granules.status = '未选择场景'; }
+      renderDownloadSelection();
+    }
   });
   $('#dl-selected-products').addEventListener('change', event => {
     const field = event.target.dataset.optionField;
     const editor = event.target.closest('[data-download-options]');
     if (field && editor) changeDownloadProductOption(editor.dataset.downloadOptions, field, event.target.value, event.target.checked);
+    if (editor && event.target.matches('[data-granule-index]')) {
+      const saved = state.downloads.productOptions[editor.dataset.downloadOptions], picker = saved?.granules;
+      const item = picker?.items?.[Number(event.target.dataset.granuleIndex)];
+      if (!item) return;
+      const selected = (picker.selected || []).filter(value => value.id !== item.id);
+      if (event.target.checked) selected.push(item);
+      picker.selected = selected; picker.status = selected.length ? '已选 ' + selected.length + ' 个场景' : '未选择场景';
+      event.target.closest('.download-granules').querySelector('[role="status"]').textContent = picker.status;
+      const product = state.downloads.catalog.find(p => p.product_key === editor.dataset.downloadOptions);
+      const replacement = document.createElement('div'); replacement.innerHTML = downloadProductOptions(product);
+      editor.querySelector('.download-options-summary').textContent = replacement.querySelector('.download-options-summary').textContent;
+    }
+    if (editor && event.target.matches('[data-granule-date]')) {
+      downloadGranuleRequests.get(editor.dataset.downloadOptions)?.abort();
+      downloadGranuleRequests.delete(editor.dataset.downloadOptions);
+      const saved = state.downloads.productOptions[editor.dataset.downloadOptions];
+      if (saved?.granules) { saved.granules.date = event.target.value; saved.granules.items = []; saved.granules.status = ''; }
+    }
   });
   $('#dl-shared-options').addEventListener('change', event => {
     const field = event.target.dataset.sharedOption;
@@ -3994,6 +4078,8 @@ function bind() {
   });
   $('#dl-select-results').addEventListener('change', event => selectDownloadResults(event.target.checked));
   $('#dl-clear-selection').addEventListener('click', () => {
+    for (const controller of downloadGranuleRequests.values()) controller.abort();
+    downloadGranuleRequests.clear();
     state.downloads.selectedProducts.clear();
     state.downloads.productOptions = {};
     renderDownloadSelection();

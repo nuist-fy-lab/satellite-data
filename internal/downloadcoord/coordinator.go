@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -192,6 +193,10 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 		coverage := len(times) == 0 && len(request.Selection.Scenes) == 0
 		if coverage {
 			match = producttime.OwnsCoverage(granule.Start, granule.End, request.Start, request.Cursor, chunkEnd)
+			if len(request.Selection.GranuleIDs) > 0 {
+				index := sort.SearchStrings(request.Selection.GranuleIDs, granule.ID)
+				match = match && index < len(request.Selection.GranuleIDs) && request.Selection.GranuleIDs[index] == granule.ID
+			}
 		} else {
 			match = match && !nominal.Before(request.Cursor) && nominal.Before(chunkEnd)
 		}

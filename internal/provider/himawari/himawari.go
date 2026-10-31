@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ type Provider struct {
 	bucket    string
 	objects   *objectstore.Client
 }
+
+var regionalName = regexp.MustCompile(`^HS_H0[89]_([0-9]{8})_([0-9]{4})_B[0-9]{2}_(JP0[1-4]|R30[1-4])_R[0-9]{2}_S[0-9]{4}\.DAT(?:\.bz2)?$`)
 
 func New(satellite int, objects *objectstore.Client) (*Provider, error) {
 	if satellite != 8 && satellite != 9 {
@@ -101,11 +104,15 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	}
 
 	type grouped struct {
-		start  time.Time
-		assets []model.Asset
+		start       time.Time
+		assets      []model.Asset
+		observation string
 	}
 	groups := map[string]*grouped{}
-	startDay := time.Date(q.Start.UTC().Year(), q.Start.UTC().Month(), q.Start.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	seen := map[string]bool{}
+	regional := product == "AHI-L1b-Japan" || product == "AHI-L1b-Target"
+	searchStart := q.Start.UTC()
+	startDay := time.Date(searchStart.Year(), searchStart.Month(), searchStart.Day(), 0, 0, 0, 0, time.UTC)
 	for day := startDay; day.Before(q.End); day = day.AddDate(0, 0, 1) {
 		prefix := fmt.Sprintf("%s/%04d/%02d/%02d/", product, day.Year(), day.Month(), day.Day())
 		// Himawari full-disk days contain tens of thousands of band/segment
@@ -113,8 +120,8 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 		// at the requested clock time instead of enumerating the whole day.
 		// Once the first object at/after q.End is seen, no later page can match.
 		startAfter := prefix
-		if sameUTCDay(day, q.Start) {
-			startAfter = prefix + q.Start.UTC().Format("1504") + "/"
+		if sameUTCDay(day, searchStart) {
+			startAfter = prefix + searchStart.Format("1504") + "/"
 		}
 		token := ""
 		finishedDay := false
@@ -132,13 +139,25 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 					finishedDay = true
 					break
 				}
-				if cycle.Before(q.Start) {
+				if cycle.Before(searchStart) {
 					continue
 				}
 				key := cycle.Format("20060102T1504Z")
+				observation := ""
+				if regional {
+					observation, ok = regionalObservation(product, object.Name, cycle)
+					if !ok {
+						continue
+					}
+					if seen[object.Name] {
+						continue
+					}
+					seen[object.Name] = true
+					key += ":" + observation
+				}
 				g := groups[key]
 				if g == nil {
-					g = &grouped{start: cycle}
+					g = &grouped{start: cycle, observation: observation}
 					groups[key] = g
 				}
 				g.assets = append(g.assets, model.Asset{
@@ -164,6 +183,13 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 		if himawariCadence(product) == "10m" {
 			end = end.Add(10 * time.Minute)
 		}
+		metadata := map[string]string{"store": "s3"}
+		if regional {
+			end = time.Time{}
+			metadata["observation_code"] = group.observation
+			metadata["time_precision"] = "timeline"
+			metadata["timeline_minutes"] = "10"
+		}
 		out = append(out, model.Granule{
 			ID:           p.sourceID + ":" + product + ":" + key,
 			SourceID:     p.sourceID,
@@ -171,13 +197,27 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 			Start:        group.start,
 			End:          end,
 			Assets:       group.assets,
-			Metadata: map[string]string{
-				"store": "s3",
-			},
+			Metadata:     metadata,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Start.Equal(out[j].Start) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Start.Before(out[j].Start)
+	})
 	return out, nil
+}
+
+func regionalObservation(product, name string, cycle time.Time) (string, bool) {
+	m := regionalName.FindStringSubmatch(filepath.Base(name))
+	if m == nil || m[1]+m[2] != cycle.UTC().Format("200601021504") {
+		return "", false
+	}
+	if product == "AHI-L1b-Japan" && strings.HasPrefix(m[3], "JP") || product == "AHI-L1b-Target" && strings.HasPrefix(m[3], "R3") {
+		return m[3], true
+	}
+	return "", false
 }
 
 func sameUTCDay(a, b time.Time) bool {

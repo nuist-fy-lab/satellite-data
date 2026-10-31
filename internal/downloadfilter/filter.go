@@ -100,12 +100,36 @@ func ForProduct(source, collection string) *Profile {
 // Selection is optional; an empty selection retains the original full-range behavior.
 // Times are UTC scan-start minutes, not the time at which a download begins.
 type Selection struct {
-	Band   int                 `json:"band,omitempty"`
-	Times  []string            `json:"times,omitempty"`
-	Scenes map[string][]string `json:"scenes,omitempty"`
+	Band       int                 `json:"band,omitempty"`
+	Times      []string            `json:"times,omitempty"`
+	Scenes     map[string][]string `json:"scenes,omitempty"`
+	GranuleIDs []string            `json:"granule_ids,omitempty"`
 }
 
 func (s Selection) Normalize(source, collection string) (Selection, error) {
+	if s.GranuleIDs != nil && len(s.GranuleIDs) == 0 {
+		return Selection{}, errors.New("granule IDs must not be empty")
+	}
+	if len(s.GranuleIDs) > 0 {
+		if len(s.Times) > 0 || len(s.Scenes) > 0 {
+			return Selection{}, errors.New("granule IDs cannot be combined with times or scenes")
+		}
+		if len(s.GranuleIDs) > 2000 {
+			return Selection{}, errors.New("too many granule IDs")
+		}
+		seen := make(map[string]bool, len(s.GranuleIDs))
+		for _, id := range s.GranuleIDs {
+			if id == "" || len(id) > 1024 || strings.TrimSpace(id) != id {
+				return Selection{}, errors.New("invalid granule ID")
+			}
+			seen[id] = true
+		}
+		s.GranuleIDs = make([]string, 0, len(seen))
+		for id := range seen {
+			s.GranuleIDs = append(s.GranuleIDs, id)
+		}
+		sort.Strings(s.GranuleIDs)
+	}
 	if s.Band < 0 {
 		return Selection{}, errors.New("band must be positive")
 	}
@@ -128,14 +152,20 @@ func (s Selection) Normalize(source, collection string) (Selection, error) {
 			if err != nil || parsed.Format(time.DateOnly) != day || len(times) == 0 {
 				return Selection{}, fmt.Errorf("invalid or empty scene date %q", day)
 			}
-			if len(times) > 288 {
+			if len(times) > 1440 {
 				return Selection{}, fmt.Errorf("too many scene times on %s", day)
 			}
 			seen := make(map[string]bool, len(times))
 			for _, value := range times {
 				t, err := time.Parse("15:04", value)
 				if err != nil || t.Format("15:04") != value {
-					return Selection{}, fmt.Errorf("invalid scene time %q on %s", value, day)
+					t, err = time.Parse("15:04:05", value)
+					if err != nil || t.Format("15:04:05") != value {
+						return Selection{}, fmt.Errorf("invalid scene time %q on %s", value, day)
+					}
+				}
+				if t.Second() == 0 {
+					value = t.Format("15:04")
 				}
 				seen[value] = true
 			}

@@ -62,6 +62,7 @@ type dataset struct {
 
 type catalogRef struct {
 	Name string `xml:"name,attr"`
+	Href string `xml:"http://www.w3.org/1999/xlink href,attr"`
 }
 
 type dataSize struct {
@@ -119,6 +120,9 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 	product, ok := strings.CutPrefix(q.CollectionID, "cloudsat:")
 	if !ok || product == "" || strings.ContainsAny(product, "/\\") {
 		return nil, provider.ErrUnsupportedCollection
+	}
+	if product == "3F-RMCP.R05_V0002" || product == "3S-RMCP.R05_V0002" {
+		return p.searchRMCP(ctx, q, product)
 	}
 	startDay := time.Date(q.Start.UTC().Year(), q.Start.UTC().Month(), q.Start.UTC().Day(), 0, 0, 0, 0, time.UTC)
 	out := make([]model.Granule, 0, 128)

@@ -147,6 +147,7 @@ func TestRemainingScientificCollectionsPreserveScheduling(t *testing.T) {
 	}{
 		{"earthcare", "earthcare:EarthCAREL1InstChecked_MAAP:MSI_TRF_1B", "ancillary", "calibration", "校准资料"},
 		{"modis", "modis:C1444624388-LAADS", "observation", "station_subset", "站点观测子集"},
+		{"viirs", "viirs:C3860041042-LAADS", "derived", "cloud_mask", "云掩膜和光谱测试"},
 		{"himawari8", "himawari8:AHI-L2-FLDK-SST", "derived", "sea_surface_temperature", "海表温度"},
 		{"himawari9", "himawari9:AHI-L2-FLDK-Winds", "derived", "motion_wind", "大气运动风"},
 		{"mtg", "mtg:EO:EUM:DAT:0682", "derived", "fire_monitoring", "火灾监测"},
@@ -192,6 +193,16 @@ func TestScientificWindowsDoNotCreateScanAxes(t *testing.T) {
 	}
 	if strings.Contains(string(b), "semantic") || strings.Contains(string(b), "window_minutes") {
 		t.Fatalf("unknown metadata should be omitted: %s", b)
+	}
+}
+
+func TestEventScenesAllowSecondsWithoutCreatingScanAxis(t *testing.T) {
+	p := Resolve(model.Product{SourceID: "viirs", ProductKey: "viirs:C3860041042-LAADS"})
+	if err := p.ValidateTimes(nil, map[string][]string{"2024-01-01": {"00:02:30"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ValidateTimes([]string{"00:02:30"}, nil); err == nil {
+		t.Fatal("event product accepted recurring times")
 	}
 }
 

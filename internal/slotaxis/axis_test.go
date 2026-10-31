@@ -13,6 +13,15 @@ func at(value string) time.Time {
 	return parsed
 }
 
+func TestEventSceneSeconds(t *testing.T) {
+	axis := Axis{Base: time.Minute, Max: time.Minute}
+	start := at("2024-01-01T00:02:30Z")
+	got, ok := axis.Match(start, []string{"00:02:30"}, []time.Time{start})
+	if !ok || !got.Equal(start) {
+		t.Fatalf("scene=%s matched=%v", got, ok)
+	}
+}
+
 func TestFixedAxisUsesNominalSlotsAndAdaptiveTolerance(t *testing.T) {
 	axis := Resolve("goes18", "goes18:ABI-L1b-RadF", "10m")
 	observed := []time.Time{at("2023-06-01T00:01:20Z"), at("2023-06-01T00:11:22Z"), at("2023-06-01T00:21:19Z")}

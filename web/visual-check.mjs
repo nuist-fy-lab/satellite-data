@@ -4,7 +4,7 @@ import {createServer} from 'node:http';
 import {createRequire} from 'node:module';
 
 const require = createRequire(import.meta.url);
-const {Builder} = require('selenium-webdriver');
+const {Builder, By, Key} = require('selenium-webdriver');
 const firefox = require('selenium-webdriver/firefox');
 const app = (await readFile(new URL('./static/app.js', import.meta.url), 'utf8')).replace(/\nboot\(\);\s*$/, '\n');
 // Synthetic data exercises the real renderers without accounts or upstream APIs.
@@ -285,6 +285,15 @@ window.sidebarFooterFixture = async function(expanded) {
 };
 bind();
 window.styleFixtureReady = true;
+window.granuleFixtureSetup = function() {
+ const p=state.downloads.catalog.find(p=>p.product_key==='goes18:ABI-L1b-RadF');p.available_granules=true;
+ state.downloads.selectedProducts=new Set([p.product_key]);state.downloads.productOptions={};
+ $('#dl-start').value='2026-12-31';$('#dl-end').value='2026-12-31';renderDownloadSelection();
+ document.querySelector('[data-download-options]').open=true;
+ window.__oldFetch=window.fetch;window.fetch=()=>new Promise(resolve=>window.__respond=resolve);
+ document.querySelector('[data-granule-load]').click();
+};
+window.granuleFixtureSubmit = () => submitDownload({preventDefault(){}});
 `;
 const assets = new Map();
 for (const file of ['index.html','login.html','styles.css','login.js','catalog.js','era5-inventory.js','icons.svg']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
@@ -301,12 +310,20 @@ const base = 'http://127.0.0.1:'+server.address().port;
 await mkdir('dist/visual',{recursive:true});
 let driver;
 try {
-  const options = new firefox.Options().addArguments('-headless');
-  if (process.env.FIREFOX_BIN) options.setBinary(process.env.FIREFOX_BIN);
-  driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
+  if (process.env.VISUAL_BROWSER === 'chrome') {
+    const chrome = require('selenium-webdriver/chrome');
+    const options = new chrome.Options().addArguments('--headless=new', '--disable-gpu');
+    if (process.env.CHROME_BIN) options.setChromeBinaryPath(process.env.CHROME_BIN);
+    driver = await new Builder().forBrowser('chrome').setChromeOptions(options).setChromeService(new chrome.ServiceBuilder(require('chromedriver').path)).build();
+  } else {
+    const options = new firefox.Options().addArguments('-headless');
+    if (process.env.FIREFOX_BIN) options.setBinary(process.env.FIREFOX_BIN);
+    driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
+  }
   await driver.manage().setTimeouts({pageLoad:15000,script:15000});
-  const cases = [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['era5-view','inventory'],['era5-view','download'],['catalog-view','products'],['catalog-view','sources'],['downloads-view','year'],['monitor-view','year'],['access-view','year'],['access-view','form']];
-  for (const width of [320,390,1440,1920,2560]) {
+  const focused = process.env.VISUAL_GRANULE_ONLY === '1';
+  const cases = focused ? [['downloads-view','year']] : [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['era5-view','inventory'],['era5-view','download'],['catalog-view','products'],['catalog-view','sources'],['downloads-view','year'],['monitor-view','year'],['access-view','year'],['access-view','form']];
+  for (const width of focused ? [390,1440] : [320,390,1440,1920,2560]) {
     await driver.manage().window().setRect({width,height:900});
     await driver.get(base+'/login');
     const loginSize = await driver.executeScript('return document.querySelector(".login-card").getBoundingClientRect().width');
@@ -549,6 +566,38 @@ try {
         assert.equal(shared.open,true);assert.match(shared.content,/00:10 \/ 12:00/);assert.match(shared.content,/0.64 µm/);
         await driver.executeScript('return window.downloadConfirmationFixture(false)');
         assert.deepEqual(await driver.executeScript('return window.downloadSharedFixture(false)'),{time:true,band:true});
+        if (width === 390 || width === 1440) {
+          await driver.executeScript('window.granuleFixtureSetup()');
+          assert.match(await driver.executeScript('return document.querySelector(".download-granules [role=status]").textContent'),/正在查询/);
+          await driver.executeScript(`window.__respond({ok:true,json:async()=>({granules:Array.from({length:40},(_,i)=>({id:'group-'+i,start:'2026-12-31T00:02:30.123Z'}))})})`);
+          await driver.wait(() => driver.executeScript('return !!document.querySelector("[data-granule-index]")'),5000);
+          await driver.executeScript('document.querySelector(".download-granule-list").scrollTop=100');
+          const checkbox=await driver.findElement(By.css('[data-granule-index="30"]'));
+          await checkbox.sendKeys(Key.SPACE);
+          assert.equal(await driver.executeScript('return document.querySelector("[data-granule-index=\\"30\\"]").checked'),true);
+          assert.ok(await driver.executeScript('return document.querySelector(".download-granule-list").scrollTop > 0'));
+          await checkbox.sendKeys(Key.TAB,Key.SPACE);
+          assert.equal(await driver.executeScript('return document.querySelector("[data-granule-index=\\"31\\"]").checked'),true);
+          assert.match(await driver.executeScript('return document.querySelector(".download-options-summary").textContent'),/2 个实际可用场景/);
+          assert.match(await driver.executeScript('return document.querySelector(".download-granules").textContent'),/查询日期（UTC）/);
+          await driver.executeScript("document.querySelector('.download-granules').scrollIntoView({block:'center'})");
+          const bounds=await driver.executeScript(`const r=document.querySelector('.download-granules').getBoundingClientRect();return {left:r.left,right:r.right,width:innerWidth,scroll:document.querySelector('.download-granules').scrollWidth,client:document.querySelector('.download-granules').clientWidth}`);
+          assert.ok(bounds.left>=0 && bounds.right<=bounds.width+1 && bounds.scroll<=bounds.client+1,JSON.stringify(bounds));
+          const row=await driver.executeScript(`const l=document.querySelector('.download-granule-list label'), c=l.querySelector('input'), t=l.querySelector('span');const a=l.getBoundingClientRect(),b=c.getBoundingClientRect(),d=t.getBoundingClientRect();return {row:a.height,checkboxWidth:b.width,checkboxHeight:b.height,textWidth:d.width,textHeight:d.height,text:t.textContent}`);
+          assert.ok(row.checkboxWidth<=20 && row.checkboxHeight<=20 && row.row<=36 && row.textWidth>=120 && row.textHeight<=24,JSON.stringify(row));
+          await writeFile('dist/visual/download-granules-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+          await driver.executeScript('return window.granuleFixtureSubmit()');
+          assert.match(await driver.executeScript('return document.querySelector("#dl-confirm-summary").textContent'),/2 个实际可用场景/);
+          await writeFile('dist/visual/download-granules-confirm-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+          await driver.executeScript(`document.querySelector('#download-confirm').close();
+            window.fetch=async()=>({ok:false,status:429});document.querySelector('[data-granule-load]').click();`);
+          await driver.wait(()=>driver.executeScript('return document.querySelector(".download-granules [role=status]").textContent.includes("繁忙")'),5000);
+          await driver.executeScript(`window.fetch=async()=>({ok:false,status:500});document.querySelector('[data-granule-load]').click();`);
+          await driver.wait(()=>driver.executeScript('return document.querySelector(".download-granules [role=status]").textContent.includes("失败")'),5000);
+          await driver.executeScript(`window.fetch=async()=>({ok:true,json:async()=>({granules:[]})});document.querySelector('[data-granule-load]').click();`);
+          await driver.wait(()=>driver.executeScript('return document.querySelector(".download-granules [role=status]").textContent.includes("无可用")'),5000);
+          await driver.executeScript('window.fetch=window.__oldFetch');
+        }
       }
       if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {
         await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
@@ -556,6 +605,7 @@ try {
       console.log('Layout OK:',width,view,mode);
     }
   }
+  if (!focused) {
   await driver.manage().window().setRect({width:2560,height:900});
   await driver.get(base);
   await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
@@ -592,6 +642,7 @@ try {
       assert.ok(footer.buttonBottom<=Math.min(footer.sidebarBottom,footer.viewportHeight),'short-window logout is clipped: '+JSON.stringify(footer));
       await writeFile('dist/visual/sidebar-footer-'+height+'-'+(expanded?'expanded':'collapsed')+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
     }
+  }
   }
 } finally {
   try {if(driver) await driver.quit();}
