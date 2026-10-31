@@ -321,15 +321,33 @@ try {
     driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
   }
   await driver.manage().setTimeouts({pageLoad:15000,script:15000});
+  let viewportFrame = null;
+  async function openViewport(width, height, url) {
+    await driver.switchTo().defaultContent();
+    await driver.manage().window().setRect({width:Math.max(width+100, 600),height:height+250});
+    await driver.get(base);
+    await driver.executeScript(`document.body.innerHTML='';document.body.style.margin='0';
+      const frame=document.createElement('iframe');frame.id='visual-viewport';frame.style.cssText='display:block;border:0;width:'+arguments[0]+'px;height:'+arguments[1]+'px';frame.src=arguments[2];document.body.append(frame);`,width,height,url);
+    viewportFrame = await driver.findElement(By.id('visual-viewport'));
+    await driver.switchTo().frame(viewportFrame);
+    await driver.wait(async()=>await driver.executeScript('return document.readyState === "complete" && location.href === arguments[0]',url),10000);
+    const actual=await driver.executeScript('return {width:innerWidth,outer:outerWidth,dpr:devicePixelRatio}');
+    assert.equal(actual.width,width,'CSS viewport mismatch: '+JSON.stringify(actual));
+  }
+  async function viewportScreenshot() {
+    await driver.switchTo().defaultContent();
+    const screenshot = await viewportFrame.takeScreenshot(true);
+    await driver.switchTo().frame(viewportFrame);
+    return screenshot;
+  }
   const focused = process.env.VISUAL_GRANULE_ONLY === '1';
   const cases = focused ? [['downloads-view','year']] : [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['era5-view','inventory'],['era5-view','download'],['catalog-view','products'],['catalog-view','sources'],['downloads-view','year'],['monitor-view','year'],['access-view','year'],['access-view','form']];
-  for (const width of focused ? [390,1440] : [320,390,1440,1920,2560]) {
-    await driver.manage().window().setRect({width,height:900});
-    await driver.get(base+'/login');
+  for (const width of focused ? [320,390,1440] : [320,390,1440,1920,2560]) {
+    await openViewport(width,900,base+'/login');
     const loginSize = await driver.executeScript('return document.querySelector(".login-card").getBoundingClientRect().width');
     assert.equal(loginSize,280);
-    await writeFile('dist/visual/login-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
-    await driver.get(base);
+    await writeFile('dist/visual/login-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
+    await openViewport(width,900,base+'/');
     await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
     await driver.executeScript('return window.styleFixture("calendar-view","year",arguments[0])',width>820);
     const calendarCardSizing = await driver.executeScript(`
@@ -383,7 +401,7 @@ try {
     assert.equal(zoom.range,'15');assert.equal(zoom.gaps,4);assert.equal(zoom.restored,288);
     assert.equal(zoom.hourlyRange,'-1');assert.equal(zoom.hourlyCount,24);
     assert.ok(zoom.hourlySlotWidth>=2.99 && zoom.hourlySlotWidth<=5.01,'hourly slot is outside 3-5px: '+JSON.stringify(zoom));
-    await writeFile('dist/visual/calendar-all-day-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+    await writeFile('dist/visual/calendar-all-day-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
     const incremental=await driver.executeScript('return window.incrementalIndexFixture()');
     assert.deepEqual(incremental,{sameDay:true,sameBand:true,untouched:true,status:'complete',replaced:0});
     const events=await driver.executeScript('return window.calendarIndexFixture("events",arguments[0])',width>820);
@@ -395,7 +413,7 @@ try {
     assert.ok(events.scroll<=events.viewport+1,'event timeline overflows page');
     assert.equal(events.slotWidth,3);
     assert.equal(events.slotHeight,26);
-    await writeFile('dist/visual/calendar-events-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+    await writeFile('dist/visual/calendar-events-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
     for (const [source,product,supported] of [['goes18','ABI-L1b-RadF',true],['goes18','GLM-L2-LCFA',false],
       ['himawari9','AHI-L1b-FLDK',true],['earthcare','ACM_CAP_2B',false],['cloudsat','2B-GEOPROF',false],
       ['modis','MOD021KM',false],['viirs','VNP02MOD',false],['mtg','FCI-L1c',true]]) {
@@ -421,7 +439,7 @@ try {
     assert.ok(satellites.widths.every(value=>Math.abs(value-satellites.widths[0])<1),'satellite year widths differ');
     assert.ok(satellites.scroll<=satellites.viewport+1,'all satellites overflow page');
     assert.equal(satellites.headingFits,true,'satellite heading overflows');
-    await writeFile('dist/visual/calendar-all-satellites-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+    await writeFile('dist/visual/calendar-all-satellites-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
     for (const [view,mode] of cases) {
       await driver.executeScript('return window.styleFixture(arguments[0],arguments[1],arguments[2])',view,mode,width>820);
       if(view==='era5-view') {
@@ -525,7 +543,7 @@ try {
         assert.match(confirmation.content,/产品清单 · 2 个/);
         assert.ok(confirmation.left>=0&&confirmation.right<=confirmation.width+1,'task confirmation exceeds viewport');
         assert.ok(confirmation.scroll<=confirmation.client+1,'task confirmation has horizontal overflow');
-        await writeFile('dist/visual/download-task-confirm-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+        await writeFile('dist/visual/download-task-confirm-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
         await driver.executeScript('return window.downloadConfirmationFixture(false)');
         const dismissal=await driver.executeScript(`
           const filter=document.querySelector('.download-filter');
@@ -552,7 +570,7 @@ try {
         assert.equal(temporal.periodClock,false);
         assert.equal(temporal.monthly,'select-one');assert.equal(temporal.observation,'datetime-local');
         await driver.executeScript("document.querySelector('#dl-selected-products').scrollIntoView({block:'start'})");
-        await writeFile('dist/visual/download-product-options-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+        await writeFile('dist/visual/download-product-options-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
         assert.deepEqual(await driver.executeScript('return window.downloadSharedFixture(true)'),{time:false,band:false});
         await driver.executeScript(`
           const band=document.querySelector('[data-shared-option="band"]');band.value='2';band.dispatchEvent(new Event('change',{bubbles:true}));
@@ -585,10 +603,10 @@ try {
           assert.ok(bounds.left>=0 && bounds.right<=bounds.width+1 && bounds.scroll<=bounds.client+1,JSON.stringify(bounds));
           const row=await driver.executeScript(`const l=document.querySelector('.download-granule-list label'), c=l.querySelector('input'), t=l.querySelector('span');const a=l.getBoundingClientRect(),b=c.getBoundingClientRect(),d=t.getBoundingClientRect();return {row:a.height,checkboxWidth:b.width,checkboxHeight:b.height,textWidth:d.width,textHeight:d.height,text:t.textContent}`);
           assert.ok(row.checkboxWidth<=20 && row.checkboxHeight<=20 && row.row<=36 && row.textWidth>=120 && row.textHeight<=24,JSON.stringify(row));
-          await writeFile('dist/visual/download-granules-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+          await writeFile('dist/visual/download-granules-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
           await driver.executeScript('return window.granuleFixtureSubmit()');
           assert.match(await driver.executeScript('return document.querySelector("#dl-confirm-summary").textContent'),/2 个实际可用场景/);
-          await writeFile('dist/visual/download-granules-confirm-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+          await writeFile('dist/visual/download-granules-confirm-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
           await driver.executeScript(`document.querySelector('#download-confirm').close();
             window.fetch=async()=>({ok:false,status:429});document.querySelector('[data-granule-load]').click();`);
           await driver.wait(()=>driver.executeScript('return document.querySelector(".download-granules [role=status]").textContent.includes("繁忙")'),5000);
@@ -600,12 +618,13 @@ try {
         }
       }
       if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {
-        await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+        await writeFile('dist/visual/'+view+'-'+mode+'-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
       }
       console.log('Layout OK:',width,view,mode);
     }
   }
   if (!focused) {
+  await driver.switchTo().defaultContent();
   await driver.manage().window().setRect({width:2560,height:900});
   await driver.get(base);
   await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
@@ -627,12 +646,8 @@ try {
   assert.ok(Math.abs(wideCalendar.gridWidth-wideCalendar.cardWidth)<1,'2K year grid does not fill calendar card: '+JSON.stringify(wideCalendar));
   await writeFile('dist/visual/calendar-view-year-2560.png',Buffer.from(await driver.takeScreenshot(),'base64'));
   for (const height of [240,480]) {
-    await driver.manage().window().setRect({width:390,height});
-    const contentHeight=await driver.executeScript('return innerHeight');
-    if (contentHeight!==height) {
-      const frame=await driver.manage().window().getRect();
-      await driver.manage().window().setRect({width:390,height:frame.height+height-contentHeight});
-    }
+    await openViewport(390,height,base+'/');
+    await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
     assert.equal(await driver.executeScript('return innerHeight'),height,'short-window content height was not set');
     await driver.executeScript('return window.styleFixture("calendar-view","year",false)');
     for (const expanded of [false,true]) {
@@ -640,7 +655,7 @@ try {
       assert.equal(footer.textLines,1,'short-window logout wrapped: '+JSON.stringify(footer));
       assert.ok(footer.buttonRight<=footer.sidebarRight,'short-window logout escapes sidebar');
       assert.ok(footer.buttonBottom<=Math.min(footer.sidebarBottom,footer.viewportHeight),'short-window logout is clipped: '+JSON.stringify(footer));
-      await writeFile('dist/visual/sidebar-footer-'+height+'-'+(expanded?'expanded':'collapsed')+'.png',Buffer.from(await driver.takeScreenshot(),'base64'));
+      await writeFile('dist/visual/sidebar-footer-'+height+'-'+(expanded?'expanded':'collapsed')+'.png',Buffer.from(await viewportScreenshot(),'base64'));
     }
   }
   }
