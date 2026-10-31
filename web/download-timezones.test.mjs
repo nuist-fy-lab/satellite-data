@@ -51,7 +51,7 @@ test('downloads default UTC and transfer monitoring defaults BJT, independent of
   h.context.syncDownloadTimezones();
   assert.equal(h.element('#download-timezone').value, 'UTC');
   assert.equal(h.element('#download-monitor-timezone').value, 'BJT');
-  assert.equal(h.element('#dl-start-label').textContent, '开始日期（UTC）');
+  assert.equal(h.element('#dl-start-label').textContent, '统一开始日期（UTC）');
   assert.match(html, /id="download-timezone"[^>]*>[\s\S]*?<option value="UTC">UTC<\/option>/);
   assert.match(html, /id="download-monitor-timezone"[^>]*>[\s\S]*?<option value="BJT" selected>BJT<\/option>/);
 });
@@ -73,7 +73,7 @@ test('task control updates the form and cached request list immediately without 
   h.element('#download-timezone').listeners.change({target: {value: 'BJT'}});
   assert.match(h.element('#download-tasks').innerHTML, /2027-01-01 04:00 BJT/);
   assert.match(h.element('#download-tasks').innerHTML, /2027-01-01 10:00 BJT/);
-  assert.equal(h.element('#dl-start-label').textContent, '开始日期（BJT）');
+  assert.equal(h.element('#dl-start-label').textContent, '统一开始日期（BJT）');
   assert.equal(h.storage.get('satellite-data-download-zone'), 'BJT');
   assert.equal(h.run('state.downloads.history.displayZone'), 'BJT');
   h.element('#download-timezone').listeners.change({target: {value: 'UTC'}});
@@ -221,7 +221,7 @@ test('CDS input dates remain explicitly UTC without restricting BJT list display
   h.run("state.downloads.catalog=[{product_key:'era5:sample',source_id:'era5'}];state.downloads.selectedProducts.add('era5:sample')");
   h.context.setDownloadTimezone('BJT');
   assert.equal(h.element('#download-timezone').value, 'BJT');
-  assert.equal(h.element('#dl-start-label').textContent, '开始日期（UTC）');
+  assert.equal(h.element('#dl-start-label').textContent, '统一开始日期（UTC）');
   assert.equal(h.context.downloadRange('2026-10-06', '2026-10-06').start, '2026-10-06T00:00:00.000Z');
   assert.deepEqual([...h.context.downloadTimes({mode:'synoptic'})], ['00:00', '06:00', '12:00', '18:00']);
 });
@@ -360,7 +360,7 @@ test('mixed temporal products submit independent observation windows and UTC cal
   assert.equal(opts['modis:annual'].start,'2024-01-01T00:00:00.000Z');
   assert.equal(opts['modis:annual'].end,'2025-01-01T00:00:00.000Z');
   assert.match(h.element('#dl-confirm-summary').innerHTML,/C02 · 0.64 µm · 0.5 km/);
-  assert.match(h.element('#dl-confirm-summary').innerHTML,/2024-02-29 08:30 至 2024-02-29 09:15 · BJT/);
+  assert.match(h.element('#dl-confirm-summary').innerHTML,/2024-02-29 08:30 至 2024-02-29 09:15（不含） · BJT/);
   assert.equal(h.requests.length,0);
 });
 
@@ -388,6 +388,10 @@ test('each product exposes only applicable controls and independent band definit
   const render=kind=>h.run(`downloadProductOptions(state.downloads.catalog.find(p=>p.time_profile.kind==='${kind}'))`);
   assert.match(render('scan'),/data-option-field="mode"/);
   for(const kind of ['observation','orbit','daily','monthly']) assert.doesNotMatch(render(kind),/data-option-field="mode"|data-option-field="band"/);
+  // Unified dates are summarized once; only individual overrides expose date editors.
+  assert.doesNotMatch(render('observation'),/type="datetime-local"/);
+  h.context.changeDownloadProductOption('modis:observation','inherit','',false);
+  h.context.changeDownloadProductOption('modis:monthly','inherit','',false);
   assert.match(render('observation'),/type="datetime-local"/);
   assert.match(render('monthly'),/data-option-field="start-year"/);
   assert.match(render('monthly'),/data-option-field="start-month"/);

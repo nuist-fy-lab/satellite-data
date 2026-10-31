@@ -65,6 +65,124 @@ test('visible product names are searchable and selections survive unrelated sear
   assert.equal(h.run("state.downloads.selectedProducts.has('modis:b')"),true);
 });
 
+test('scientific time semantics appear in facets, product cards and confirmation without inventing scans', async () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=[
+    {product_key:'glm',data_type:'GLM-L2-LCFA',time_profile:{kind:'observation',semantic:'event',semantic_label:'闪电事件'}},
+    {product_key:'li',data_type:'LI',time_profile:{kind:'observation',semantic:'accumulation',semantic_label:'闪电累计'}},
+    {product_key:'half',data_type:'GEOLEO',time_profile:{kind:'observation',semantic:'composite',semantic_label:'半小时合成',window_minutes:30}},
+    {product_key:'unknown',time_profile:{kind:'observation',label:'数据时间'}}
+  ];state.downloads.selectedProducts=new Set(['glm','li','half']);`);
+  h.element('#dl-start').value='2024-02-29';h.element('#dl-end').value='2024-02-29';
+  h.context.refreshDownloadFilters();
+  assert.match(h.element('#dl-filters').innerHTML,/事件时间/);
+  assert.match(h.element('#dl-filters').innerHTML,/累计时段/);
+  assert.match(h.element('#dl-product-results').innerHTML,/半小时合成/);
+  assert.doesNotMatch(h.element('#dl-selected-products').innerHTML,/data-option-field="mode"|全部扫描/);
+  assert.equal(h.context.downloadTimeLabel({time_profile:{kind:'observation',label:'数据时间'}}),'时间范围');
+  for (const [key, label] of [['glm','事件时间'],['li','累计时间'],['half','合成时间']]) {
+    h.context.changeDownloadProductOption(key,'inherit','',false);
+    const product=h.run(`state.downloads.catalog.find(p=>p.product_key==='${key}')`);
+    const editor=h.context.downloadProductOptions(product);
+    assert.match(editor,new RegExp(label+'从'));
+    assert.doesNotMatch(editor,/时间与波段|data-option-field="mode"/);
+  }
+  await h.context.submitDownload({preventDefault(){}});
+  assert.match(h.element('#dl-confirm-summary').innerHTML,/半小时合成/);
+  assert.match(h.element('#dl-confirm-summary').innerHTML,/闪电累计/);
+  assert.equal(h.requests.length,0);
+});
+
+test('same nominal cadence with different selection steps or ownership cannot share times', () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=['a','b'].map(product_key=>({product_key,instrument:'ABI',time_profile:{kind:'scan',cadence_minutes:10,selection_minutes:5}}));state.downloads.selectedProducts=new Set(['a','b']);`);
+  assert.equal(h.context.sharedDownloadCapabilities().time,true);
+  h.run('state.downloads.catalog[1].time_profile.selection_minutes=10');
+  assert.equal(h.context.sharedDownloadCapabilities().time,false);
+  h.context.changeSharedDownloadOption('mode','hourly');
+  assert.equal(h.run('Object.keys(state.downloads.productOptions).length'),0);
+  h.run("state.downloads.catalog[1].time_profile.selection_minutes=5;state.downloads.catalog[1].time_profile.selection_basis='file_start'");
+  assert.equal(h.context.sharedDownloadCapabilities().time,false);
+});
+
+test('time chips normalize, validate and remove explicit selections without expanding to every scan', async () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=['a','b'].map(product_key=>({product_key,instrument:'ABI',time_profile:{kind:'scan',cadence_minutes:10,selection_minutes:5}}));state.downloads.selectedProducts=new Set(['a','b']);`);
+  h.element('#dl-start').value='2024-02-29';h.element('#dl-end').value='2024-02-29';
+  h.context.changeDownloadTimeSelection('a','00:05');
+  h.context.changeDownloadTimeSelection('a','00:05');
+  h.context.changeDownloadTimeSelection('a','23:55');
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[0]).custom"),'00:05, 23:55');
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[1]).mode"),'all');
+  h.context.changeDownloadTimeSelection('a','00:03');
+  assert.match(h.element('#dl-submit-status').textContent,/5 分钟/);
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[0]).custom"),'00:05, 23:55');
+  h.context.changeDownloadTimeSelection('', '12:00', false, true);
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[1]).custom"),'00:05, 12:00, 23:55');
+  h.context.changeDownloadTimeSelection('a','00:05',true);
+  h.context.changeDownloadTimeSelection('a','12:00',true);
+  h.context.changeDownloadTimeSelection('a','23:55',true);
+  assert.equal(h.run("downloadSettings(state.downloads.catalog[0]).mode"),'custom');
+  await h.context.submitDownload({preventDefault(){}});
+  assert.match(h.element('#dl-submit-status').textContent,/至少填一个/);
+  assert.equal(h.requests.length,0);
+});
+
+test('timezone changes preserve each valid bound and time chip while other fields are incomplete', () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=[{product_key:'scan',time_profile:{kind:'scan',cadence_minutes:10,selection_minutes:5}}];
+    state.downloads.selectedProducts.add('scan');
+    state.downloads.productOptions.scan={customTime:true,start:'2024-12-31T20:00',end:'2024-12-31T21:00',mode:'custom',custom:''};`);
+  h.context.setDownloadTimezone('BJT');
+  assert.equal(h.run('state.downloads.productOptions.scan.start'),'2025-01-01T04:00');
+  assert.equal(h.run('state.downloads.productOptions.scan.end'),'2025-01-01T05:00');
+  h.context.setDownloadTimezone('UTC');
+  assert.equal(h.run('state.downloads.productOptions.scan.start'),'2024-12-31T20:00');
+  h.run("state.downloads.productOptions.scan.end='';state.downloads.productOptions.scan.custom='20:05'");
+  h.context.setDownloadTimezone('BJT');
+  assert.equal(h.run('state.downloads.productOptions.scan.start'),'2025-01-01T04:00');
+  assert.equal(h.run('state.downloads.productOptions.scan.end'),'');
+  assert.equal(h.run('state.downloads.productOptions.scan.custom'),'04:05');
+  h.context.setDownloadTimezone('UTC');
+  assert.equal(h.run('state.downloads.productOptions.scan.custom'),'20:05');
+  h.run("state.downloads.productOptions.scan.start='2024-02-30T00:00';state.downloads.productOptions.scan.end='2024-03-01T00:00'");
+  h.context.setDownloadTimezone('BJT');
+  assert.equal(h.run('state.downloads.productOptions.scan.start'),'2024-02-30T00:00');
+  assert.equal(h.run('state.downloads.productOptions.scan.end'),'2024-03-01T08:00');
+  assert.equal(h.run('state.downloads.productOptions.scan.custom'),'04:05');
+});
+
+test('regional scans and event ranges retain second precision through payload and timezone round trips', async () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=[{product_key:'regional',time_profile:{kind:'observation',semantic:'scanning',semantic_label:'区域扫描'}}];
+    state.downloads.selectedProducts.add('regional');
+    state.downloads.productOptions.regional={customTime:true,start:'2024-12-31T23:57:30',end:'2025-01-01T00:02:30'};`);
+  h.context.setDownloadTimezone('BJT');
+  assert.equal(h.run('state.downloads.productOptions.regional.start'),'2025-01-01T07:57:30');
+  await h.context.submitDownload({preventDefault(){}});
+  const payload=JSON.parse(h.run('JSON.stringify(state.downloads.confirmation.payload)'));
+  assert.equal(payload.options.regional.start,'2024-12-31T23:57:30.000Z');
+  assert.equal(payload.options.regional.end,'2025-01-01T00:02:30.000Z');
+  assert.match(h.element('#dl-confirm-summary').innerHTML,/07:57:30/);
+  assert.equal(h.context.downloadTimestamp(payload.options.regional.end,'BJT',true,true),'2025-01-01 08:02:30 BJT');
+  const details=h.context.downloadTaskDetails({downloads:[{start:payload.options.regional.start,end:payload.options.regional.end}],created_at:'2025-01-01T00:00:00Z'});
+  assert.match(details,/08:02:30/);
+  h.context.setDownloadTimezone('UTC');
+  assert.equal(h.run('state.downloads.productOptions.regional.end'),'2025-01-01T00:02:30');
+  assert.equal(h.requests.length,0);
+});
+
+test('a typed time must be added or cleared before confirmation', async () => {
+  const h=harness();
+  h.run("state.downloads.catalog=[{product_key:'scan',time_profile:{kind:'scan',cadence_minutes:10}}];state.downloads.selectedProducts.add('scan')");
+  h.element('#dl-start').value='2024-02-29';h.element('#dl-end').value='2024-02-29';
+  h.context.document.querySelectorAll=selector=>selector==='[data-download-slot]'?[{value:'12:00'}]:[];
+  await h.context.submitDownload({preventDefault(){}});
+  assert.match(h.element('#dl-submit-status').textContent,/请先添加已输入的时次/);
+  assert.equal(h.run('state.downloads.confirmation'),null);
+  assert.equal(h.requests.length,0);
+});
+
 test('period boundaries, invalid dates, and scan cadence are checked before submission', async () => {
   const h=harness();
   const interval=(kind,start,end,extra={})=>h.context.downloadProductInterval({time_profile:{kind,cadence_minutes:10}},{start,end,mode:'all',...extra},'BJT');

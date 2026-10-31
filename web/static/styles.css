@@ -405,6 +405,10 @@ main.calendar-wide{width:100%}
 .download-product-results,.download-selected-products{overflow-y:auto;overscroll-behavior:contain;padding:6px}
 .download-product-results{max-height:300px}
 .download-selected-products{max-height:460px}
+.download-common-dates{display:grid;grid-template-columns:minmax(90px,.6fr) repeat(2,minmax(0,1fr));gap:8px;padding:10px;border-bottom:1px solid var(--line);background:var(--soft)}
+.download-common-dates label{min-width:0;font-size:12px}
+.download-common-dates input,.download-common-dates select{background:#fff}
+@media(max-width:580px){.download-common-dates{grid-template-columns:minmax(0,1fr)}.download-common-dates label:first-child{max-width:180px}}
 .download-submit-form .download-product-row,.download-selected-product{display:flex;align-items:flex-start;gap:6px;padding:6px 7px;margin-bottom:4px;border:1px solid var(--line);border-radius:6px;color:var(--fg);font-size:11px}
 .download-submit-form .download-product-row{cursor:pointer}
 .download-product-row:last-child,.download-selected-product:last-child{margin-bottom:0}
@@ -431,6 +435,14 @@ main.calendar-wide{width:100%}
 .download-option-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:8px}
 .download-option-fields label{font-size:12px;min-width:0}
 .download-option-fields input,.download-option-fields select{min-height:32px;font-size:12px;width:100%;min-width:0;padding:5px 7px}
+.download-custom-times{display:grid;align-content:start;gap:6px;font-size:12px;min-width:0}
+.download-time-picker{display:grid;gap:6px;min-width:0;max-width:100%}
+.download-time-entry{display:flex;align-items:center;gap:6px;min-width:0}
+.download-time-entry input{flex:1;max-width:140px;min-width:0}
+.download-time-entry button{flex:0 0 auto;white-space:nowrap;font-size:12px;padding:5px 8px}
+.download-time-chips{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.download-time-chips button{font-size:12px;padding:3px 7px;border-color:var(--line);background:var(--soft);white-space:nowrap}
+.download-time-chips button:hover{border-color:var(--blue);color:var(--blue)}
 .download-submit-form .download-option-inherit{grid-column:1/-1;display:flex;align-items:center;gap:6px}
 .download-submit-form .download-option-inherit>input{width:14px;height:14px;min-height:14px;margin:0}
 .download-period-fields{display:flex;flex-wrap:wrap;gap:6px;min-width:0}

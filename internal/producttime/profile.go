@@ -21,11 +21,37 @@ type Profile struct {
 	SelectionMinutes int    `json:"selection_minutes,omitempty"`
 	SelectionBasis   string `json:"selection_basis,omitempty"`
 	Days             int    `json:"days,omitempty"`
+	Semantic         string `json:"semantic,omitempty"`
+	Subtype          string `json:"subtype,omitempty"`
+	SemanticLabel    string `json:"semantic_label,omitempty"`
+	WindowMinutes    int    `json:"window_minutes,omitempty"`
 }
 
 var nDays = regexp.MustCompile(`(?i)\b(\d+)[ -]days?\b`)
 
 func Resolve(p model.Product) Profile {
+	profile := resolveSchedule(p)
+	profile = applySemantics(p, profile)
+	if profile.SemanticLabel == "" {
+		switch profile.Kind {
+		case "scan":
+			profile.SemanticLabel = "扫描时间"
+		case "orbit":
+			profile.SemanticLabel = "沿轨观测"
+		case "daily":
+			profile.SemanticLabel = "日产品"
+		case "monthly":
+			profile.SemanticLabel = "月产品"
+		case "annual":
+			profile.SemanticLabel = "年产品"
+		case "composite":
+			profile.SemanticLabel = profile.Label
+		}
+	}
+	return profile
+}
+
+func resolveSchedule(p model.Product) Profile {
 	cadence := strings.ToLower(strings.TrimSpace(p.Cadence))
 	title := strings.ToUpper(p.DisplayName)
 	switch {
@@ -57,8 +83,8 @@ func Resolve(p model.Product) Profile {
 		return profile
 	}
 	axis, known := slotaxis.Known(p.SourceID, p.ProductKey)
-	// MTG's catalogue advertises a fixed cadence only for FCI Level 1C.
-	if p.SourceID == "mtg" && cadence == "10m" {
+	// Only the documented FCI full-disk collections use this fixed cadence.
+	if p.SourceID == "mtg" && cadence == "10m" && (p.ProductKey == "mtg:EO:EUM:DAT:0662" || p.ProductKey == "mtg:EO:EUM:DAT:0665") {
 		axis, known = slotaxis.Resolve(p.SourceID, p.ProductKey, p.Cadence), true
 	}
 	if known {
