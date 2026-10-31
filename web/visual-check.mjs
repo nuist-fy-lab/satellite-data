@@ -294,6 +294,14 @@ window.granuleFixtureSetup = function() {
  document.querySelector('[data-granule-load]').click();
 };
 window.granuleFixtureSubmit = () => submitDownload({preventDefault(){}});
+window.regionalFixtureSetup = function() {
+ const p={product_key:'himawari9:AHI-L1b-Japan',source_id:'himawari9',satellite:'Himawari-9',data_type:'AHI-L1b-Japan',available_granules:true,available_granules_window:'10m',time_profile:{kind:'observation'}};
+ state.downloads.catalog=[p];state.downloads.selectedProducts=new Set([p.product_key]);state.downloads.productOptions={};
+ $('#dl-start').value='2026-12-31';$('#dl-end').value='2026-12-31';renderDownloadSelection();
+ document.querySelector('[data-download-options]').open=true;
+ window.__oldFetch=window.fetch;window.fetch=()=>new Promise(resolve=>window.__respond=resolve);
+ document.querySelector('[data-granule-time]').value='00:10';document.querySelector('[data-granule-load]').click();
+};
 `;
 const assets = new Map();
 for (const file of ['index.html','login.html','styles.css','login.js','catalog.js','era5-inventory.js','icons.svg']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
@@ -615,6 +623,25 @@ try {
           await driver.executeScript(`window.fetch=async()=>({ok:true,json:async()=>({granules:[]})});document.querySelector('[data-granule-load]').click();`);
           await driver.wait(()=>driver.executeScript('return document.querySelector(".download-granules [role=status]").textContent.includes("无可用")'),5000);
           await driver.executeScript('window.fetch=window.__oldFetch');
+        }
+        if ([320,390,1440].includes(width)) {
+          await driver.executeScript('window.regionalFixtureSetup()');
+          assert.match(await driver.executeScript('return document.querySelector(".download-granules").textContent'),/时段（UTC）/);
+          assert.equal(await driver.executeScript('return document.querySelector("[data-granule-time]").step'),'600');
+          assert.ok(await driver.executeScript('return !!document.querySelector("[data-granule-cancel]")'));
+          await driver.executeScript('document.querySelector("[data-granule-cancel]").click()');
+          assert.match(await driver.executeScript('return document.querySelector(".download-granules [role=status]").textContent'),/查询已取消/);
+          await driver.executeScript('document.querySelector("[data-granule-load]").click()');
+          await driver.executeScript(`window.__respond({ok:true,json:async()=>({granules:[{id:'regional',start:'2026-12-31T00:09:59.250Z',end:'2026-12-31T00:10:12.500Z'}]})})`);
+          await driver.wait(()=>driver.executeScript('return !!document.querySelector("[data-granule-index]")'),5000);
+          const regionalBox=await driver.findElement(By.css('[data-granule-index]'));await regionalBox.sendKeys(Key.SPACE);
+          await driver.executeScript("document.querySelector('.download-granules').scrollIntoView({block:'center'})");
+          const regionalBounds=await driver.executeScript(`const e=document.querySelector('.download-granules'),r=e.getBoundingClientRect();return {left:r.left,right:r.right,width:innerWidth,scroll:e.scrollWidth,client:e.clientWidth}`);
+          assert.ok(regionalBounds.left>=0 && regionalBounds.right<=regionalBounds.width+1 && regionalBounds.scroll<=regionalBounds.client+1,JSON.stringify(regionalBounds));
+          await writeFile('dist/visual/download-regional-'+width+'.png',Buffer.from(await viewportScreenshot(),'base64'));
+          await driver.executeScript('return window.granuleFixtureSubmit()');
+          assert.match(await driver.executeScript('return document.querySelector("#dl-confirm-summary").textContent'),/1 个实际可用场景/);
+          await driver.executeScript('document.querySelector("#download-confirm").close();window.fetch=window.__oldFetch');
         }
       }
       if (['month','era5','form'].includes(mode)||view==='monitor-view'||view==='downloads-view'||(view==='calendar-view'&&mode==='year')) {

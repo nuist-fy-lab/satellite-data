@@ -149,6 +149,8 @@ func TestRemainingScientificCollectionsPreserveScheduling(t *testing.T) {
 		{"modis", "modis:C1444624388-LAADS", "observation", "station_subset", "站点观测子集"},
 		{"viirs", "viirs:C3860041042-LAADS", "derived", "cloud_mask", "云掩膜和光谱测试"},
 		{"himawari8", "himawari8:AHI-L2-FLDK-SST", "derived", "sea_surface_temperature", "海表温度"},
+		{"himawari8", "himawari8:AHI-L2-FLDK-ISatSS", "derived", "sectorized_imagery", "分块影像"},
+		{"himawari9", "himawari9:AHI-L2-FLDK-ISatSS", "derived", "sectorized_imagery", "分块影像"},
 		{"himawari9", "himawari9:AHI-L2-FLDK-Winds", "derived", "motion_wind", "大气运动风"},
 		{"mtg", "mtg:EO:EUM:DAT:0682", "derived", "fire_monitoring", "火灾监测"},
 		{"mtg", "mtg:EO:EUM:DAT:1086", "derived", "precipitation_rate", "降水强度"},
@@ -167,9 +169,9 @@ func TestRemainingScientificCollectionsPreserveScheduling(t *testing.T) {
 		})
 	}
 	for _, source := range []string{"himawari8", "himawari9"} {
-		got := Resolve(model.Product{SourceID: source, ProductKey: source + ":AHI-L2-FLDK-ISatSS", Cadence: "10m"})
+		got := Resolve(model.Product{SourceID: source, ProductKey: source + ":AHI-L2-FLDK-ISatSS-OTHER", Cadence: "10m"})
 		if got.Semantic != "" || got.SemanticLabel != "" || got.Kind != "observation" {
-			t.Fatalf("unverified ISatSS classified: %+v", got)
+			t.Fatalf("unverified related collection classified: %+v", got)
 		}
 	}
 }
@@ -193,6 +195,21 @@ func TestScientificWindowsDoNotCreateScanAxes(t *testing.T) {
 	}
 	if strings.Contains(string(b), "semantic") || strings.Contains(string(b), "window_minutes") {
 		t.Fatalf("unknown metadata should be omitted: %s", b)
+	}
+}
+
+func TestISatSSContentDoesNotChangeTimeSelection(t *testing.T) {
+	for _, source := range []string{"himawari8", "himawari9"} {
+		p := Resolve(model.Product{SourceID: source, ProductKey: source + ":AHI-L2-FLDK-ISatSS", Cadence: "10m"})
+		if p.Kind != "observation" || p.CadenceMinutes != 0 || p.SelectionMinutes != 0 || p.WindowMinutes != 0 {
+			t.Fatalf("invented axis for %s: %+v", source, p)
+		}
+		if err := p.ValidateTimes([]string{"00:00"}, nil); err == nil {
+			t.Fatal("accepted recurring time")
+		}
+		if err := p.ValidateTimes(nil, map[string][]string{"2024-01-01": {"00:03:30"}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

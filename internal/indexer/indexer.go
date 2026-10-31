@@ -347,6 +347,15 @@ func (i *Indexer) officialLoop(ctx context.Context, worker int) {
 		start, _ := time.Parse(time.DateOnly, batch.Days[0])
 		last, _ := time.Parse(time.DateOnly, batch.Days[len(batch.Days)-1])
 		end := last.AddDate(0, 0, 1)
+		regional := state.IsRegionalOfficialProduct(batch.Product)
+		if regional {
+			start, end, err = i.store.RegionalOfficialWindow(ctx, batch)
+			if err != nil {
+				_ = i.store.MarkBatchError(ctx, batch, err)
+				idle.Reset(time.Second)
+				continue
+			}
+		}
 		queryCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 		granules, queryErr := p.Search(queryCtx, model.Query{
 			CollectionID: batch.Product,
@@ -360,13 +369,20 @@ func (i *Indexer) officialLoop(ctx context.Context, worker int) {
 			idle.Reset(time.Second)
 			continue
 		}
-		if err := i.store.SaveOfficialBatch(ctx, batch, granules); err != nil {
+		if regional {
+			_, err = i.store.SaveRegionalOfficialWindow(ctx, batch, start, granules)
+		} else {
+			err = i.store.SaveOfficialBatch(ctx, batch, granules)
+		}
+		if err != nil {
 			slog.Warn("persist official slots", "worker", worker, "product", batch.Product, "error", err)
 			_ = i.store.MarkBatchError(ctx, batch, err)
 			idle.Reset(time.Second)
 			continue
 		}
-		slog.Info("official slots indexed", "worker", worker, "product", batch.Product, "days", len(batch.Days), "granules", len(granules))
+		if !regional {
+			slog.Info("official slots indexed", "worker", worker, "product", batch.Product, "days", len(batch.Days), "granules", len(granules))
+		}
 		idle.Reset(50 * time.Millisecond)
 	}
 }

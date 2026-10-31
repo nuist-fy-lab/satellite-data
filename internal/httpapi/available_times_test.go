@@ -39,6 +39,58 @@ func TestAvailableGranuleWhitelist(t *testing.T) {
 	}
 }
 
+func TestRegionalAvailableWindowAndOverlap(t *testing.T) {
+	for _, source := range []string{"himawari8", "himawari9"} {
+		for _, product := range []string{"AHI-L1b-Japan", "AHI-L1b-Target"} {
+			if !availableGranuleProduct(source, source+":"+product) {
+				t.Fatal(source, product)
+			}
+		}
+	}
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	key := "himawari9:AHI-L1b-Japan"
+	if err := store.UpsertProducts(t.Context(), "himawari9", []model.Product{{SourceID: "himawari9", ProductKey: key}}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2024, 1, 1, 0, 10, 0, 0, time.UTC)
+	p := &availableTestProvider{source: "himawari9", granules: []model.Granule{
+		{ID: "overlap", Start: start.Add(-time.Second), End: start.Add(time.Second)},
+		{ID: "boundary", Start: start.Add(-time.Minute), End: start},
+		{ID: "at-end", Start: start.Add(10 * time.Minute), End: start.Add(11 * time.Minute)},
+	}}
+	h := New(provider.NewRegistry(p), store)
+	call := func(suffix string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/downloads/available-times?product="+key+"&date=2024-01-01"+suffix, nil))
+		return w
+	}
+	for _, suffix := range []string{"", "&time=00:03", "&time=24:00", "&time=00:10:00"} {
+		if w := call(suffix); w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: %d", suffix, w.Code)
+		}
+	}
+	if p.calls.Load() != 0 {
+		t.Fatal("invalid window reached provider")
+	}
+	w := call("&time=00:10")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "overlap") || strings.Contains(w.Body.String(), "boundary") || strings.Contains(w.Body.String(), "at-end") {
+		t.Fatalf("overlap %d %s", w.Code, w.Body.String())
+	}
+	p.granules = []model.Granule{{ID: "unknown-end", Start: start}}
+	if w = call("&time=00:10"); w.Code != http.StatusBadGateway {
+		t.Fatalf("unknown end %d %s", w.Code, w.Body.String())
+	}
+	p.err = errors.New("budget exceeded")
+	p.granules = []model.Granule{{ID: "partial", Start: start, End: start.Add(time.Minute)}}
+	if w = call("&time=00:10"); w.Code != http.StatusBadGateway || strings.Contains(w.Body.String(), "partial") {
+		t.Fatalf("partial %d %s", w.Code, w.Body.String())
+	}
+}
+
 func (p *availableTestProvider) Source() model.Source {
 	if p.source != "" {
 		return model.Source{ID: p.source}

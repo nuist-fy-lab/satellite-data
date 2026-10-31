@@ -11,6 +11,9 @@ import (
 )
 
 func availableGranuleProduct(source, key string) bool {
+	if regionalGranuleProduct(source, key) {
+		return true
+	}
 	if source == "viirs" {
 		return key == "viirs:C3860041042-LAADS"
 	}
@@ -23,6 +26,10 @@ func availableGranuleProduct(source, key string) bool {
 		}
 	}
 	return false
+}
+
+func regionalGranuleProduct(source, key string) bool {
+	return (source == "himawari8" || source == "himawari9") && (key == source+":AHI-L1b-Japan" || key == source+":AHI-L1b-Target")
 }
 
 func (s *Server) availableTimes(w http.ResponseWriter, r *http.Request) {
@@ -44,6 +51,19 @@ func (s *Server) availableTimes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("granule listing unavailable for product"))
 		return
 	}
+	regional := regionalGranuleProduct(source, key)
+	if regional {
+		clock := r.URL.Query().Get("time")
+		at, err := time.Parse("15:04", clock)
+		if err != nil || at.Format("15:04") != clock || at.Minute()%10 != 0 {
+			writeError(w, http.StatusBadRequest, errors.New("regional query requires a UTC time aligned to 10 minutes"))
+			return
+		}
+		start = start.Add(time.Duration(at.Hour())*time.Hour + time.Duration(at.Minute())*time.Minute)
+	} else if r.URL.Query().Has("time") {
+		writeError(w, http.StatusBadRequest, errors.New("time is only supported for regional queries"))
+		return
+	}
 	select {
 	case s.availableGate <- struct{}{}:
 		defer func() { <-s.availableGate }()
@@ -58,9 +78,13 @@ func (s *Server) availableTimes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	timeout, duration := 30*time.Second, 24*time.Hour
+	if regional {
+		timeout, duration = 90*time.Second, 10*time.Minute
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
-	end := start.Add(24 * time.Hour)
+	end := start.Add(duration)
 	granules, err := p.Search(ctx, model.Query{CollectionID: key, Start: start, End: end})
 	if err != nil || ctx.Err() != nil {
 		writeError(w, http.StatusBadGateway, errors.New("granule listing failed"))
@@ -78,7 +102,22 @@ func (s *Server) availableTimes(w http.ResponseWriter, r *http.Request) {
 	items := make([]item, 0, len(granules))
 	seen := make(map[string]bool)
 	for _, g := range granules {
-		if g.ID == "" || g.Start.IsZero() || g.Start.Before(start) || !g.Start.Before(end) {
+		if regional && (g.ID == "" || g.Start.IsZero()) {
+			writeError(w, http.StatusBadGateway, errors.New("regional granule missing identity or start"))
+			return
+		}
+		if g.ID == "" || g.Start.IsZero() || !g.Start.Before(end) {
+			continue
+		}
+		if regional {
+			if g.End.IsZero() || !g.End.After(g.Start) {
+				writeError(w, http.StatusBadGateway, errors.New("regional granule missing coverage"))
+				return
+			}
+			if !g.End.After(start) {
+				continue
+			}
+		} else if g.Start.Before(start) {
 			continue
 		}
 		if seen[g.ID] {

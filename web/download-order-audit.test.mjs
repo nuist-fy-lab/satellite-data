@@ -33,6 +33,21 @@ test('derived GOES observation submits listed group without a scan grid', async 
   }
 });
 
+test('regional real intervals use UTC query window and overlap selection', async () => {
+  const h=harness(); h.context.AbortController=AbortController;h.context.URLSearchParams=URLSearchParams;
+  const calls=[];h.context.fetch=async url=>{calls.push(url);return {ok:true,json:async()=>({granules:[{id:'group',start:'2024-01-01T15:59:59.250Z',end:'2024-01-01T16:00:01.500Z'}]})}};
+  h.run(`state.downloads.catalog=[{product_key:'himawari9:AHI-L1b-Japan',source_id:'himawari9',available_granules:true,available_granules_window:'10m',time_profile:{kind:'observation'}}];state.downloads.selectedProducts=new Set(['himawari9:AHI-L1b-Japan']);state.downloads.displayZone='BJT'`);
+  h.element('#dl-start').value='2024-01-02';h.element('#dl-end').value='2024-01-02';
+  await h.context.loadDownloadGranules('himawari9:AHI-L1b-Japan','2024-01-01','00:03');assert.equal(calls.length,0);
+  await h.context.loadDownloadGranules('himawari9:AHI-L1b-Japan','2024-01-01','16:00');
+  assert.match(calls[0],/time=16%3A00/);
+  h.run("state.downloads.productOptions['himawari9:AHI-L1b-Japan'].granules.selected=[...state.downloads.productOptions['himawari9:AHI-L1b-Japan'].granules.items]");
+  await h.context.submitDownload({preventDefault(){}});
+  assert.deepEqual([...h.run("state.downloads.confirmation.payload.options['himawari9:AHI-L1b-Japan'].granule_ids")],['group']);
+  assert.match(h.element('#dl-confirm-summary').innerHTML,/2024-01-01 23:59:59\.25 BJT/);
+  assert.match(h.element('#dl-selected-products').innerHTML,/时段（UTC）/);
+});
+
 test('stale actual granule response cannot replace the newer date', async () => {
   const h = harness(), pending = [];
   h.context.AbortController = AbortController; h.context.URLSearchParams = URLSearchParams;

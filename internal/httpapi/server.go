@@ -690,15 +690,19 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	type option struct {
 		model.Product
-		Bands             []downloadfilter.Band `json:"bands"`
-		OrderMode         string                `json:"order_mode"`
-		TimeProfile       producttime.Profile   `json:"time_profile"`
-		AvailableGranules bool                  `json:"available_granules"`
+		Bands                   []downloadfilter.Band `json:"bands"`
+		OrderMode               string                `json:"order_mode"`
+		TimeProfile             producttime.Profile   `json:"time_profile"`
+		AvailableGranules       bool                  `json:"available_granules"`
+		AvailableGranulesWindow string                `json:"available_granules_window,omitempty"`
 	}
 	items := make([]option, 0, len(products))
 	for _, product := range products {
 		product = provider.NormalizeProduct(product)
 		item := option{Product: product, Bands: []downloadfilter.Band{}, OrderMode: "archive", TimeProfile: producttime.Resolve(product), AvailableGranules: availableGranuleProduct(product.SourceID, product.ProductKey)}
+		if regionalGranuleProduct(product.SourceID, product.ProductKey) {
+			item.AvailableGranulesWindow = "10m"
+		}
 		if product.SourceID == "era5" {
 			item.OrderMode = "on-demand"
 		}
