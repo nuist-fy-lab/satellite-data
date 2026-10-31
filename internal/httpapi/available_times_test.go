@@ -18,6 +18,7 @@ import (
 )
 
 type availableTestProvider struct {
+	source   string
 	granules []model.Granule
 	entered  chan struct{}
 	release  chan struct{}
@@ -26,19 +27,24 @@ type availableTestProvider struct {
 }
 
 func TestAvailableGranuleWhitelist(t *testing.T) {
-	for _, key := range []string{"goes18:ABI-L1b-RadF", "goes18:ABI-L2-CMIPC"} {
+	for _, key := range []string{"goes18:ABI-L1b-RadF", "goes18:ABI-L2-CMIPC", "goes18:ABI-L2-ACHAF", "goes18:ABI-L2-ACMF"} {
 		if !availableGranuleProduct("goes18", key) {
 			t.Fatalf("missing %s", key)
 		}
 	}
-	for _, key := range []string{"goes18:ABI-L2-UNKNOWNF", "goes18:ABI-L1b-RadM", "goes18:ABI-L2-CMIPM", "goes19:ABI-L2-CMIPF", "himawari9:AHI-L1b-Japan"} {
+	for _, key := range []string{"goes18:ABI-L2-UNKNOWNF", "goes18:ABI-L2-ACHAC", "goes18:ABI-L2-ACMC", "goes18:ABI-L1b-RadM", "goes18:ABI-L2-CMIPM", "goes19:ABI-L2-CMIPF", "himawari9:AHI-L1b-Japan"} {
 		if availableGranuleProduct("goes18", key) {
 			t.Fatalf("unexpected %s", key)
 		}
 	}
 }
 
-func (*availableTestProvider) Source() model.Source { return model.Source{ID: "viirs"} }
+func (p *availableTestProvider) Source() model.Source {
+	if p.source != "" {
+		return model.Source{ID: p.source}
+	}
+	return model.Source{ID: "viirs"}
+}
 func (*availableTestProvider) Collections(context.Context) ([]model.Collection, error) {
 	return nil, nil
 }
@@ -53,6 +59,39 @@ func (p *availableTestProvider) Search(ctx context.Context, q model.Query) ([]mo
 		}
 	}
 	return p.granules, p.err
+}
+
+func TestDerivedGOESGranuleListingAndSubmission(t *testing.T) {
+	for _, code := range []string{"ABI-L2-ACHAF", "ABI-L2-ACMF"} {
+		t.Run(code, func(t *testing.T) {
+			store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			key := "goes18:" + code
+			if err := store.UpsertProducts(t.Context(), "goes18", []model.Product{{SourceID: "goes18", ProductKey: key, Cadence: "10m"}}); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Date(2024, 1, 1, 0, 0, 20, 900000000, time.UTC)
+			p := &availableTestProvider{source: "goes18", granules: []model.Granule{{ID: "scene", Start: start, End: start.Add(time.Minute)}}}
+			h := New(provider.NewRegistry(p), store)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/downloads/available-times?product="+key+"&date=2024-01-01", nil))
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "00:00:20.9Z") {
+				t.Fatalf("listing %d %s", w.Code, w.Body.String())
+			}
+			body := `{"products":["` + key + `"],"start":"2024-01-01","end":"2024-01-02","options":{"` + key + `":{"granule_ids":["scene"]}}}`
+			w = httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest("POST", "/api/v1/download-tasks", strings.NewReader(body)))
+			var result struct {
+				Task downloadTaskView `json:"task"`
+			}
+			if w.Code != http.StatusAccepted || json.Unmarshal(w.Body.Bytes(), &result) != nil || len(result.Task.Downloads) != 1 || result.Task.Downloads[0].TimeProfile.Kind != "observation" || len(result.Task.Downloads[0].Selection.GranuleIDs) != 1 {
+				t.Fatalf("task %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
 }
 
 func TestAvailableGranulesBusy(t *testing.T) {

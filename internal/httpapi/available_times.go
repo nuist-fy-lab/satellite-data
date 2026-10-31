@@ -16,7 +16,7 @@ func availableGranuleProduct(source, key string) bool {
 	}
 	switch source {
 	case "goes16", "goes17", "goes18", "goes19":
-		for _, code := range []string{"ABI-L1b-RadF", "ABI-L1b-RadC", "ABI-L2-CMIPF", "ABI-L2-CMIPC"} {
+		for _, code := range []string{"ABI-L1b-RadF", "ABI-L1b-RadC", "ABI-L2-CMIPF", "ABI-L2-CMIPC", "ABI-L2-ACHAF", "ABI-L2-ACMF"} {
 			if key == source+":"+code {
 				return true
 			}

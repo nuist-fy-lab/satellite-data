@@ -20,6 +20,19 @@ test('actual granule snapshot retains ID and BJT instant across midnight', async
   assert.equal(h.run("state.downloads.confirmation.payload.options['viirs:C3860041042-LAADS'].granule_ids.length"),1);
 });
 
+test('derived GOES observation submits listed group without a scan grid', async () => {
+  for (const code of ['ABI-L2-ACHAF','ABI-L2-ACMF']) {
+    const h=harness();
+    h.run(`state.downloads.catalog=[{product_key:'goes18:${code}',source_id:'goes18',available_granules:true,time_profile:{kind:'observation'}}];state.downloads.selectedProducts=new Set(['goes18:${code}']);state.downloads.productOptions['goes18:${code}']={granules:{selected:[{id:'group',start:'2024-01-01T00:00:20.9Z'}]}}`);
+    h.element('#dl-start').value='2024-01-01';h.element('#dl-end').value='2024-01-01';
+    assert.match(h.context.downloadProductOptions(h.run('state.downloads.catalog[0]')),/实际可用场景/);
+    await h.context.submitDownload({preventDefault(){}});
+    assert.deepEqual([...h.run(`state.downloads.confirmation.payload.options['goes18:${code}'].granule_ids`)],['group']);
+    assert.deepEqual([...h.run(`state.downloads.confirmation.payload.options['goes18:${code}'].times`)],[]);
+    assert.match(h.element('#dl-confirm-summary').innerHTML,/00:00:20\.9 UTC/);
+  }
+});
+
 test('stale actual granule response cannot replace the newer date', async () => {
   const h = harness(), pending = [];
   h.context.AbortController = AbortController; h.context.URLSearchParams = URLSearchParams;
