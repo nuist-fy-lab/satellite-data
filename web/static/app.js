@@ -3327,9 +3327,12 @@ function renderDownloadTasks(items) {
     const title = [satellites.join(' / '), names.slice(0, 3).join('、')].filter(Boolean).join(' · ') +
       (names.length > 3 ? ' 等 ' + names.length + ' 个产品' : '');
     const overview = esc(downloadQueueCounts(task));
-    const details = '<div class="download-queue-detail-title">任务 #' + esc(task.id) + ' · ' + products.length + ' 个产品</div>' + downloadTaskDetails(task);
-    return downloadQueueCard('task-' + task.id, downloadQueueStage(task.state), '#' + task.id + ' · ' + title,
-      overview, details, expandedDownloadTasks.has('task-' + task.id));
+    const legacy = task.kind === 'legacy', id = legacy ? task.request_id : task.id;
+    const key = task.key || 'task-' + task.id;
+    const label = legacy ? '历史请求 #' + id : '任务 #' + id;
+    const details = '<div class="download-queue-detail-title">' + esc(label) + ' · ' + products.length + ' 个产品</div>' + downloadTaskDetails(task);
+    return downloadQueueCard(key, downloadQueueStage(task.state), (legacy ? label : '#' + id) + ' · ' + title,
+      overview, details, expandedDownloadTasks.has(key));
   }).join('') || '<div class="pool-empty">暂无下载任务</div>';
   bindDownloadQueue(holder, expandedDownloadTasks);
   const {page, pages, total} = state.downloads;

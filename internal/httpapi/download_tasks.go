@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -25,6 +26,9 @@ type downloadTaskProduct struct {
 
 type downloadTaskView struct {
 	state.DownloadGroup
+	Kind      string                `json:"kind"`
+	Key       string                `json:"key"`
+	RequestID int64                 `json:"request_id,omitempty"`
 	Downloads []downloadTaskProduct `json:"downloads"`
 }
 
@@ -39,7 +43,7 @@ func (s *Server) downloadTaskViews(ctx context.Context, tasks []state.DownloadGr
 	}
 	items := make([]downloadTaskView, 0, len(tasks))
 	for _, task := range tasks {
-		item := downloadTaskView{DownloadGroup: task, Downloads: make([]downloadTaskProduct, 0, len(task.Downloads))}
+		item := downloadTaskView{DownloadGroup: task, Kind: "group", Key: fmt.Sprintf("group:%d", task.ID), Downloads: make([]downloadTaskProduct, 0, len(task.Downloads))}
 		for _, request := range task.Downloads {
 			p := byKey[request.CollectionID]
 			item.Downloads = append(item.Downloads, downloadTaskProduct{DownloadRequest: request,
@@ -73,10 +77,19 @@ func (s *Server) downloadTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	items, err := s.downloadTaskViews(r.Context(), tasks)
+	groups := make([]state.DownloadGroup, len(tasks))
+	for i := range tasks {
+		groups[i] = tasks[i].DownloadGroup
+	}
+	items, err := s.downloadTaskViews(r.Context(), groups)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	for i := range items {
+		items[i].Kind = tasks[i].Kind
+		items[i].Key = tasks[i].Key
+		items[i].RequestID = tasks[i].RequestID
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": items, "page": page,
 		"page_size": state.DownloadTaskPageSize, "total": total,
