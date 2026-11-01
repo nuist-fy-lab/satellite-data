@@ -243,7 +243,7 @@ test('actual scene picker displays the file scan mode without extrapolating its 
       {id:'g2',start:'2018-06-15T00:15:40Z',scan_mode:'M3'}],selected:[]}}`);
   const html=h.context.downloadGranulePicker(product);
   assert.match(html,/M3（实际文件扫描模式）/);
-  assert.match(html,/00:00:41 · M3/);
+  assert.match(html,/00:00:41 UTC · M3/);
   assert.doesNotMatch(html,/M6/);
   assert.equal(h.context.downloadScanEvidenceLabel(product),'');
 });
