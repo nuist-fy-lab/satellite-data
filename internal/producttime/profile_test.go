@@ -85,7 +85,7 @@ func TestSnapshotProductKeysForExplicitRules(t *testing.T) {
 		{"era5", "era5:reanalysis-era5-land-monthly-means", "reanalysis-era5-land-monthly-means", "monthly", "reanalysis", "monthly_mean", "月平均再分析"},
 		{"modis", "modis:C3903710663-LAADS", "XAERDT_L3_MEASURES_QD_HH", "event", "composite", "multisensor_half_hour", "半小时合成"},
 		{"mtg", "mtg:EO:EUM:DAT:0686", "EO:EUM:DAT:0686", "event", "accumulation", "lightning", "闪电累计"},
-		{"goes18", "goes18:ABI-Flood-Hourly-TIF", "ABI-Flood-Hourly-TIF", "10m", "composite", "hourly_flood", "小时合成"},
+		{"goes18", "goes18:ABI-Flood-Hourly-TIF", "ABI-Flood-Hourly-TIF", "10m", "composite", "hourly_flood", "逐小时更新合成"},
 		{"calipso", "calipso:C3880521656-LARC_CLOUD", "CAL_LID_L2_BlowingSnow_Antarctica-Standard-V1-00", "event", "", "", "吹雪资料"},
 		{"calipso", "calipso:C3880703841-LARC_CLOUD", "GloSSAC", "event", "", "", "气溶胶气候资料"},
 		{"calipso", "calipso:C3880518087-LARC_CLOUD", "CAL_IIR_L3_GEWEX_Cloud-Standard-V1-00", "event", "", "", "红外资料"},

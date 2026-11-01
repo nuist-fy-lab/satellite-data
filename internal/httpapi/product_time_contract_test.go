@@ -80,14 +80,15 @@ func TestProductTimeTaskContractAndPersistedSummary(t *testing.T) {
 		t.Fatalf("list: %d %s", w.Code, w.Body.String())
 	}
 	want := map[string]struct {
-		kind, subtype string
-		window        int
+		kind, subtype  string
+		window, update int
+		coverage       string
 	}{
-		"calipso:C3880523239-LARC_CLOUD": {"monthly", "monthly", 0},
-		"cloudsat:3F-RMCP.R05_V0002":     {"observation", "multi_period", 0},
-		"goes18:ABI-Flood-Day":           {"daily", "daily_flood", 1440},
-		"goes18:ABI-Flood-Hourly":        {"observation", "hourly_flood", 60},
-		"modis:C3348093425-LAADS":        {"observation", "multisensor_half_hour", 30},
+		"calipso:C3880523239-LARC_CLOUD": {"monthly", "monthly", 0, 0, ""},
+		"cloudsat:3F-RMCP.R05_V0002":     {"observation", "multi_period", 0, 0, "filename_period"},
+		"goes18:ABI-Flood-Day":           {"daily", "daily_flood", 0, 1440, "file_coverage"},
+		"goes18:ABI-Flood-Hourly":        {"observation", "hourly_flood", 0, 60, "file_coverage"},
+		"modis:C3348093425-LAADS":        {"observation", "multisensor_half_hour", 30, 0, ""},
 	}
 	for _, task := range result.Tasks {
 		if task.ID != submitted.Task.ID {
@@ -95,7 +96,7 @@ func TestProductTimeTaskContractAndPersistedSummary(t *testing.T) {
 		}
 		for _, item := range task.Downloads {
 			expected, ok := want[item.CollectionID]
-			if !ok || item.TimeProfile.Kind != expected.kind || item.TimeProfile.Subtype != expected.subtype || item.TimeProfile.WindowMinutes != expected.window || item.TimeProfile.SemanticLabel == "" {
+			if !ok || item.TimeProfile.Kind != expected.kind || item.TimeProfile.Subtype != expected.subtype || item.TimeProfile.WindowMinutes != expected.window || item.TimeProfile.NominalUpdateMinutes != expected.update || item.TimeProfile.CoverageBasis != expected.coverage || item.TimeProfile.SemanticLabel == "" {
 				t.Fatalf("summary: %+v", item)
 			}
 			delete(want, item.CollectionID)
