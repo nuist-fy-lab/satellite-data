@@ -126,11 +126,11 @@ func TestDerivedGOESGranuleListingAndSubmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			start := time.Date(2024, 1, 1, 0, 0, 20, 900000000, time.UTC)
-			p := &availableTestProvider{source: "goes18", granules: []model.Granule{{ID: "scene", Start: start, End: start.Add(time.Minute)}}}
+			p := &availableTestProvider{source: "goes18", granules: []model.Granule{{ID: "scene", Start: start, End: start.Add(time.Minute), Metadata: map[string]string{"scan_mode": "3"}}}}
 			h := New(provider.NewRegistry(p), store)
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, httptest.NewRequest("GET", "/api/v1/downloads/available-times?product="+key+"&date=2024-01-01", nil))
-			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "00:00:20.9Z") {
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "00:00:20.9Z") || !strings.Contains(w.Body.String(), `"scan_mode":"M3"`) {
 				t.Fatalf("listing %d %s", w.Code, w.Body.String())
 			}
 			body := `{"products":["` + key + `"],"start":"2024-01-01","end":"2024-01-02","options":{"` + key + `":{"granule_ids":["scene"]}}}`

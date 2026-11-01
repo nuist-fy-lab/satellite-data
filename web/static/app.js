@@ -2391,6 +2391,20 @@ function downloadVersionLabel(product) {
   return product.version || product.metadata?.version || '';
 }
 
+function downloadVersionAlternativesLabel(product) {
+  const others = product.version_alternatives || [];
+  if (!others.length) return '';
+  const labels = others.map(other => other.version ? '版本 ' + other.version : other.product_key);
+  return '另有 ' + others.length + ' 个集合：' + labels.join(' / ');
+}
+
+function downloadScanEvidenceLabel(product) {
+  const samples = downloadTimeProfile(product).observed_scan_modes || [];
+  // These are actual observed file modes on the specified dates, not
+  // extrapolated operational periods or exact transition timestamps.
+  return samples.map(item => item.date + ' ' + item.mode).join(' / ');
+}
+
 function closeDownloadFilters(except = null) {
   for (const filter of document.querySelectorAll('.download-filter[open]')) if (filter !== except) filter.open = false;
 }
@@ -2436,12 +2450,14 @@ function downloadProductRow(product, selected = false) {
     ['传感器', downloadFieldLabel(downloadFilterValues('instrument', product, p => p.instrument)[0])],
     ['级别', downloadFieldLabel(downloadFilterValues('level', product, p => p.level)[0])],
     ['产品', code], ['版本', downloadVersionLabel(product)],
+    ['同系列集合', downloadVersionAlternativesLabel(product)],
     ['区域', downloadFieldLabel(downloadFilterValues('area', product, p => p.area_type)[0])],
     ['标称分辨率', downloadResolutionLabel(product, selected ? downloadSettings(product).band : 0)],
     ['时间选择', downloadSelectionLabel(product)],
     ['时间属性', downloadScientificTimeLabel(product)],
     ['更新周期', downloadNominalUpdateLabel(product)],
-    ['时间依据', downloadCoverageBasisLabel(product)]]
+    ['时间依据', downloadCoverageBasisLabel(product)],
+    ['核验日扫描模式（非切换日期）', downloadScanEvidenceLabel(product)]]
     .filter(([,value]) => value);
   const description = '<span class="download-product-copy"><span class="download-product-line">' +
     fields.map(([label, value]) => '<span class="download-product-tag" title="' + esc(label + '：' + value) + '">' +
@@ -2736,11 +2752,13 @@ function downloadGranulePicker(product) {
     '<button type="button" data-granule-load="' + esc(product.product_key) + '">查询</button>' +
     (picker.loading ? '<button type="button" data-granule-cancel="' + esc(product.product_key) + '">取消查询</button>' : '') +
     '<button type="button" data-granule-clear="' + esc(product.product_key) + '">清除选择</button></div>' +
-    '<div role="status">' + esc(picker.status || (selected.size ? '已选 ' + selected.size + ' 个场景' : '未选择场景')) + '</div>' +
+    '<div role="status">' + esc(picker.status || (selected.size ? '已选 ' + selected.size + ' 个场景' : '未选择场景')) +
+    (items.some(item => /^M[346]$/.test(item.scan_mode || '')) ? ' · ' + esc([...new Set(items.map(item => item.scan_mode).filter(mode => /^M[346]$/.test(mode || '')))].sort().join(' / ') + '（实际文件扫描模式）') : '') + '</div>' +
     '<div class="download-granule-list">' + items.map((item, i) => {
       const full = downloadGranuleTime(item.start), label = full.startsWith(picker.date + ' ') ? full.slice(11) : full;
       const position = (positions.get(item.start) || 0) + 1; positions.set(item.start, position);
-      return '<label><input type="checkbox" data-granule-index="' + i + '"' + (selected.has(item.id) ? ' checked' : '') + '><span>' + esc(label) + (counts.get(item.start) > 1 ? ' · ' + position : '') + '</span></label>';
+      return '<label><input type="checkbox" data-granule-index="' + i + '"' + (selected.has(item.id) ? ' checked' : '') + '><span>' + esc(label) + (counts.get(item.start) > 1 ? ' · ' + position : '') +
+        (/^M[346]$/.test(item.scan_mode || '') ? ' · ' + esc(item.scan_mode) : '') + '</span></label>';
     }).join('') + '</div></fieldset>';
 }
 async function loadDownloadGranules(key, date, time = '') {

@@ -30,6 +30,14 @@ type Profile struct {
 	NominalUpdateMinutes int `json:"nominal_update_minutes,omitempty"`
 	// CoverageBasis records how actual file coverage is established.
 	CoverageBasis string `json:"coverage_basis,omitempty"`
+	// ObservedScanModes are dated official file samples. They do not describe
+	// inferred regime boundaries or override file-level scheduler evidence.
+	ObservedScanModes []ScanModeSample `json:"observed_scan_modes,omitempty"`
+}
+
+type ScanModeSample struct {
+	Date string `json:"date"`
+	Mode string `json:"mode"`
 }
 
 var nDays = regexp.MustCompile(`(?i)\b(\d+)[ -]days?\b`)
@@ -37,6 +45,7 @@ var nDays = regexp.MustCompile(`(?i)\b(\d+)[ -]days?\b`)
 func Resolve(p model.Product) Profile {
 	profile := resolveSchedule(p)
 	profile = applySemantics(p, profile)
+	profile.ObservedScanModes = observedScanModes(p.ProductKey)
 	if profile.SemanticLabel == "" {
 		switch profile.Kind {
 		case "scan":
