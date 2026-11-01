@@ -34,6 +34,27 @@ selection modes (fixed scans, actual time ranges, calendar periods) from
 scientific time attributes and evidence. A scientific family such as cloud
 retrieval is not treated as a new time selection mode.
 
+### Dated scan evidence and collection versions
+
+The catalogue includes `version_alternatives` for separate official
+collection IDs sharing the same source, satellite and data type. These
+collections are independently selectable. Different collection versions
+may have different processing algorithms, filenames, formats and production
+periods; local archive date limits do not establish their complete official
+availability ranges.
+
+For 20 audited GOES-16 ABI collections, `observed_scan_modes` contains
+file-backed NOAA GCS samples for 2018-06-15 (M3), 2020-06-15 (M6), and
+2023-06-15 (M6). These are specifically dated observations rather than
+inferred regime boundaries or confirmed mode-switch dates. Other products
+omit this field until evidence is verified. The download coordinator
+continues using the mode and timestamp of each actual file when matching
+requested times; the UI shows these dated samples as additional context.
+For collections with the actual-scenes picker, the available-times API also
+exposes the returned file's validated `scan_mode` (M3, M4 or M6) per scene.
+This describes the selected day's file, while the historical samples in
+the catalogue are independent and are never substituted for the actual mode.
+
 Explicit collection rules correct CALIPSO monthly L3 statistics, CloudSat
 multi-period statistics, daily/hourly GOES flood composites and half-hour
 GEO-LEO composites. GOES Flood-Hourly may be published hourly while a file

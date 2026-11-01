@@ -95,9 +95,10 @@ func (s *Server) availableTimes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type item struct {
-		ID    string     `json:"id"`
-		Start time.Time  `json:"start"`
-		End   *time.Time `json:"end,omitempty"`
+		ID       string     `json:"id"`
+		Start    time.Time  `json:"start"`
+		End      *time.Time `json:"end,omitempty"`
+		ScanMode string     `json:"scan_mode,omitempty"`
 	}
 	items := make([]item, 0, len(granules))
 	seen := make(map[string]bool)
@@ -126,6 +127,11 @@ func (s *Server) availableTimes(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[g.ID] = true
 		entry := item{ID: g.ID, Start: g.Start.UTC()}
+		if (source == "goes16" || source == "goes17" || source == "goes18" || source == "goes19") && g.Metadata != nil {
+			if mode := g.Metadata["scan_mode"]; mode == "3" || mode == "4" || mode == "6" {
+				entry.ScanMode = "M" + mode
+			}
+		}
 		if !g.End.IsZero() {
 			at := g.End.UTC()
 			entry.End = &at

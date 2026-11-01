@@ -222,6 +222,31 @@ func TestVerifiedFloodUpdateIsSeparateFromFileCoverage(t *testing.T) {
 	}
 }
 
+func TestVerifiedHistoricalGOESScanSamplesAreDatedNotInferred(t *testing.T) {
+	if len(goes16SampledModeCollections) != 20 {
+		t.Fatalf("expected exactly 20 audited GOES-16 collections, got %d", len(goes16SampledModeCollections))
+	}
+	for code := range goes16SampledModeCollections {
+		p := Resolve(model.Product{SourceID: "goes16", ProductKey: "goes16:" + code, Cadence: "10m"})
+		if len(p.ObservedScanModes) != 3 {
+			t.Fatalf("%s lost verified historical modes: %+v", code, p)
+		}
+		if p.ObservedScanModes[0] != (ScanModeSample{"2018-06-15", "M3"}) ||
+			p.ObservedScanModes[1] != (ScanModeSample{"2020-06-15", "M6"}) ||
+			p.ObservedScanModes[2] != (ScanModeSample{"2023-06-15", "M6"}) {
+			t.Fatalf("%s: unexpected NOAA samples: %+v", code, p.ObservedScanModes)
+		}
+		if p.Kind != "scan" && (p.CadenceMinutes != 0 || p.SelectionMinutes != 0) {
+			t.Fatalf("%s: observed mode invented a scan grid: %+v", code, p)
+		}
+	}
+	for _, key := range []string{"goes17:ABI-L1b-RadF", "goes16:ABI-L2-ACHAF", "goes19:ABI-L2-CMIPF"} {
+		if samples := Resolve(model.Product{SourceID: strings.SplitN(key, ":", 2)[0], ProductKey: key}).ObservedScanModes; len(samples) != 0 {
+			t.Fatalf("unsupported extrapolation of scanned file evidence to %s: %+v", key, samples)
+		}
+	}
+}
+
 func TestISatSSContentDoesNotChangeTimeSelection(t *testing.T) {
 	for _, source := range []string{"himawari8", "himawari9"} {
 		p := Resolve(model.Product{SourceID: source, ProductKey: source + ":AHI-L2-FLDK-ISatSS", Cadence: "10m"})

@@ -206,6 +206,48 @@ test('verified coverage, update cadence and scientific semantics stay independen
   assert.equal(h.context.downloadTimeLabel({time_profile:{kind:'daily',subtype:'daily_flood',semantic:'composite'}}),'每日更新合成');
 });
 
+test('dated NOAA scan samples and actual collection variants are visible without inferred periods', () => {
+  const h=harness();
+  const checked={
+    product_key:'goes16:ABI-L1b-RadF',source_id:'goes16',satellite:'GOES-16',data_type:'ABI-L1b-RadF',
+    version_alternatives:[],time_profile:{kind:'scan',cadence_minutes:10,selection_minutes:5,
+      observed_scan_modes:[{date:'2018-06-15',mode:'M3'},{date:'2020-06-15',mode:'M6'},{date:'2023-06-15',mode:'M6'}]}
+  };
+  const variant={
+    product_key:'modis:c61',source_id:'modis',satellite:'Aqua',data_type:'MYD03',version:'6.1',
+    version_alternatives:[{product_key:'modis:c7',version:'7',official_id:'C3860236666-LAADS'}],
+    time_profile:{kind:'observation'}
+  };
+  h.run('state.downloads.catalog=[]');
+  assert.equal(h.context.downloadVersionAlternativesLabel(variant),'另有 1 个集合：版本 7');
+  assert.equal(h.context.downloadScanEvidenceLabel(checked),
+    '2018-06-15 M3 / 2020-06-15 M6 / 2023-06-15 M6');
+  const html=h.context.downloadProductRow(checked);
+  assert.match(html,/核验日扫描模式（非切换日期）/);
+  assert.match(html,/2018-06-15 M3/);
+  assert.match(html,/2020-06-15 M6/);
+  assert.match(h.context.downloadProductRow(variant),/同系列集合/);
+  assert.match(h.context.downloadProductRow(variant),/版本 7/);
+  assert.equal(h.context.downloadScanEvidenceLabel(variant),'');
+});
+
+test('actual scene picker displays the file scan mode without extrapolating its date', () => {
+  const h=harness();
+  const product={product_key:'goes16:ABI-L1b-RadF',source_id:'goes16',available_granules:true,
+    time_profile:{kind:'scan',cadence_minutes:10,selection_minutes:5}};
+  h.run('state.downloads.catalog=[]');
+  const picker=h.context.downloadGranulePicker({...product, product_key:'goes16:ABI-L1b-RadF'});
+  assert.doesNotMatch(picker,/M3|M6/);
+  h.run(`state.downloads.productOptions['goes16:ABI-L1b-RadF']={granules:{
+    date:'2018-06-15',items:[{id:'g1',start:'2018-06-15T00:00:41Z',scan_mode:'M3'},
+      {id:'g2',start:'2018-06-15T00:15:40Z',scan_mode:'M3'}],selected:[]}}`);
+  const html=h.context.downloadGranulePicker(product);
+  assert.match(html,/M3（实际文件扫描模式）/);
+  assert.match(html,/00:00:41 · M3/);
+  assert.doesNotMatch(html,/M6/);
+  assert.equal(h.context.downloadScanEvidenceLabel(product),'');
+});
+
 test('same nominal cadence with different selection steps or ownership cannot share times', () => {
   const h=harness();
   h.run(`state.downloads.catalog=['a','b'].map(product_key=>({product_key,instrument:'ABI',time_profile:{kind:'scan',cadence_minutes:10,selection_minutes:5}}));state.downloads.selectedProducts=new Set(['a','b']);`);
