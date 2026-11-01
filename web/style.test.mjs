@@ -58,6 +58,13 @@ test('CSS parses and uses the NSMC light theme tokens', () => {
   assert.equal(first('body').get('font-size'), '13px');
 });
 
+test('download product filters use five equal desktop columns and responsive container widths', () => {
+  assert.equal(first('.download-product-filters').get('grid-template-columns'),'repeat(5,minmax(0,1fr))');
+  assert.ok(rules.get('.download-product-picker').some(style=>style.get('container-type')==='inline-size'));
+  assert.match(css,/@container\s*\(max-width:780px\)/);
+  assert.match(css,/@container\s*\(max-width:480px\)/);
+});
+
 test('login retains authentication controls in the NSMC compact form', () => {
   assert.equal(signIn.ids.get('portal-login-form').attrs.class, 'login-card');
   assert.equal(signIn.ids.get('portal-login-form').attrs.action, '/login');

@@ -375,7 +375,11 @@ main.calendar-wide{width:100%}
 .download-picker-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
 .download-product-picker h3{font-size:14px;font-weight:650;margin:0}
 #dl-selected-count{background:#ddf4ff;color:#0969da;padding:5px 10px;border-radius:999px;font-size:13px;font-weight:600}
-.download-product-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}
+.download-product-picker{container-type:inline-size}
+.download-product-filters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+@container (max-width:780px){.download-product-filters{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@container (max-width:480px){.download-product-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@container (max-width:290px){.download-product-filters{grid-template-columns:minmax(0,1fr)}}
 .download-filter-field{display:grid;gap:6px;min-width:0;font-size:13px;color:var(--muted)}
 .download-filter{position:relative;min-width:0;color:var(--fg)}
 .download-filter summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer;list-style:none}
@@ -385,6 +389,7 @@ main.calendar-wide{width:100%}
 .download-filter[open]{z-index:6}
 .download-filter-options{position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:260px;overflow:auto;padding:6px;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 6px 18px #0002}
 .download-submit-form .download-filter-options label{display:flex;align-items:flex-start;gap:8px;padding:7px 3px;color:var(--fg);cursor:pointer;overflow-wrap:anywhere}
+.download-filter-hint{display:block;margin-top:3px;color:var(--muted);font-size:12px;line-height:1.4}
 .download-submit-form .download-filter-options input{width:16px;height:16px;flex:0 0 auto;margin:1px 0 0}
 .download-filter-options button{width:100%;text-align:left;border:0;background:var(--soft);padding:7px 6px;font-size:13px}
 .download-product-search{display:flex;align-items:flex-end;gap:12px;margin:14px 0}

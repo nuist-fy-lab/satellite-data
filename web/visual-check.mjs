@@ -123,6 +123,35 @@ window.downloadTemporalFixture = function() {
     monthly:document.querySelector('[data-download-options="modis:monthly"] [data-option-field="start-month"]').type,
     observation:document.querySelector('[data-download-options="modis:observation"] [data-option-field="start"]').type};
 };
+window.downloadFilterLayoutFixture = function() {
+  const original = state.downloads.catalog;
+  state.downloads.catalog = [...original, {
+    product_key:'goes18:filter-fixture',source_id:'goes18',satellite:'GOES-18',
+    instrument:'ABI',level:'L2',data_type:'ABI-L2-FILTER',version:'1.0',
+    area_type:'FULL_DISK',resolution:'2 km',
+    time_profile:{kind:'observation',semantic:'event',semantic_label:'闪电事件'},
+  }];
+  try {
+    refreshDownloadFilters();
+    const grid=document.querySelector('.download-product-filters');
+    const columns=getComputedStyle(grid).gridTemplateColumns.split(' ').length;
+    const fields=[...grid.querySelectorAll('.download-filter-field')];
+    const rows=new Map();
+    fields.forEach(field=>{
+      const rect=field.getBoundingClientRect();
+      const key=Math.round(rect.top);
+      if(!rows.has(key))rows.set(key,[]);
+      rows.get(key).push({width:rect.width,left:rect.left});
+    });
+    return {width:grid.getBoundingClientRect().width,columns,count:fields.length,
+      rows:[...rows.values()].map(items=>({count:items.length,
+        equal:items.every(item=>Math.abs(item.width-items[0].width)<1)})),
+      labels:fields.map(field=>field.firstElementChild?.textContent)};
+  } finally {
+    state.downloads.catalog=original;
+    refreshDownloadFilters();
+  }
+};
 window.downloadSharedFixture = function(compatible) {
   const first=state.downloads.catalog.find(product=>product.source_id==='goes18');
   const second={...first,product_key:'goes16:ABI-L1b-RadF',source_id:'goes16',satellite:'GOES-16'};
@@ -477,6 +506,16 @@ try {
       assert.ok(metrics.scroll<=metrics.width+1,view+' '+mode+' overflows: '+JSON.stringify(metrics));
       assert.deepEqual(metrics.bad,[],view+' has collapsed controls');
       if (view === 'downloads-view') {
+        const filterLayout=await driver.executeScript('return window.downloadFilterLayoutFixture()');
+        const expectedColumns=filterLayout.width<=290?1:filterLayout.width<=480?2:filterLayout.width<=780?3:5;
+        assert.equal(filterLayout.columns,expectedColumns,'responsive product facets: '+JSON.stringify(filterLayout));
+        assert.equal(filterLayout.count,10,'ten product facets required: '+JSON.stringify(filterLayout));
+        assert.ok(filterLayout.rows.every(row=>row.equal),'facet columns have uneven widths: '+JSON.stringify(filterLayout));
+        if (filterLayout.columns===5) {
+          assert.deepEqual(filterLayout.rows.map(row=>row.count),[5,5],'five-by-two desktop facet layout');
+          assert.deepEqual(filterLayout.labels.slice(0,5),['数据源','卫星','传感器','级别','产品']);
+          assert.deepEqual(filterLayout.labels.slice(5),['版本','区域','标称分辨率','时间组织形式','产品类别']);
+        }
         const picker = await driver.executeScript(`
           const $=selector=>document.querySelector(selector);
           const checked=[...document.querySelectorAll('[data-download-product]:checked')].map(node=>node.dataset.downloadProduct);
