@@ -2330,8 +2330,8 @@ const dlStages = [
   ['version', '版本', p => p.version || p.metadata?.version || ''],
   ['area', '区域', p => p.area_type || p.metadata?.area_type || ''],
   ['resolution', '标称分辨率', p => p.resolution || ''],
-  ['temporal', '时间选择', p => downloadSelectionLabel(p)],
-  ['time_semantic', '时间属性', p => downloadScientificTimeLabel(p)],
+  ['temporal', '时间组织形式', p => downloadSelectionLabel(p)],
+  ['time_semantic', '产品类别', p => downloadProductCategoryLabel(p)],
 ];
 
 function downloadProductName(product) {
@@ -2423,6 +2423,10 @@ function refreshDownloadFilters() {
   const opened = new Set([...(holder.querySelectorAll?.('details[open]') || [])].map(node => node.dataset.filter));
   let items = state.downloads.catalog;
   const controls = [];
+  const explanations = {
+    temporal: '时间组织形式：扫描时次、时间覆盖区间或周期产品。时间覆盖区间指单个文件对应的起止时间。',
+    time_semantic: '产品类别：按观测、反演、合成、累计、统计等科学数据处理性质分类。',
+  };
   for (const [id, label, field] of dlStages) {
     const values = uniqueSorted(items.flatMap(product => downloadFilterValues(id, product, field)));
     const selected = new Set([...(state.downloads.filters[id] || [])].filter(value => values.includes(value)));
@@ -2430,11 +2434,13 @@ function refreshDownloadFilters() {
     if (!values.length) continue;
     const optionName = value => id === 'source' ? sourceFamilyLabels[value] || value : downloadFieldLabel(value);
     const summary = selected.size ? [...selected].map(optionName).join('、') : '全部';
-    controls.push('<div class="download-filter-field"><span>' + esc(label) + '</span><details class="download-filter" data-filter="' + id + '"' + (opened.has(id) ? ' open' : '') + '>' +
+    controls.push('<div class="download-filter-field"><span' + (explanations[id] ? ' title="' + esc(explanations[id]) + '"' : '') + '>' + esc(label) + '</span><details class="download-filter" data-filter="' + id + '"' + (opened.has(id) ? ' open' : '') + '>' +
       '<summary aria-label="' + esc(label + '：' + summary) + '"><span>' + esc(summary) + '</span></summary><div class="download-filter-options">' +
       '<button type="button" data-download-filter-clear="' + id + '">全部' + esc(label) + '</button>' +
       values.map(value => '<label><input type="checkbox" data-download-filter="' + id + '" value="' + esc(value) + '"' +
-        (selected.has(value) ? ' checked' : '') + '><span>' + esc(optionName(value)) + '</span></label>').join('') +
+        (selected.has(value) ? ' checked' : '') + '><span>' + esc(optionName(value)) +
+        (id === 'temporal' ? '<small class="download-filter-hint">' + esc(downloadTemporalOptionHint(value)) + '</small>' : '') +
+        '</span></label>').join('') +
       '</div></details></div>');
     if (selected.size) items = items.filter(product => downloadFilterValues(id, product, field).some(value => selected.has(value)));
   }
@@ -2453,8 +2459,9 @@ function downloadProductRow(product, selected = false) {
     ['同系列集合', downloadVersionAlternativesLabel(product)],
     ['区域', downloadFieldLabel(downloadFilterValues('area', product, p => p.area_type)[0])],
     ['标称分辨率', downloadResolutionLabel(product, selected ? downloadSettings(product).band : 0)],
-    ['时间选择', downloadSelectionLabel(product)],
-    ['时间属性', downloadScientificTimeLabel(product)],
+    ['时间组织形式', downloadSelectionLabel(product)],
+    ['产品类别', downloadProductCategoryLabel(product)],
+    ['时间特征', downloadScientificTimeLabel(product)],
     ['更新周期', downloadNominalUpdateLabel(product)],
     ['时间依据', downloadCoverageBasisLabel(product)],
     ['核验日扫描模式（非切换日期）', downloadScanEvidenceLabel(product)]]
@@ -2556,9 +2563,34 @@ function downloadTimeProfile(product) {
 // Keep the original kind as the server-side scheduling contract.
 function downloadSelectionLabel(product) {
   const kind = downloadTimeProfile(product).kind;
-  if (kind === 'scan') return '固定扫描时次';
-  if (['daily', 'composite', 'monthly', 'annual'].includes(kind)) return '日历周期';
-  return '实际时间范围';
+  if (kind === 'scan') return '扫描时次';
+  if (['daily', 'composite', 'monthly', 'annual'].includes(kind)) return '周期产品';
+  return '时间覆盖区间';
+}
+
+function downloadTemporalOptionHint(value) {
+  if (value === '扫描时次') return '按具体扫描时刻检索，历史模式可能变化';
+  if (value === '时间覆盖区间') return '按单个文件的观测或有效时间起止范围检索';
+  if (value === '周期产品') return '按日、月、年或多日周期检索';
+  return '';
+}
+
+function downloadProductCategoryLabel(product) {
+  const semantic = downloadTimeProfile(product).semantic;
+  const labels = {
+    observation: '观测产品',
+    scanning: '扫描观测',
+    sounding: '探测产品',
+    sensor: '仪器观测',
+    derived: '反演及派生产品',
+    event: '事件探测',
+    accumulation: '累计产品',
+    composite: '合成产品',
+    statistics: '统计产品',
+    reanalysis: '再分析产品',
+    ancillary: '辅助数据',
+  };
+  return labels[semantic] || '';
 }
 
 function downloadScientificTimeLabel(product) {

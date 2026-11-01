@@ -161,11 +161,12 @@ test('scientific time semantics appear in facets, product cards and confirmation
   ];state.downloads.selectedProducts=new Set(['glm','li','half']);`);
   h.element('#dl-start').value='2024-02-29';h.element('#dl-end').value='2024-02-29';
   h.context.refreshDownloadFilters();
-  assert.match(h.element('#dl-filters').innerHTML,/时间选择/);
-  assert.match(h.element('#dl-filters').innerHTML,/实际时间范围/);
-  assert.match(h.element('#dl-filters').innerHTML,/时间属性/);
-  assert.match(h.element('#dl-filters').innerHTML,/闪电事件/);
-  assert.match(h.element('#dl-filters').innerHTML,/闪电累计/);
+  assert.match(h.element('#dl-filters').innerHTML,/时间组织形式/);
+  assert.match(h.element('#dl-filters').innerHTML,/时间覆盖区间/);
+  assert.match(h.element('#dl-filters').innerHTML,/产品类别/);
+  assert.match(h.element('#dl-filters').innerHTML,/事件探测/);
+  assert.match(h.element('#dl-filters').innerHTML,/累计产品/);
+  assert.match(h.element('#dl-filters').innerHTML,/按单个文件的观测或有效时间起止范围检索/);
   assert.match(h.element('#dl-product-results').innerHTML,/半小时合成/);
   assert.doesNotMatch(h.element('#dl-selected-products').innerHTML,/data-option-field="mode"|全部扫描/);
   assert.equal(h.context.downloadTimeLabel({time_profile:{kind:'observation',label:'数据时间'}}),'时间范围');
@@ -193,17 +194,40 @@ test('verified coverage, update cadence and scientific semantics stay independen
   }};
   const orbit={product_key:'cloudsat:2B-GEOPROF.P1_R05',source_id:'cloudsat',time_profile:{kind:'orbit',selection_basis:'file_start'}};
   h.run('state.downloads.catalog=[]');
-  assert.equal(h.context.downloadSelectionLabel(flood),'实际时间范围');
+  assert.equal(h.context.downloadSelectionLabel(flood),'时间覆盖区间');
   assert.equal(h.context.downloadTimeLabel(flood),'逐小时更新合成');
   assert.equal(h.context.downloadNominalUpdateLabel(flood),'标称每小时更新');
   assert.equal(h.context.downloadCoverageBasisLabel(flood),'按实际文件覆盖区间检索');
   assert.equal(h.context.downloadScientificTimeLabel(rmcp),'多周期统计');
   assert.equal(h.context.downloadCoverageBasisLabel(rmcp),'按文件标注统计区间检索');
   assert.equal(h.context.downloadRangeLabel(flood),'文件覆盖时间');
-  assert.equal(h.context.downloadSelectionLabel(orbit),'实际时间范围');
+  assert.equal(h.context.downloadSelectionLabel(orbit),'时间覆盖区间');
+  assert.equal(h.context.downloadSelectionLabel({time_profile:{kind:'scan'}}),'扫描时次');
+  assert.equal(h.context.downloadSelectionLabel({time_profile:{kind:'monthly'}}),'周期产品');
+  assert.equal(h.context.downloadProductCategoryLabel(flood),'合成产品');
+  assert.equal(h.context.downloadProductCategoryLabel(rmcp),'统计产品');
+  assert.equal(h.context.downloadProductCategoryLabel(orbit),'');
   assert.equal(h.context.downloadCoverageBasisLabel(orbit),'按文件起始时间检索');
   assert.equal(h.context.downloadNominalUpdateLabel(rmcp),'');
   assert.equal(h.context.downloadTimeLabel({time_profile:{kind:'daily',subtype:'daily_flood',semantic:'composite'}}),'每日更新合成');
+});
+
+test('ten remote-sensing facets render as two logical groups with distinct time and product categories', () => {
+  const h=harness();
+  h.run(`state.downloads.catalog=[{product_key:'goes18:example',source_id:'goes18',satellite:'GOES-18',
+    instrument:'ABI',level:'L2',data_type:'ABI-L2-EXAMPLE',version:'1.0',area_type:'FULL_DISK',
+    resolution:'2 km',time_profile:{kind:'observation',semantic:'event',semantic_label:'闪电事件'}}]`);
+  h.context.refreshDownloadFilters();
+  const html=h.element('#dl-filters').innerHTML;
+  const positions=[...html.matchAll(/data-filter="([^"]+)"/g)].map(value=>value[1]);
+  assert.deepEqual(positions,['source','satellite','instrument','level','product',
+    'version','area','resolution','temporal','time_semantic']);
+  assert.match(html,/时间组织形式/);
+  assert.match(html,/时间覆盖区间/);
+  assert.match(html,/产品类别/);
+  assert.match(html,/事件探测/);
+  assert.doesNotMatch(html,/实际时间范围|时间属性|时间分辨率/);
+  assert.equal(h.context.downloadTemporalOptionHint('时间覆盖区间'),'按单个文件的观测或有效时间起止范围检索');
 });
 
 test('dated NOAA scan samples and actual collection variants are visible without inferred periods', () => {

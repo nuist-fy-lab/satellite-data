@@ -34,6 +34,25 @@ selection modes (fixed scans, actual time ranges, calendar periods) from
 scientific time attributes and evidence. A scientific family such as cloud
 retrieval is not treated as a new time selection mode.
 
+In the download UI, `时间组织形式` distinguishes `扫描时次` (scanned
+acquisitions), `时间覆盖区间` (temporal extent of a file or granule), and
+`周期产品` (calendar-indexed products). The terminology follows the
+granule temporal-extent concepts used by NASA Earthdata and STAC:
+https://wiki.earthdata.nasa.gov/spaces/CMR/pages/382274521/Temporal+Extent+Granule
+and https://docs.ogc.org/cs/25-004/25-004.html. A data granule with a
+single timestamp may still be selected using a requested time interval;
+this grouping describes the catalogue retrieval controls rather than
+promising a continuous observation record.
+
+`产品类别` is based on the scientific semantic family (observation,
+retrieval/derived, event, accumulation, composite, statistics, reanalysis,
+ancillary, etc.). It replaces the ambiguous former `时间属性` filter:
+these are product families, not temporal-resolution measurements or CF
+time cell methods. The corresponding detailed time characteristic remains
+visible in the product metadata. The ten facets are presented as two
+five-column rows on a sufficiently wide download panel, with responsive
+reflow for smaller screens.
+
 ### Dated scan evidence and collection versions
 
 The catalogue includes `version_alternatives` for separate official
