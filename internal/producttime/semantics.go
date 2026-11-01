@@ -7,8 +7,8 @@ import (
 )
 
 // Semantic and Subtype describe the data, independently of Kind's scheduling
-// contract. WindowMinutes describes a scientific bin, not a scan axis or an
-// assertion about archive timestamp anchors.
+// contract. WindowMinutes describes a verified fixed scientific aggregation
+// bin. A product's update interval and its actual file coverage are separate.
 func applySemantics(p model.Product, profile Profile) Profile {
 	code := strings.TrimPrefix(p.ProductKey, p.SourceID+":")
 	if p.SourceID == "earthcare" {
@@ -32,9 +32,9 @@ func applySemantics(p model.Product, profile Profile) Profile {
 		return profile
 	}
 	if p.SourceID == "cloudsat" && (code == "3F-RMCP.R05_V0002" || code == "3S-RMCP.R05_V0002") {
-		// The current provider lists file starts without coverage ends. A
-		// scientific statistics label must not imply overlap discovery support.
-		profile = Profile{Kind: "observation", Label: "数据时间", SelectionBasis: "file_start"}
+		// RMCP filename periods are parsed as [start,end), and the provider
+		// searches by overlap, including seasons and years spanning the query.
+		profile = Profile{Kind: "observation", Label: "数据时间", CoverageBasis: "filename_period"}
 		set("statistics", "multi_period", "多周期统计", 0)
 		return profile
 	}
@@ -42,10 +42,15 @@ func applySemantics(p model.Product, profile Profile) Profile {
 		switch code {
 		case "ABI-Flood-Day", "ABI-Flood-Day-Shapefiles", "ABI-Flood-Day-TIF":
 			profile = Profile{Kind: "daily", Label: "日产品"}
-			set("composite", "daily_flood", "日合成", 1440)
+			// Daily publication does not imply a 24-hour coverage window.
+			profile.NominalUpdateMinutes, profile.CoverageBasis = 1440, "file_coverage"
+			set("composite", "daily_flood", "每日更新合成", 0)
 			return profile
 		case "ABI-Flood-Hourly", "ABI-Flood-Hourly-Shapefiles", "ABI-Flood-Hourly-TIF":
-			set("composite", "hourly_flood", "小时合成", 60)
+			// An hourly publication may cover observations since earlier in
+			// the day; NOAA's file start/end determine the actual interval.
+			profile.NominalUpdateMinutes, profile.CoverageBasis = 60, "file_coverage"
+			set("composite", "hourly_flood", "逐小时更新合成", 0)
 			return profile
 		}
 	}

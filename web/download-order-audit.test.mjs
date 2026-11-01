@@ -161,8 +161,11 @@ test('scientific time semantics appear in facets, product cards and confirmation
   ];state.downloads.selectedProducts=new Set(['glm','li','half']);`);
   h.element('#dl-start').value='2024-02-29';h.element('#dl-end').value='2024-02-29';
   h.context.refreshDownloadFilters();
-  assert.match(h.element('#dl-filters').innerHTML,/事件时间/);
-  assert.match(h.element('#dl-filters').innerHTML,/累计时段/);
+  assert.match(h.element('#dl-filters').innerHTML,/时间选择/);
+  assert.match(h.element('#dl-filters').innerHTML,/实际时间范围/);
+  assert.match(h.element('#dl-filters').innerHTML,/时间属性/);
+  assert.match(h.element('#dl-filters').innerHTML,/闪电事件/);
+  assert.match(h.element('#dl-filters').innerHTML,/闪电累计/);
   assert.match(h.element('#dl-product-results').innerHTML,/半小时合成/);
   assert.doesNotMatch(h.element('#dl-selected-products').innerHTML,/data-option-field="mode"|全部扫描/);
   assert.equal(h.context.downloadTimeLabel({time_profile:{kind:'observation',label:'数据时间'}}),'时间范围');
@@ -177,6 +180,30 @@ test('scientific time semantics appear in facets, product cards and confirmation
   assert.match(h.element('#dl-confirm-summary').innerHTML,/半小时合成/);
   assert.match(h.element('#dl-confirm-summary').innerHTML,/闪电累计/);
   assert.equal(h.requests.length,0);
+});
+
+test('verified coverage, update cadence and scientific semantics stay independent', () => {
+  const h=harness();
+  const flood={product_key:'goes19:ABI-Flood-Hourly-TIF',source_id:'goes19',time_profile:{
+    kind:'observation',semantic:'composite',subtype:'hourly_flood',semantic_label:'逐小时更新合成',
+    nominal_update_minutes:60,coverage_basis:'file_coverage'
+  }};
+  const rmcp={product_key:'cloudsat:3S-RMCP.R05_V0002',source_id:'cloudsat',time_profile:{
+    kind:'observation',semantic:'statistics',subtype:'multi_period',semantic_label:'多周期统计',coverage_basis:'filename_period'
+  }};
+  const orbit={product_key:'cloudsat:2B-GEOPROF.P1_R05',source_id:'cloudsat',time_profile:{kind:'orbit',selection_basis:'file_start'}};
+  h.run('state.downloads.catalog=[]');
+  assert.equal(h.context.downloadSelectionLabel(flood),'实际时间范围');
+  assert.equal(h.context.downloadTimeLabel(flood),'逐小时更新合成');
+  assert.equal(h.context.downloadNominalUpdateLabel(flood),'标称每小时更新');
+  assert.equal(h.context.downloadCoverageBasisLabel(flood),'按实际文件覆盖区间检索');
+  assert.equal(h.context.downloadScientificTimeLabel(rmcp),'多周期统计');
+  assert.equal(h.context.downloadCoverageBasisLabel(rmcp),'按文件标注统计区间检索');
+  assert.equal(h.context.downloadRangeLabel(flood),'文件覆盖时间');
+  assert.equal(h.context.downloadSelectionLabel(orbit),'实际时间范围');
+  assert.equal(h.context.downloadCoverageBasisLabel(orbit),'按文件起始时间检索');
+  assert.equal(h.context.downloadNominalUpdateLabel(rmcp),'');
+  assert.equal(h.context.downloadTimeLabel({time_profile:{kind:'daily',subtype:'daily_flood',semantic:'composite'}}),'每日更新合成');
 });
 
 test('same nominal cadence with different selection steps or ownership cannot share times', () => {

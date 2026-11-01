@@ -141,6 +141,9 @@ func TestSearchFloodCalendarPathsAndDistinctComposites(t *testing.T) {
 	if !got[0].Start.Equal(time.Date(2025, 8, 25, 11, 40, 21, 0, time.UTC)) || !got[0].End.Equal(time.Date(2025, 8, 25, 15, 49, 51, 900000000, time.UTC)) {
 		t.Fatalf("granule=%+v", got[0])
 	}
+	if got[0].Metadata["processing_revision"] != "v1r1" || got[0].Metadata["coverage_basis"] != "filename" {
+		t.Fatalf("lost NOAA file-specific time and processing metadata: %+v", got[0].Metadata)
+	}
 	got, err = p.Search(context.Background(), model.Query{CollectionID: "goes19:" + product, Start: time.Date(2025, 8, 25, 15, 49, 51, 900000000, time.UTC), End: time.Date(2025, 8, 25, 15, 50, 0, 0, time.UTC)})
 	if err != nil || len(got) != 2 {
 		t.Fatalf("exclusive end: granules=%+v err=%v", got, err)

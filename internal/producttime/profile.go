@@ -25,6 +25,11 @@ type Profile struct {
 	Subtype          string `json:"subtype,omitempty"`
 	SemanticLabel    string `json:"semantic_label,omitempty"`
 	WindowMinutes    int    `json:"window_minutes,omitempty"`
+	// NominalUpdateMinutes is the nominal product refresh interval, not the
+	// duration of observations represented by any particular file.
+	NominalUpdateMinutes int `json:"nominal_update_minutes,omitempty"`
+	// CoverageBasis records how actual file coverage is established.
+	CoverageBasis string `json:"coverage_basis,omitempty"`
 }
 
 var nDays = regexp.MustCompile(`(?i)\b(\d+)[ -]days?\b`)
