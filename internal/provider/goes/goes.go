@@ -25,6 +25,7 @@ type Provider struct {
 var archiveName = regexp.MustCompile(`^OR_([A-Za-z0-9-]+)_G(1[6-9])_s([0-9]{13,22})_e[0-9]{13,22}_c[0-9]{13,22}\.nc$`)
 var archiveScanMode = regexp.MustCompile(`-M[0-9](C[0-9]{2})?$`)
 var filenameScanMode = regexp.MustCompile(`-M([0-9])(?:C[0-9]{2})?_G1[6-9]_`)
+var floodFileRevision = regexp.MustCompile(`_v([0-9]+)r([0-9]+)_`)
 
 // ArchiveIdentity uses NOAA's timestamp, not the local directory date.
 func ArchiveIdentity(name string) (string, time.Time, bool) {
@@ -233,6 +234,12 @@ func (p *Provider) Search(ctx context.Context, q model.Query) ([]model.Granule, 
 		metadata := map[string]string{"satellite": strconv.Itoa(p.satellite), "store": "gcs"}
 		if group.mode != "" && !group.modeConflict {
 			metadata["scan_mode"] = group.mode
+		}
+		if flood && len(group.assets) > 0 {
+			metadata["coverage_basis"] = "filename"
+			if match := floodFileRevision.FindStringSubmatch(group.assets[0].Name); len(match) == 3 {
+				metadata["processing_revision"] = "v" + match[1] + "r" + match[2]
+			}
 		}
 		out = append(out, model.Granule{
 			ID:           p.sourceID + ":" + product + ":" + key,

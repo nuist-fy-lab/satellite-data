@@ -19,8 +19,8 @@ func TestExplicitScientificSemantics(t *testing.T) {
 		{"cloudsat", "3F-RMCP.R05_V0002", "observation", "statistics", "multi_period", 0},
 		{"cloudsat", "3S-RMCP.R05_V0002", "observation", "statistics", "multi_period", 0},
 		{"cloudsat", "2B-GEOPROF.P1_R05", "orbit", "", "", 0},
-		{"goes18", "ABI-Flood-Day-TIF", "daily", "composite", "daily_flood", 1440},
-		{"goes19", "ABI-Flood-Hourly-TIF", "observation", "composite", "hourly_flood", 60},
+		{"goes18", "ABI-Flood-Day-TIF", "daily", "composite", "daily_flood", 0},
+		{"goes19", "ABI-Flood-Hourly-TIF", "observation", "composite", "hourly_flood", 0},
 		{"modis", "C3903710663-LAADS", "observation", "composite", "multisensor_half_hour", 30},
 		{"viirs", "C3348093425-LAADS", "observation", "composite", "multisensor_half_hour", 30},
 		{"mtg", "EO:EUM:DAT:0686", "observation", "accumulation", "lightning", 0},
@@ -45,8 +45,14 @@ func TestExplicitScientificSemantics(t *testing.T) {
 			if p.Kind != "scan" && (p.CadenceMinutes != 0 || p.SelectionMinutes != 0) {
 				t.Fatalf("invented scan axis: %+v", p)
 			}
-			if tc.source == "cloudsat" && p.SelectionBasis != "file_start" {
-				t.Fatalf("lost provider file-start constraint: %+v", p)
+			if tc.source == "cloudsat" {
+				if tc.subtype == "multi_period" {
+					if p.SelectionBasis != "" || p.CoverageBasis != "filename_period" {
+						t.Fatalf("RMCP should query official file periods by overlap: %+v", p)
+					}
+				} else if p.SelectionBasis != "file_start" {
+					t.Fatalf("lost orbit provider file-start constraint: %+v", p)
+				}
 			}
 		})
 	}
@@ -195,6 +201,24 @@ func TestScientificWindowsDoNotCreateScanAxes(t *testing.T) {
 	}
 	if strings.Contains(string(b), "semantic") || strings.Contains(string(b), "window_minutes") {
 		t.Fatalf("unknown metadata should be omitted: %s", b)
+	}
+}
+
+func TestVerifiedFloodUpdateIsSeparateFromFileCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		key, kind, label string
+		update           int
+	}{
+		{"ABI-Flood-Day", "daily", "每日更新合成", 1440},
+		{"ABI-Flood-Hourly-TIF", "observation", "逐小时更新合成", 60},
+	} {
+		p := Resolve(model.Product{SourceID: "goes19", ProductKey: "goes19:" + tc.key, Cadence: "10m"})
+		if p.Kind != tc.kind || p.SemanticLabel != tc.label || p.WindowMinutes != 0 || p.NominalUpdateMinutes != tc.update || p.CoverageBasis != "file_coverage" {
+			t.Fatalf("file duration mistaken for nominal cadence: %+v", p)
+		}
+		if p.Kind == "observation" && p.CadenceMinutes != 0 {
+			t.Fatalf("nominal update interval created an unsupported scan axis: %+v", p)
+		}
 	}
 }
 

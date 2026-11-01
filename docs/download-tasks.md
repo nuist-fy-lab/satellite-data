@@ -6,31 +6,44 @@ A task contains 1–32 products. Submit it once; the coordinator queries each pr
 | --- | --- | --- |
 | Geostationary product with a verified scan policy | Dates plus all scans, compatible hourly/synoptic presets, or explicit times | Nominal scan starts with bounded phase tolerance; GOES full-disk ABI radiance/CMIP uses the actual file's mode 3/4/6 |
 | Polar swath / observation | Observation start and exclusive end, with second precision | Intersect the available official coverage interval; retain point events when only a start is available |
-| Orbit product | Data start and exclusive end | Whole files selected by official time metadata; CloudSat explicitly selects file start because its catalogue does not provide file end times |
+| Orbit product | Data start and exclusive end | CloudSat orbit-file discovery uses file starts, except 2B-GEOPROF/2B-CLDCLASS when profile-centre metadata is available; the RMCP statistics collections have independent coverage intervals |
 | Daily | Inclusive date range, UTC | Files intersecting the chosen days |
 | Multi-day composite | Inclusive coverage date range, UTC | Official coverage; no universal composite epoch or year-end truncation |
 | Monthly / annual | Inclusive month / year range | Whole UTC calendar months / years |
 
-CloudSat's current provider discovers file starts only and returns no coverage
-end. This also applies to the multi-period 3F/3S collections after their
-scientific reclassification. Their profile retains `selection_basis=file_start`;
-neither the statistics label nor mocked coordinator overlap tests establish
-leading-overlap discovery. The official 3F/3S access route is SFTP and actual
-retrieval through this provider remains unverified.
+CloudSat orbit granules generally use filename start times. For 2B-GEOPROF and
+2B-CLDCLASS the provider can resolve observation coverage through profile-centre
+metadata when the metadata reader is configured. The 3F/3S-RMCP statistics
+collections follow a separate path: the THREDDS provider parses month, season,
+year and multi-month coverage directly from file names, then intersects those
+intervals with the request. `coverage_basis=filename_period` identifies this
+behavior. Official THREDDS listings include 2008 annual and 2008–2009 DJF
+seasonal files. Metadata discovery does not establish authenticated file
+download success.
 
 The server returns `time_profile` in both the download catalogue and task summaries. A five-minute polar granule duration does not imply a recurring five-minute scan schedule. A rolling composite published daily remains a daily product.
 
 `kind` remains the scheduling contract. Additive `semantic`, `subtype` and
 `semantic_label` fields describe scientific content independently, while
-`window_minutes` records a documented aggregation duration without implying a
-clock anchor or selectable scan grid. The UI's time-type filter describes the
-actual selection: scan times, observation/event ranges, accumulation/composite
-windows, data-validity times, or calendar periods. A scientific family such as
-cloud retrieval is not presented as a new time mode.
+`window_minutes` represents a fixed scientific aggregation window only when
+that window is independently established. `nominal_update_minutes` records an
+approximate publication interval; `coverage_basis` records how actual file
+coverage is obtained. These fields do not create a scan grid or assert that a
+file covers its nominal publication interval. The UI separates three time
+selection modes (fixed scans, actual time ranges, calendar periods) from
+scientific time attributes and evidence. A scientific family such as cloud
+retrieval is not treated as a new time selection mode.
 
 Explicit collection rules correct CALIPSO monthly L3 statistics, CloudSat
 multi-period statistics, daily/hourly GOES flood composites and half-hour
-GEO-LEO composites. Scientific labels also distinguish EarthCARE calibration
+GEO-LEO composites. GOES Flood-Hourly may be published hourly while a file
+covers a growing portion of the day: a NOAA GOES-19 file published on
+2025-08-25 records `time_coverage_start=09:30:21Z` and
+`time_coverage_end=15:49:51Z`, with processing revision `v1r1`. Flood-Day
+likewise indicates a daily product, not guaranteed 24-hour scene coverage.
+The provider exposes each flood file's parsed processing revision as
+`processing_revision`, separate from the catalogue version. Scientific labels
+also distinguish EarthCARE calibration
 and support data, motion winds, rainfall rate, lightning events and accumulated
 fields. Unverified Himawari ISatSS collection identities retain a plain time
 range; no missing-metadata chip or invented fixed cadence is shown.

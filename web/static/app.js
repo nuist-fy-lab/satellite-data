@@ -2330,7 +2330,8 @@ const dlStages = [
   ['version', '版本', p => p.version || p.metadata?.version || ''],
   ['area', '区域', p => p.area_type || p.metadata?.area_type || ''],
   ['resolution', '标称分辨率', p => p.resolution || ''],
-  ['temporal', '时间类型', p => downloadTimeLabel(p)],
+  ['temporal', '时间选择', p => downloadSelectionLabel(p)],
+  ['time_semantic', '时间属性', p => downloadScientificTimeLabel(p)],
 ];
 
 function downloadProductName(product) {
@@ -2437,7 +2438,10 @@ function downloadProductRow(product, selected = false) {
     ['产品', code], ['版本', downloadVersionLabel(product)],
     ['区域', downloadFieldLabel(downloadFilterValues('area', product, p => p.area_type)[0])],
     ['标称分辨率', downloadResolutionLabel(product, selected ? downloadSettings(product).band : 0)],
-    ['时间类型', downloadTimeLabel(product)]]
+    ['时间选择', downloadSelectionLabel(product)],
+    ['时间属性', downloadScientificTimeLabel(product)],
+    ['更新周期', downloadNominalUpdateLabel(product)],
+    ['时间依据', downloadCoverageBasisLabel(product)]]
     .filter(([,value]) => value);
   const description = '<span class="download-product-copy"><span class="download-product-line">' +
     fields.map(([label, value]) => '<span class="download-product-tag" title="' + esc(label + '：' + value) + '">' +
@@ -2532,15 +2536,49 @@ function downloadTimeProfile(product) {
   return product.time_profile || {kind: 'observation', label: '数据时间'};
 }
 
+// Time selection, scientific meaning and evidence are independent facets.
+// Keep the original kind as the server-side scheduling contract.
+function downloadSelectionLabel(product) {
+  const kind = downloadTimeProfile(product).kind;
+  if (kind === 'scan') return '固定扫描时次';
+  if (['daily', 'composite', 'monthly', 'annual'].includes(kind)) return '日历周期';
+  return '实际时间范围';
+}
+
+function downloadScientificTimeLabel(product) {
+  const profile = downloadTimeProfile(product);
+  if (['event', 'accumulation', 'reanalysis', 'composite', 'statistics', 'ancillary', 'scanning', 'sounding'].includes(profile.semantic)) {
+    return profile.semantic_label || downloadTimeLabel(product);
+  }
+  if (profile.semantic === 'observation' && profile.subtype === 'swath') return '沿轨观测';
+  return '';
+}
+
+function downloadNominalUpdateLabel(product) {
+  const minutes = downloadTimeProfile(product).nominal_update_minutes;
+  if (minutes === 60) return '标称每小时更新';
+  if (minutes === 1440) return '标称每日更新';
+  return minutes > 0 ? '标称每 ' + minutes + ' 分钟更新' : '';
+}
+
+function downloadCoverageBasisLabel(product) {
+  const profile = downloadTimeProfile(product);
+  if (profile.selection_basis === 'file_start') return '按文件起始时间检索';
+  if (profile.coverage_basis === 'filename_period') return '按文件标注统计区间检索';
+  if (profile.coverage_basis === 'file_coverage') return '按实际文件覆盖区间检索';
+  return '';
+}
+
 function downloadTimeLabel(product) {
   const profile = downloadTimeProfile(product);
   if (profile.selection_basis === 'file_start') return '文件起始时间';
-  const period = {daily:profile.semantic === 'composite' ? '日合成' : '日产品', monthly:'月产品', annual:'年产品', composite:profile.label || '多日合成'};
+  const period = {daily:profile.subtype === 'daily_flood' ? '每日更新合成' : profile.semantic === 'composite' ? '日合成' : '日产品', monthly:'月产品', annual:'年产品', composite:profile.label || '多日合成'};
   if (period[profile.kind]) return period[profile.kind];
   if (profile.kind === 'scan') return '扫描时次';
   if (profile.semantic === 'event') return '事件时间';
   if (profile.semantic === 'accumulation') return '累计时段';
   if (profile.semantic === 'reanalysis') return '有效时间';
+  if (profile.subtype === 'hourly_flood') return '逐小时更新合成';
   if (profile.semantic === 'composite') return profile.window_minutes === 30 ? '半小时合成' : profile.window_minutes === 60 ? '小时合成' : '合成时段';
   if (profile.semantic === 'statistics') return '统计时段';
   if (profile.semantic === 'ancillary') return '资料时间';
@@ -2552,6 +2590,7 @@ function downloadTimeLabel(product) {
 function downloadRangeLabel(product) {
   const profile = downloadTimeProfile(product);
   if (profile.selection_basis === 'file_start') return '文件起始时间';
+  if (profile.coverage_basis === 'file_coverage') return '文件覆盖时间';
   if (profile.semantic === 'event') return '事件时间';
   if (profile.semantic === 'accumulation') return '累计时间';
   if (profile.semantic === 'composite') return '合成时间';
