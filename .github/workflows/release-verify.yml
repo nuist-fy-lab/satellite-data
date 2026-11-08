@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: c2ln1-org
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
