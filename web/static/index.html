@@ -350,9 +350,10 @@
               <input type="hidden" id="proxy-id">
               <label>别名<input id="proxy-alias" maxlength="64" required placeholder="例如 US-West-01"></label>
               <label>代理 URL<input id="proxy-url" type="password" autocomplete="off" placeholder="socks5://user:pass@host:port"></label>
+              <div class="secret-grid"><label>用户名<input id="proxy-username" autocomplete="off" placeholder="编辑时留空保留原认证"></label><label>密码<input id="proxy-password" type="password" autocomplete="new-password" placeholder="编辑时留空保留原认证"></label></div>
               <label>适用 Provider<input id="proxy-providers" placeholder="* 或 goes,modis,viirs"></label>
               <div class="form-line"><label>优先级<input id="proxy-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="proxy-enabled" type="checkbox" checked>启用</label></div>
-              <small>编辑时代理 URL 留空表示保留原地址与认证信息。</small>
+              <small>编辑时 URL、用户名和密码均留空表示保留原认证。RN-SOCKS5-MODIS 可分别填写用户名和密码；保存时启用代理，再到 MODIS 访问配置中选择 Fixed。</small>
               <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="proxy">取消</button></div>
               <div id="proxy-error" class="form-error"></div>
             </form>
@@ -370,6 +371,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=41"></script>
+  <script type="module" src="/app.js?v=42"></script>
 </body>
 </html>

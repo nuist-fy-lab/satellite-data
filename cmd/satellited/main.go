@@ -35,6 +35,7 @@ func main() {
 	initializeStateOnly := flag.Bool("init-state-only", false, "initialize the selected state database, then exit without starting services")
 	archiveRoot := flag.String("archive", envOr("SATELLITED_ARCHIVE", defaultArchiveRoot()), "local satellite archive root")
 	migrateAccess := flag.Bool("migrate-access", false, "import legacy downloader access into an empty central vault and exit")
+	ensureRNMODISProxy := flag.Bool("ensure-rn-modis-proxy", false, "create the disabled RN SOCKS5 proxy preset for MODIS if missing, then exit")
 	legacyDB := flag.String("legacy-access-db", "", "stopped downloader database path (migration only)")
 	legacyKey := flag.String("legacy-access-key", "", "legacy private master key path (migration only)")
 	requireHost := flag.String("require-host", strings.TrimSpace(os.Getenv("SATELLITE_REQUIRE_HOST")), "refuse to start unless hostname matches")
@@ -84,6 +85,17 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("access migration committed", "credentials", counts.Credentials, "proxies", counts.Proxies, "accounts", counts.Accounts)
+		return
+	}
+	if *ensureRNMODISProxy {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		proxy, created, err := centralStore.EnsureRNMODISProxyPreset(ctx)
+		if err != nil {
+			slog.Error("ensure RN MODIS proxy preset failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("RN MODIS proxy preset ensured", "id", proxy.ID, "created", created, "scheme", proxy.Scheme, "endpoint", proxy.EndpointHint, "providers", strings.Join(proxy.Providers, ","), "enabled", proxy.Enabled)
 		return
 	}
 

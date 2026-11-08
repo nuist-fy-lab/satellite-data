@@ -3,6 +3,10 @@
 The active repository is `nuist-fy-lab/satellite-data`. The legacy
 `nuist-fy-lab/satellite-data-downloader` repository is archived.
 
+Private `nuist-fy-lab` CI and build jobs use the c2ln1 organization runner
+scale set `c2ln1-org`. Its Slurm profile is fixed to `p1shr`, 4 CPUs and 16 GiB;
+do not substitute another partition or GitHub-hosted runner for CI/build work.
+
 ## Selection / 模块触发
 
 Every PR and push to `main` runs a small selection job and the final `test`

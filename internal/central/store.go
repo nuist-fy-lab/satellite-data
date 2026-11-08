@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS accounts(id INTEGER PRIMARY KEY,alias TEXT NOT NULL U
 CREATE TABLE IF NOT EXISTS cds_jobs(job_id TEXT PRIMARY KEY,account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,credential_id INTEGER REFERENCES credentials(id) ON DELETE SET NULL,token_hash TEXT NOT NULL);
 `
 
+const (
+	rnMODISProxyAlias       = "RN-SOCKS5-MODIS"
+	rnMODISProxyEndpointURL = "socks5://rn.fyzure.fyi:18423"
+)
+
 type Store struct {
 	db    *sql.DB
 	vault *Vault
@@ -190,6 +195,33 @@ func (s *Store) UpsertProxy(ctx context.Context, spec ProxySpec) (downloader.Pro
 		}
 		item.Scheme, item.EndpointHint = u.Scheme, u.Host
 	}
+	isRNMODISProxy := strings.EqualFold(spec.Alias, rnMODISProxyAlias) || strings.EqualFold(item.Alias, rnMODISProxyAlias)
+	if isRNMODISProxy {
+		if !strings.EqualFold(spec.Alias, rnMODISProxyAlias) || len(spec.Providers) != 1 || spec.Providers[0] != "modis" {
+			return item, errors.New("RN MODIS proxy alias and provider scope are fixed")
+		}
+		candidate := strings.TrimSpace(spec.URL)
+		if candidate == "" && spec.ID > 0 {
+			plain, err := s.readSecret(ctx, "proxies", spec.ID)
+			if err != nil {
+				return item, errors.New("RN MODIS proxy credentials could not be checked")
+			}
+			candidate = string(plain)
+		}
+		u, err := url.Parse(candidate)
+		if err != nil || u.Scheme != "socks5" || !strings.EqualFold(u.Host, "rn.fyzure.fyi:18423") || u.Hostname() != "rn.fyzure.fyi" || u.Port() != "18423" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return item, errors.New("RN MODIS proxy endpoint must remain socks5://rn.fyzure.fyi:18423")
+		}
+		if spec.Enabled {
+			if u.User == nil || strings.TrimSpace(u.User.Username()) == "" {
+				return item, errors.New("enter the RN MODIS proxy username and password before enabling it")
+			}
+			password, ok := u.User.Password()
+			if !ok || password == "" {
+				return item, errors.New("enter the RN MODIS proxy username and password before enabling it")
+			}
+		}
+	}
 	for _, source := range spec.Providers {
 		if source != "*" {
 			if _, err := ProviderKind(source); err != nil {
@@ -205,6 +237,33 @@ func (s *Store) UpsertProxy(ctx context.Context, spec ProxySpec) (downloader.Pro
 	id, err := s.save(ctx, "proxies", spec.ID, item.Alias, item, encrypted)
 	item.ID = id
 	return item, err
+}
+
+// EnsureRNMODISProxyPreset creates the MODIS-scoped RN SOCKS5 entry once.
+// The endpoint-only URL is encrypted like every other proxy secret; the proxy
+// starts disabled and the administrator adds credentials in the web access
+// page before enabling it. Existing user configuration is never reset.
+func (s *Store) EnsureRNMODISProxyPreset(ctx context.Context) (downloader.Proxy, bool, error) {
+	pools, err := s.Pools(ctx)
+	if err != nil {
+		return downloader.Proxy{}, false, err
+	}
+	for _, existing := range pools.Proxies {
+		if !strings.EqualFold(existing.Alias, rnMODISProxyAlias) {
+			continue
+		}
+		if existing.Scheme != "socks5" || existing.EndpointHint != "rn.fyzure.fyi:18423" || len(existing.Providers) != 1 || existing.Providers[0] != "modis" {
+			return existing, false, errors.New("RN MODIS proxy alias already exists with a different endpoint or provider scope")
+		}
+		return existing, false, nil
+	}
+	item, err := s.UpsertProxy(ctx, ProxySpec{
+		Alias:     rnMODISProxyAlias,
+		URL:       rnMODISProxyEndpointURL,
+		Providers: []string{"modis"},
+		Enabled:   false,
+	})
+	return item, err == nil, err
 }
 
 func (s *Store) UpsertAccount(ctx context.Context, spec AccountSpec) (downloader.Account, error) {

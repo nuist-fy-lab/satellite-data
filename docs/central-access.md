@@ -23,6 +23,21 @@ pools or manage other Keys, even with an accompanying web cookie. The CLI uses
 `satellite config set` for hidden input and private `0600` configuration, sends
 Bearer authorization only to the configured centre and never follows redirects.
 
+## RN SOCKS5 for MODIS
+
+The centre can create the disabled `RN-SOCKS5-MODIS` preset with
+`satellited -ensure-rn-modis-proxy`. The preset is scoped only to `modis`, points
+to `rn.fyzure.fyi:18423`, and does not change the existing MODIS account route.
+The endpoint is encrypted in the central vault; the preset starts disabled so
+downloads continue to use the current direct route.
+
+To configure it, open **Access → IP Proxy Pool** and edit `RN-SOCKS5-MODIS`.
+Enter the proxy username and password in their separate fields, or provide the
+complete URL `socks5://USERNAME:PASSWORD@rn.fyzure.fyi:18423`. Enable the proxy
+and save. Then edit the MODIS access profile and select **Fixed** with
+`RN-SOCKS5-MODIS`. Select **Direct** to return MODIS to its direct route. The
+username and password remain write-only and encrypted at rest.
+
 Production reuses NSMC's `users` records for the portal password. Satellite owns
 separate `satellite_api_keys` and `satellite_web_sessions` tables and distinct
 token namespaces. NSMC Keys/sessions cannot be listed, authenticated or revoked

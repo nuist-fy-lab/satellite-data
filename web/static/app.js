@@ -3824,7 +3824,12 @@ function rebuildAccessSelects() {
   const proxySelect = $('#account-proxy');
   const previousProxy = proxySelect.value;
   proxySelect.replaceChildren(new Option('选择代理', ''));
-  for (const item of state.access.proxies) proxySelect.add(new Option(`${item.alias} · ${item.endpoint_hint}`, String(item.id)));
+  const source = $('#account-source').value;
+  for (const item of state.access.proxies) {
+    const allowed = !item.providers?.length || item.providers.includes('*') || item.providers.includes(source);
+    if (!allowed || item.enabled === false) continue;
+    proxySelect.add(new Option(`${item.alias} · ${item.endpoint_hint}`, String(item.id)));
+  }
   if ([...proxySelect.options].some(option => option.value === previousProxy)) proxySelect.value = previousProxy;
   $('#account-proxy-row').classList.toggle('hidden', $('#account-proxy-mode').value !== 'fixed');
 }
@@ -3836,6 +3841,8 @@ function openPoolForm(kind, item = null, savedCredential = null) {
     $('#proxy-id').value = item?.id || '';
     $('#proxy-alias').value = item?.alias || '';
     $('#proxy-url').value = '';
+    $('#proxy-username').value = '';
+    $('#proxy-password').value = '';
     $('#proxy-providers').value = item?.providers?.length ? item.providers.join(',') : '*';
     $('#proxy-priority').value = item?.priority ?? 0;
     $('#proxy-enabled').checked = item?.enabled ?? true;
@@ -3856,7 +3863,11 @@ function openPoolForm(kind, item = null, savedCredential = null) {
 function closePoolForm(kind) {
   $(`#${kind}-form`).classList.add('hidden');
   if (kind === 'account') $('#credential-secret-fields').replaceChildren();
-  if (kind === 'proxy') $('#proxy-url').value = '';
+  if (kind === 'proxy') {
+    $('#proxy-url').value = '';
+    $('#proxy-username').value = '';
+    $('#proxy-password').value = '';
+  }
 }
 
 async function saveProxy(event) {
@@ -3868,8 +3879,27 @@ async function saveProxy(event) {
     return;
   }
   const providers = $('#proxy-providers').value.split(',').map(value => value.trim()).filter(Boolean);
+  const username = $('#proxy-username').value;
+  const password = $('#proxy-password').value;
+  let url = $('#proxy-url').value.trim();
+  if (username || password) {
+    if (!username || !password) {
+      $('#proxy-error').textContent = '用户名和密码需要同时填写。';
+      return;
+    }
+    if (url) {
+      $('#proxy-error').textContent = '请使用完整代理 URL，或分别填写用户名和密码，不要同时填写。';
+      return;
+    }
+    const current = state.access.proxies.find(item => item.id === currentId);
+    if (!current?.scheme || !current?.endpoint_hint) {
+      $('#proxy-error').textContent = '新增代理请填写完整代理 URL。';
+      return;
+    }
+    url = `${current.scheme}://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${current.endpoint_hint}`;
+  }
   const payload = {
-    alias, url: $('#proxy-url').value.trim(), providers,
+    alias, url, providers,
     priority: Number($('#proxy-priority').value || 0), enabled: $('#proxy-enabled').checked,
   };
   if (currentId) payload.id = currentId;

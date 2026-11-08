@@ -19,7 +19,7 @@ env:
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: c2ln1-org
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       go: ${{ steps.plan.outputs.go }}
@@ -70,7 +70,7 @@ jobs:
     name: Module / ${{ matrix.module }}
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
+    runs-on: c2ln1-org
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
@@ -121,7 +121,7 @@ jobs:
   web:
     needs: changes
     if: needs.changes.outputs.web == 'true'
-    runs-on: ubuntu-latest
+    runs-on: c2ln1-org
     steps:
       - uses: actions/checkout@v5
         with:
@@ -161,7 +161,7 @@ jobs:
   deploy:
     needs: changes
     if: needs.changes.outputs.deploy == 'true'
-    runs-on: ubuntu-latest
+    runs-on: c2ln1-org
     steps:
       - uses: actions/checkout@v5
         with:
@@ -196,7 +196,7 @@ jobs:
   postgres:
     needs: changes
     if: needs.changes.outputs.postgres == 'true'
-    runs-on: ubuntu-latest
+    runs-on: c2ln1-org
     services:
       postgres:
         image: postgres:17
@@ -318,7 +318,7 @@ jobs:
     name: test
     if: always()
     needs: [changes, modules, web, deploy, postgres]
-    runs-on: ubuntu-latest
+    runs-on: c2ln1-org
     steps:
       - name: Require every selected check to succeed
         env:
@@ -341,7 +341,7 @@ jobs:
       needs.changes.outputs.release == 'true' &&
       ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name != 'pull_request' && github.ref == 'refs/heads/main'))
-    runs-on: ubuntu-latest
+    runs-on: c2ln1-org
     permissions:
       contents: write
       actions: read

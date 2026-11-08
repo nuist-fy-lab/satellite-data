@@ -53,6 +53,118 @@ func addAccount(t *testing.T, store *Store, source, kind string, secret Secret) 
 	return credential.ID, account.ID
 }
 
+func TestEnsureRNMODISProxyPresetIsScopedIdempotentAndPreservesCredentials(t *testing.T) {
+	store := testStore(t)
+	proxy, created, err := store.EnsureRNMODISProxyPreset(t.Context())
+	if err != nil || !created {
+		t.Fatalf("create RN MODIS preset: created=%t err=%v", created, err)
+	}
+	if proxy.Alias != rnMODISProxyAlias || proxy.Scheme != "socks5" || proxy.EndpointHint != "rn.fyzure.fyi:18423" || proxy.Enabled || proxy.State != "disabled" || len(proxy.Providers) != 1 || proxy.Providers[0] != "modis" {
+		t.Fatalf("unexpected RN MODIS preset: %+v", proxy)
+	}
+	plain, err := store.readSecret(t.Context(), "proxies", proxy.ID)
+	if err != nil || string(plain) != rnMODISProxyEndpointURL {
+		t.Fatal("RN endpoint was not stored in the encrypted proxy secret")
+	}
+	if _, err := store.UpsertProxy(t.Context(), ProxySpec{
+		ID: proxy.ID, Alias: proxy.Alias, Providers: []string{"modis"}, Enabled: true,
+	}); err == nil {
+		t.Fatal("unconfigured RN MODIS proxy was enabled")
+	}
+	if _, err := store.UpsertProxy(t.Context(), ProxySpec{
+		ID: proxy.ID, Alias: proxy.Alias, URL: "socks5://rn.fyzure.fyi:18423",
+		Providers: []string{"modis"}, Enabled: true,
+	}); err == nil {
+		t.Fatal("RN MODIS proxy was enabled without authentication")
+	}
+	if _, err := store.UpsertProxy(t.Context(), ProxySpec{
+		ID: proxy.ID, Alias: proxy.Alias, URL: "socks5://fixture-user:fixture-password@rn.fyzure.fyi:18423",
+		Providers: []string{"*"}, Enabled: true,
+	}); err == nil {
+		t.Fatal("RN MODIS proxy provider scope was widened")
+	}
+
+	configured, err := store.UpsertProxy(t.Context(), ProxySpec{
+		ID: proxy.ID, Alias: proxy.Alias,
+		URL:       "socks5://fixture-user:fixture-password@rn.fyzure.fyi:18423",
+		Providers: []string{"modis"}, Enabled: true,
+	})
+	if err != nil || !configured.Enabled || configured.State != "ready" {
+		t.Fatalf("configure RN MODIS preset: %+v err=%v", configured, err)
+	}
+	again, created, err := store.EnsureRNMODISProxyPreset(t.Context())
+	if err != nil || created || !again.Enabled || again.ID != proxy.ID {
+		t.Fatalf("ensure overwrote existing configuration: created=%t proxy=%+v err=%v", created, again, err)
+	}
+	plain, err = store.readSecret(t.Context(), "proxies", again.ID)
+	if err != nil || string(plain) != "socks5://fixture-user:fixture-password@rn.fyzure.fyi:18423" {
+		t.Fatal("ensure replaced user-entered proxy credentials")
+	}
+}
+
+func TestMODISCanSwitchBetweenDirectAndRNFixedProxy(t *testing.T) {
+	store := testStore(t)
+	credentialID, accountID := addAccount(t, store, "modis", "laads", Secret{Token: "fixture-laads"})
+	proxy, _, err := store.EnsureRNMODISProxyPreset(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store)
+	direct, err := service.resolve(t.Context(), "modis", nil)
+	if err != nil || direct.proxyID != 0 {
+		t.Fatalf("MODIS should remain direct by default: proxy=%d err=%v", direct.proxyID, err)
+	}
+	if direct.release != nil {
+		defer direct.release()
+	}
+
+	if _, err := store.UpsertProxy(t.Context(), ProxySpec{
+		ID: proxy.ID, Alias: proxy.Alias,
+		URL:       "socks5://fixture-user:fixture-password@rn.fyzure.fyi:18423",
+		Providers: []string{"modis"}, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertAccount(t.Context(), AccountSpec{
+		ID: accountID, Alias: "modis", SourceID: "modis", CredentialID: &credentialID,
+		ProxyMode: "fixed", ProxyID: &proxy.ID, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixed, err := service.resolve(t.Context(), "modis", nil)
+	if err != nil || fixed.proxyID != proxy.ID {
+		t.Fatalf("MODIS fixed route did not select RN: proxy=%d want=%d err=%v", fixed.proxyID, proxy.ID, err)
+	}
+	if fixed.release != nil {
+		defer fixed.release()
+	}
+
+	if _, err := store.UpsertAccount(t.Context(), AccountSpec{
+		ID: accountID, Alias: "modis", SourceID: "modis", CredentialID: &credentialID,
+		ProxyMode: "direct", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	directAgain, err := service.resolve(t.Context(), "modis", nil)
+	if err != nil || directAgain.proxyID != 0 {
+		t.Fatalf("MODIS could not switch back to direct: proxy=%d err=%v", directAgain.proxyID, err)
+	}
+	if directAgain.release != nil {
+		defer directAgain.release()
+	}
+
+	viirsCredentialID, viirsAccountID := addAccount(t, store, "viirs", "laads", Secret{Token: "fixture-viirs"})
+	if _, err := store.UpsertAccount(t.Context(), AccountSpec{
+		ID: viirsAccountID, Alias: "viirs", SourceID: "viirs", CredentialID: &viirsCredentialID,
+		ProxyMode: "fixed", ProxyID: &proxy.ID, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.resolve(t.Context(), "viirs", nil); !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("MODIS-only proxy leaked to VIIRS: err=%v", err)
+	}
+}
+
 func TestVaultAuthenticatedEncryptionAndPrivateKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "master.key")
 	v, err := OpenVault(path)
