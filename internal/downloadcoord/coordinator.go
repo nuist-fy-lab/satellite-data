@@ -367,11 +367,16 @@ func archiveRelativeDir(sourceID string, product model.Product, at time.Time) st
 	if sourceID == "era5" {
 		return path.Join("CDS", productType, at.UTC().Format("2006/01/02"))
 	}
+	level := safeComponent(provider.NormalizeLevel(product.Level))
+	if level == "" {
+		// Keep the directory schema stable when the official catalogue omits a level.
+		level = "Unspecified"
+	}
 	components := []string{
 		safeComponent(sourceID),
 		safeComponent(product.Satellite),
 		safeComponent(product.Instrument),
-		safeComponent(product.Level),
+		level,
 		safeComponent(product.DataType),
 		at.UTC().Format("2006"),
 		at.UTC().Format("01"),

@@ -68,6 +68,37 @@ func TestNonImageProductsKeepTheirClassifications(t *testing.T) {
 	}
 }
 
+func TestMTGDailySurfaceAlbedoUsesFCIWithoutInventingAProcessingLevel(t *testing.T) {
+	got := NormalizeProduct(model.Product{
+		ProductKey:  "mtg:EO:EUM:DAT:1089",
+		OfficialID:  "EO:EUM:DAT:1089",
+		SourceID:    "mtg",
+		Satellite:   "MTG",
+		Instrument:  "MTG",
+		DataType:    "EO:EUM:DAT:1089",
+		DisplayName: "Daily Surface Albedo - MTG",
+	})
+	if got.Instrument != "FCI" {
+		t.Fatalf("instrument=%q, want FCI", got.Instrument)
+	}
+	if got.Level != "" || got.Metadata["level_status"] != "catalog_not_provided" {
+		t.Fatalf("processing level must remain unspecified when the official catalogue omits it: %#v", got)
+	}
+}
+
+func TestGOESFloodProductsKeepUnspecifiedProcessingLevel(t *testing.T) {
+	got := NormalizeProduct(model.Product{
+		ProductKey: "goes18:ABI-Flood-Day",
+		SourceID:   "goes18",
+		Satellite:  "GOES-18",
+		Instrument: "ABI",
+		DataType:   "ABI-Flood-Day",
+	})
+	if got.Level != "" || got.Metadata["level_status"] != "catalog_not_provided" {
+		t.Fatalf("GOES flood processing level must remain unspecified without official evidence: %#v", got)
+	}
+}
+
 func TestEverySnapshotProductHasFieldStatusAndEvidence(t *testing.T) {
 	file, err := os.Open("../../docs/product-catalog-2026-09-27.csv")
 	if err != nil {
@@ -112,8 +143,11 @@ func TestEverySnapshotProductHasFieldStatusAndEvidence(t *testing.T) {
 		if !strings.HasPrefix(got.Metadata["official_product_url"], "https://") {
 			t.Fatalf("missing product-specific official link: %s", got.ProductKey)
 		}
-		if got.SourceID == "mtg" && (!strings.HasPrefix(got.Level, "L") || got.Instrument == "MTG" || got.Instrument == "") {
+		if got.SourceID == "mtg" && (got.Instrument == "MTG" || got.Instrument == "") {
 			t.Fatalf("unresolved MTG classification: %#v", got)
+		}
+		if got.SourceID == "mtg" && got.Level == "" && got.Metadata["level_status"] != "catalog_not_provided" {
+			t.Fatalf("MTG product has no processing level but lacks an explicit catalogue status: %#v", got)
 		}
 		if got.SourceID == "cloudsat" && got.Version == "" {
 			t.Fatalf("unresolved CloudSat version: %s", got.ProductKey)
