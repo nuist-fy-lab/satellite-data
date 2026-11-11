@@ -256,12 +256,14 @@ func ProductCatalogURL(item model.Product) string {
 	}
 }
 
-// MTGMetadata uses the mission's GFS product table, not arbitrary title tokens.
+// MTGMetadata uses official MTG product-family definitions, not arbitrary title tokens.
 func MTGMetadata(title string) (instrument, level, kind, resolution string) {
 	upper := strings.ToUpper(title)
 	switch {
 	case strings.Contains(upper, "IRS"):
 		instrument = "IRS"
+	case strings.Contains(upper, "DAILY SURFACE ALBEDO"):
+		instrument = "FCI"
 	case strings.HasPrefix(upper, "LI ") || strings.Contains(upper, "LIGHTNING"):
 		instrument = "LI"
 		level = "L2"

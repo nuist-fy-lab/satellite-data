@@ -24,7 +24,29 @@ func TestArchiveRelativeDir(t *testing.T) {
 		Satellite: "GOES-18", Instrument: "ABI", Level: "L1b", DataType: "ABI-L1b-RadF",
 	}
 	got := archiveRelativeDir("goes18", product, time.Date(2026, 9, 24, 1, 2, 3, 0, time.UTC))
-	want := "goes18/GOES-18/ABI/L1b/ABI-L1b-RadF/2026/09/24"
+	want := "goes18/GOES-18/ABI/L1B/ABI-L1b-RadF/2026/09/24"
+	if got != want {
+		t.Fatalf("path=%q want=%q", got, want)
+	}
+}
+
+func TestArchiveRelativeDirKeepsAnExplicitLevelSlotWhenUnspecified(t *testing.T) {
+	product := model.Product{
+		Satellite: "MTG", Instrument: "FCI", DataType: "EO:EUM:DAT:1089",
+	}
+	got := archiveRelativeDir("mtg", product, time.Date(2026, 9, 24, 1, 2, 3, 0, time.UTC))
+	want := "mtg/MTG/FCI/Unspecified/EO_EUM_DAT_1089/2026/09/24"
+	if got != want {
+		t.Fatalf("path=%q want=%q", got, want)
+	}
+}
+
+func TestArchiveRelativeDirNormalizesNumericProcessingLevels(t *testing.T) {
+	product := model.Product{
+		Satellite: "CALIPSO", Instrument: "CALIOP", Level: "2", DataType: "CAL_LID_L2_01kmCLay-Standard-V5-00",
+	}
+	got := archiveRelativeDir("calipso", product, time.Date(2026, 9, 24, 1, 2, 3, 0, time.UTC))
+	want := "calipso/CALIPSO/CALIOP/L2/CAL_LID_L2_01kmCLay-Standard-V5-00/2026/09/24"
 	if got != want {
 		t.Fatalf("path=%q want=%q", got, want)
 	}
