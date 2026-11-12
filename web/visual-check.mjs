@@ -339,7 +339,7 @@ window.regionalFixtureSetup = function() {
 };
 `;
 const assets = new Map();
-for (const file of ['index.html','login.html','styles.css','login.js','catalog.js','era5-inventory.js','icons.svg']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
+for (const file of ['index.html','login.html','styles.css','login.js','catalog.js','source-family.js','era5-inventory.js','icons.svg']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
 assets.set('app.js', Buffer.from(app+fixture));
 const server = createServer((req, res) => {
   const path = new URL(req.url,'http://localhost').pathname;
