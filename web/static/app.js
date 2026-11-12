@@ -1,5 +1,3 @@
-import {downloadProviderFamilyID, sourceFamilyID} from './source-family.js?v=44';
-
 const $ = selector => document.querySelector(selector);
 const sourceEl = $('#source');
 const satelliteEl = $('#satellite');
@@ -300,6 +298,19 @@ const sourceFamilyHints = Object.freeze({
   himawari: ['himawari8', 'himawari9'],
   iasi: ['iasi', 'iasi-ng'],
 });
+
+function sourceFamilyID(sourceID) {
+  const id = String(sourceID || '').toLowerCase();
+  if (/^goes\d+$/.test(id)) return 'goes';
+  if (/^himawari\d+$/.test(id)) return 'himawari';
+  if (id === 'iasi-ng') return 'iasi';
+  return id;
+}
+
+function downloadProviderFamilyID(sourceID) {
+  const id = String(sourceID || '').toLowerCase();
+  return id === 'iasi-ng' ? 'iasi' : id;
+}
 
 function familySources(familyID) {
   return state.sources.filter(source => sourceFamilyID(source.id) === familyID);
