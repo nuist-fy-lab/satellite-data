@@ -31,6 +31,7 @@ var remainingScientificCollections = map[string]scientificDescription{
 	"himawari9:AHI-L2-FLDK-Clouds":                     {"derived", "cloud", "云产品"},
 	"himawari9:AHI-L2-FLDK-ISatSS":                     {"derived", "sectorized_imagery", "分块影像"},
 	"himawari9:AHI-L2-FLDK-Winds":                      {"derived", "motion_wind", "大气运动风"},
+	"iasi:EO:EUM:DAT:1099":                             {"ancillary", "instrument_support", "噪声协方差矩阵"},
 	"modis:C1444214556-LAADS":                          {"observation", "station_subset", "站点观测子集"},
 	"modis:C1444310549-LAADS":                          {"observation", "station_subset", "站点观测子集"},
 	"modis:C1444318098-LAADS":                          {"observation", "station_subset", "站点观测子集"},

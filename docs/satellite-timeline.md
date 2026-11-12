@@ -22,6 +22,13 @@ END-of-mission marker. Only a confirmed end of science observations gets END.
 - Himawari-8 started main operation 2015, became standby 2022; Himawari-9
   started main operation 2022. Standby is **not** an end of mission.
   https://www.jma.go.jp/jma/jma-eng/satellite/
+- Metop-A launched in 2006 and was retired on 30 November 2021; Metop-B
+  launched in 2012 and Metop-C in 2018. The IASI product archive may have a
+  product-specific Metop-A cutoff earlier than the satellite retirement date.
+  https://www.eumetsat.int/our-satellites/metop-series
+- Metop-SG-A1 launched on 13 August 2025 and carries IASI-NG. The current
+  global IASI-NG L1C Data Store collection begins on 7 October 2026.
+  https://www.eumetsat.int/our-satellites/metop-series
 - EarthCARE launched in 2024; MTG-I1 launched in 2022. The MTG row represents
   a satellite family in the current provider catalogue.
   https://www.esa.int/Applications/Observing_the_Earth/FutureEO/EarthCARE

@@ -216,7 +216,7 @@ function productOptionLabel(product) {
   return [...new Set(parts.filter(Boolean))].join(' · ');
 }
 
-const areaLabels = {DISK:'全圆盘', CONUS:'CONUS', MESO:'中尺度', SWATH:'条带', GLOBAL:'全球', SUBSET:'子集', JAPAN:'日本', TARGET:'目标区', SOLAR_DISK:'太阳圆盘'};
+const areaLabels = {DISK:'全圆盘', CONUS:'CONUS', MESO:'中尺度', SWATH:'条带', GLOBAL:'全球', SUBSET:'子集', JAPAN:'日本', TARGET:'目标区', SOLAR_DISK:'太阳圆盘', ORBIT:'轨道产品', AUX:'辅助资料'};
 function resolutionValues(value) {
   const parts = String(value || '').split(/\s*[/,;]\s*/).filter(Boolean);
   const unit = parts.at(-1)?.match(/(?:km|m|degrees?|deg\.?|arc[- ]seconds?)$/i)?.[0];
@@ -288,6 +288,8 @@ const sourceFamilyLabels = Object.freeze({
   earthcare: 'EarthCARE',
   cloudsat: 'CloudSat',
   calipso: 'CALIPSO',
+  iasi: 'IASI / Metop',
+  'iasi-ng': 'IASI-NG / Metop-SG',
   mtg: 'MTG',
   era5: 'ERA5',
 });
@@ -354,6 +356,8 @@ const missionPeriods = {
   'GOES-16': {start: 2017, status: '备用'}, 'GOES-17': {start: 2018, status: '在轨存储'},
   'GOES-18': {start: 2022}, 'GOES-19': {start: 2024},
   'Himawari-8': {start: 2015, status: '备用'}, 'Himawari-9': {start: 2022},
+  'Metop': {start: 2006}, 'Metop-A': {start: 2006, end: '2021-11-30'},
+  'Metop-B': {start: 2012}, 'Metop-C': {start: 2018}, 'Metop-SG': {start: 2025},
   'EarthCARE': {start: 2024}, 'MTG': {start: 2022},
 };
 
@@ -440,7 +444,7 @@ function rebuildFilters(changed = 'source', update = true) {
   if (['source','satellite','instrument','level'].includes(changed)) fillMetadataSelect(areaEl, filteredCollections(3), 'area_type');
   if (['source','satellite','instrument','level','area'].includes(changed)) fillMetadataSelect(resolutionEl, filteredCollections(4), 'resolution');
   const products = filteredCollections(5).sort((a, b) => {
-    if (sourceEl.value !== 'mtg') return 0;
+    if (sourceEl.value !== 'mtg' && sourceEl.value !== 'iasi' && sourceEl.value !== 'iasi-ng') return 0;
     return Number(!/^L1/i.test(a.level)) - Number(!/^L1/i.test(b.level));
   });
   const previous = productEl.value;
@@ -522,7 +526,7 @@ function updateSelectedProduct() {
     : calendarProductLabel(product);
   const source = selectedSource();
   const metadata = [];
-  if (product.cadence) metadata.push(`时次 ${product.cadence}`);
+  if (product.cadence && product.cadence !== 'event') metadata.push(`时次 ${product.cadence}`);
   if (product.metadata?.spatial_resolution) metadata.push(product.metadata.spatial_resolution);
   if (product.metadata?.version) metadata.push(`版本 ${product.metadata.version}`);
   if (source) metadata.push(tierLabels[source.tier] || source.tier);
@@ -547,6 +551,7 @@ function renderProductDetails(product) {
     ['级别', ['AUX','ORBIT'].includes(product.level) ? '' : product.level],
     ['分辨率', metadata.spatial_resolution],
     ['版本', metadata.version],
+    ['平台', metadata.platforms],
     ['范围', areaLabels[metadata.area_type] || metadata.area_type],
     ['目录', metadata.catalog_source || sourceFamilyLabels[sourceFamilyID(product.source_id)] || product.source_id],
   ].filter(([,value]) => value);
@@ -716,7 +721,7 @@ async function loadEncyclopedia() {
   const ticket = ++state.encyclopedia.loading;
   $('#catalog-status').textContent = '读取目录…';
   try {
-    const [products, module] = await Promise.all([json('/api/products'), state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js'))]);
+    const [products, module] = await Promise.all([json('/api/products'), state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js?v=43'))]);
     if (ticket !== state.encyclopedia.loading) return;
     state.encyclopedia.catalog = (products || []).filter(product => product.source_id !== 'era5').map(normalizeCatalogProduct);
     module.initialize(state.encyclopedia.catalog);
@@ -3557,7 +3562,7 @@ async function loadMonitor(schedule = true) {
 const accessKindLabels = {
   laads: 'LAADS', earthdata: 'Earthdata', earthcare: 'ESA MAAP', eumetsat: 'EUMETSAT', cloudsat: 'CloudSat DPC', cds: 'CDS',
 };
-const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat', era5: 'cds'};
+const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', iasi: 'eumetsat', 'iasi-ng': 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat', era5: 'cds'};
 const credentialGuides = {
   cds: {
     title: 'Copernicus CDS Personal Access Token',
@@ -3593,7 +3598,7 @@ const credentialGuides = {
   },
   eumetsat: {
     title: 'EUMETSAT API 凭据 · Consumer Key / Consumer Secret',
-    summary: '用于 MTG。这里只保存 API Key Management 提供的 Consumer Key + Consumer Secret；中心会用 OAuth2 client_credentials 自动换取短期 Access Token。',
+    summary: '用于 MTG、IASI / Metop 与 IASI-NG / Metop-SG。这里只保存 API Key Management 提供的 Consumer Key + Consumer Secret；中心会用 OAuth2 client_credentials 自动换取短期 Access Token。',
     steps: ['登录 EUMETSAT Data Store / User Portal。', '进入 API Key Management，在 User credentials 区域找到 Consumer key 与 Consumer secret。', '只把这两个值分别复制到下方两个输入框；页面下方的一小时 API token 不需要复制。'],
     note: '本凭据表单只接收 Consumer Key + Consumer Secret。中心会自动向 EUMETSAT /token 端点申请并续期 Bearer Access Token。',
     url: 'https://api.eumetsat.int/api-key/',

@@ -29,6 +29,8 @@ var defaultTargets = []Target{
 	{SourceID: "modis", Name: "MODIS", Host: "ladsweb.modaps.eosdis.nasa.gov", Port: 443},
 	{SourceID: "viirs", Name: "VIIRS", Host: "ladsweb.modaps.eosdis.nasa.gov", Port: 443},
 	{SourceID: "mtg", Name: "MTG", Host: "api.eumetsat.int", Port: 443},
+	{SourceID: "iasi", Name: "IASI / Metop", Host: "api.eumetsat.int", Port: 443},
+	{SourceID: "iasi-ng", Name: "IASI-NG / Metop-SG", Host: "api.eumetsat.int", Port: 443},
 	{SourceID: "earthcare", Name: "EarthCARE", Host: "catalog.maap.eo.esa.int", Port: 443},
 	{SourceID: "calipso", Name: "CALIPSO", Host: "data.asdc.earthdata.nasa.gov", Port: 443},
 	{SourceID: "era5", Name: "ERA5 CDS", Host: "cds.climate.copernicus.eu", Port: 443},

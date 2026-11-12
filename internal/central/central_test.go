@@ -452,6 +452,8 @@ func TestAllCredentialKindsAreCentralAndSecretsAreWriteOnly(t *testing.T) {
 		{"calipso", "earthdata", Secret{Token: "fixture-earthdata"}},
 		{"earthcare", "earthcare", Secret{Token: "fixture-offline"}},
 		{"mtg", "eumetsat", Secret{ConsumerKey: "fixture-key", ConsumerSecret: "fixture-secret"}},
+		{"iasi", "eumetsat", Secret{ConsumerKey: "fixture-iasi-key", ConsumerSecret: "fixture-iasi-secret"}},
+		{"iasi-ng", "eumetsat", Secret{ConsumerKey: "fixture-iasi-ng-key", ConsumerSecret: "fixture-iasi-ng-secret"}},
 		{"cloudsat", "cloudsat", Secret{Username: "fixture-user", Password: "fixture-password"}},
 		{"era5", "cds", Secret{Token: "fixture-cds"}},
 	} {
@@ -485,7 +487,7 @@ func TestAllCredentialKindsAreCentralAndSecretsAreWriteOnly(t *testing.T) {
 			t.Fatal("secret in metadata")
 		}
 	}
-	if len(pools.Credentials) != 6 || len(pools.Accounts) != 7 || pools.Proxies[0].Storage != "central" {
+	if len(pools.Credentials) != 8 || len(pools.Accounts) != 9 || pools.Proxies[0].Storage != "central" {
 		t.Fatal("pool ownership or count mismatch")
 	}
 	if _, err := s.UpsertAccount(t.Context(), AccountSpec{Alias: "wrong", SourceID: "era5", CredentialID: &pools.Credentials[0].ID, ProxyMode: "direct", Enabled: true}); err == nil {
@@ -563,6 +565,32 @@ func TestGatewayRangesAndHostBoundaries(t *testing.T) {
 	pools, _ := s.Pools(t.Context())
 	if pools.Accounts[0].LastUsedAt == "" || pools.Accounts[0].LastSuccessAt == "" {
 		t.Fatal("centre did not record transfer outcome")
+	}
+}
+
+func TestIASIUsesTheSharedEUMETSATCredentialKindAndGateway(t *testing.T) {
+	kind, err := ProviderKind("iasi")
+	if err != nil || kind != "eumetsat" {
+		t.Fatalf("IASI credential kind=%q err=%v", kind, err)
+	}
+	if !allowedHost("iasi", "api.eumetsat.int") {
+		t.Fatal("IASI gateway rejected the official EUMETSAT host")
+	}
+	if allowedHost("iasi", "example.invalid") {
+		t.Fatal("IASI gateway accepted an untrusted host")
+	}
+}
+
+func TestIASINGUsesTheSharedEUMETSATCredentialKindAndGateway(t *testing.T) {
+	kind, err := ProviderKind("iasi-ng")
+	if err != nil || kind != "eumetsat" {
+		t.Fatalf("IASI-NG credential kind=%q err=%v", kind, err)
+	}
+	if !allowedHost("iasi-ng", "api.eumetsat.int") {
+		t.Fatal("IASI-NG gateway rejected the official EUMETSAT host")
+	}
+	if allowedHost("iasi-ng", "example.invalid") {
+		t.Fatal("IASI-NG gateway accepted an untrusted host")
 	}
 }
 

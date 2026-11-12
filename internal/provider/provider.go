@@ -136,7 +136,7 @@ func copyMetadata(metadata map[string]string) map[string]string {
 
 func catalogSource(sourceID string) string {
 	switch sourceID {
-	case "mtg":
+	case "mtg", "iasi", "iasi-ng":
 		return "EUMETSAT Data Store Browse API"
 	case "modis", "viirs", "calipso":
 		return "NASA Common Metadata Repository (CMR)"

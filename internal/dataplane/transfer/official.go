@@ -69,8 +69,8 @@ func (r *OfficialResolver) Resolve(ctx context.Context, task model.Task) ([]Offi
 		return r.cmrChecksums(ctx, id, task.Name)
 	case "goes":
 		return r.goesChecksums(ctx, task.URL)
-	case "mtg":
-		return r.mtgChecksums(ctx, task.CollectionID, task.GranuleID)
+	case "mtg", "iasi", "iasi-ng":
+		return r.eumetsatChecksums(ctx, task.SourceID, task.CollectionID, task.GranuleID)
 	case "himawari9":
 		return r.s3Checksums(ctx, task.URL)
 	default:
@@ -167,14 +167,14 @@ func (r *OfficialResolver) goesChecksums(ctx context.Context, raw string) ([]Off
 	return checks, nil
 }
 
-func (r *OfficialResolver) mtgChecksums(ctx context.Context, collectionID, granuleID string) ([]OfficialChecksum, error) {
-	collection, ok := strings.CutPrefix(collectionID, "mtg:")
-	if !ok || !regexp.MustCompile(`^EO:EUM:DAT:[0-9]+$`).MatchString(collection) {
-		return nil, errors.New("invalid MTG product collection for checksum")
+func (r *OfficialResolver) eumetsatChecksums(ctx context.Context, sourceID, collectionID, granuleID string) ([]OfficialChecksum, error) {
+	collection, ok := strings.CutPrefix(collectionID, sourceID+":")
+	if !ok || !strings.HasPrefix(collection, "EO:EUM:DAT:") || strings.ContainsAny(collection, "/\\?#") {
+		return nil, errors.New("invalid EUMETSAT product collection for checksum")
 	}
-	product, ok := strings.CutPrefix(granuleID, "mtg:")
-	if !ok || product == "" || strings.ContainsAny(product, "/\\") {
-		return nil, errors.New("invalid MTG product id for checksum")
+	product, ok := strings.CutPrefix(granuleID, sourceID+":")
+	if !ok || product == "" || len(product) > 512 || strings.ContainsAny(product, "/\\?#") {
+		return nil, errors.New("invalid EUMETSAT product id for checksum")
 	}
 	var metadata struct {
 		Properties struct {
@@ -183,7 +183,7 @@ func (r *OfficialResolver) mtgChecksums(ctx context.Context, collectionID, granu
 			} `json:"extraInformation"`
 		} `json:"properties"`
 	}
-	endpoint := r.browse + "/data/browse/collections/" + url.PathEscape(collection) + "/products/" + url.PathEscape(product) + "?format=json"
+	endpoint := r.browse + "/data/browse/1.0.0/collections/" + url.PathEscape(collection) + "/products/" + url.PathEscape(product) + "?format=json"
 	if err := r.loadJSON(ctx, endpoint, &metadata); err != nil {
 		return nil, err
 	}

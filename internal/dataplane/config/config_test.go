@@ -29,6 +29,36 @@ func TestGOESAdaptiveTransferDefaults(t *testing.T) {
 	t.Fatal("GOES transfer worker missing")
 }
 
+func TestIASIUsesTheSharedEUMETSATCredentialRoute(t *testing.T) {
+	t.Setenv("SATDOWN_IASI_ENABLED", "")
+	t.Setenv("SATDOWN_IASI_TRANSFER_CONCURRENCY", "")
+	for _, p := range Load().Providers {
+		if p.SourceID != "iasi" {
+			continue
+		}
+		if !p.Enabled || p.AuthRef != "eumetsat" || p.InitialTransferConcurrency != 2 || p.TransferConcurrency != 2 || p.VerifyConcurrency != 1 {
+			t.Fatalf("unexpected IASI worker configuration: %+v", p)
+		}
+		return
+	}
+	t.Fatal("IASI transfer worker missing")
+}
+
+func TestIASINGUsesTheSharedEUMETSATCredentialRoute(t *testing.T) {
+	t.Setenv("SATDOWN_IASI_NG_ENABLED", "")
+	t.Setenv("SATDOWN_IASI_NG_TRANSFER_CONCURRENCY", "")
+	for _, p := range Load().Providers {
+		if p.SourceID != "iasi-ng" {
+			continue
+		}
+		if !p.Enabled || p.AuthRef != "eumetsat" || p.InitialTransferConcurrency != 2 || p.TransferConcurrency != 2 || p.VerifyConcurrency != 1 {
+			t.Fatalf("unexpected IASI-NG worker configuration: %+v", p)
+		}
+		return
+	}
+	t.Fatal("IASI-NG transfer worker missing")
+}
+
 func TestLowThroughputPolicyCanBeOverriddenPerProvider(t *testing.T) {
 	t.Setenv("SATDOWN_GOES_LOW_THROUGHPUT_ENABLED", "false")
 	t.Setenv("SATDOWN_GOES_LOW_THROUGHPUT_STARTUP_GRACE", "45s")

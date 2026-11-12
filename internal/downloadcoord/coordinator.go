@@ -42,7 +42,7 @@ func New(registry *provider.Registry, store *state.Store, client *downloader.Cli
 }
 
 func (c *Coordinator) Run(ctx context.Context) {
-	for _, providerID := range []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "earthcare", "calipso", "cloudsat", "era5"} {
+	for _, providerID := range []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "iasi", "iasi-ng", "earthcare", "calipso", "cloudsat", "era5"} {
 		providerID := providerID
 		c.wg.Add(1)
 		go func() {
@@ -61,7 +61,7 @@ func ProviderForSource(sourceID string) (string, bool) {
 	switch sourceID {
 	case "goes16", "goes17", "goes18", "goes19":
 		return "goes", true
-	case "modis", "viirs", "mtg", "earthcare", "calipso", "cloudsat", "era5":
+	case "modis", "viirs", "mtg", "iasi", "iasi-ng", "earthcare", "calipso", "cloudsat", "era5":
 		return sourceID, true
 	case "himawari8", "himawari9":
 		return sourceID, true
@@ -229,7 +229,7 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 				Name:         asset.Name,
 				URL:          asset.URL,
 				AuthRef:      asset.AuthRef,
-				RelativeDir:  archiveRelativeDir(request.SourceID, product, granule.Start),
+				RelativeDir:  archiveRelativeDirForGranule(request.SourceID, product, granule),
 				Size:         asset.Size,
 				ETag:         asset.ETag,
 				MediaType:    asset.MediaType,
@@ -389,6 +389,15 @@ func archiveRelativeDir(sourceID string, product model.Product, at time.Time) st
 		}
 	}
 	return path.Join(out...)
+}
+
+func archiveRelativeDirForGranule(sourceID string, product model.Product, granule model.Granule) string {
+	if sourceID == "iasi" || sourceID == "iasi-ng" {
+		if satellite := strings.TrimSpace(granule.Metadata["satellite"]); satellite != "" {
+			product.Satellite = satellite
+		}
+	}
+	return archiveRelativeDir(sourceID, product, granule.Start)
 }
 
 func safeComponent(value string) string {

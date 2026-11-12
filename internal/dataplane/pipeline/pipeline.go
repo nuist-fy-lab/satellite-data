@@ -604,7 +604,7 @@ func allowedHost(sourceID, host string) bool {
 		return host == "storage.googleapis.com"
 	case "modis", "viirs":
 		return host == "data.laadsdaac.earthdatacloud.nasa.gov" || host == "ladsweb.modaps.eosdis.nasa.gov"
-	case "mtg":
+	case "mtg", "iasi", "iasi-ng":
 		return host == "api.eumetsat.int"
 	case "earthcare":
 		return host == "catalog.maap.eo.esa.int"

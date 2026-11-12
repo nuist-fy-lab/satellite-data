@@ -86,6 +86,48 @@ func TestMTGDailySurfaceAlbedoUsesFCIWithoutInventingAProcessingLevel(t *testing
 	}
 }
 
+func TestIASIProductsRetainOrbitRetrievalAndAncillaryClassifications(t *testing.T) {
+	l1 := NormalizeProduct(model.Product{
+		ProductKey: "iasi:EO:EUM:DAT:METOP:IASIL1C-ALL", OfficialID: "EO:EUM:DAT:METOP:IASIL1C-ALL",
+		SourceID: "iasi", Satellite: "Metop", Instrument: "IASI", Level: "L1c", AreaType: "ORBIT",
+		DataType: "EO:EUM:DAT:METOP:IASIL1C-ALL", DisplayName: "IASI Level 1C - All Spectral Samples",
+	})
+	if l1.Level != "L1C" || l1.AreaType != "ORBIT" || l1.Instrument != "IASI" || l1.Metadata["level_evidence"] == "" || !strings.Contains(l1.Metadata["official_product_url"], "data.eumetsat.int/product/") {
+		t.Fatalf("incorrect IASI L1C normalization: %+v", l1)
+	}
+	l2 := NormalizeProduct(model.Product{
+		ProductKey: "iasi:EO:EUM:DAT:METOP:IASIL2COX", OfficialID: "EO:EUM:DAT:METOP:IASIL2COX",
+		SourceID: "iasi", Satellite: "Metop", Instrument: "IASI", Level: "L2", AreaType: "SWATH",
+		DataType: "EO:EUM:DAT:METOP:IASIL2COX", DisplayName: "IASI Carbon Monoxide Profiles FORLI-CO",
+	})
+	if l2.Level != "L2" || l2.AreaType != "SWATH" || l2.Instrument != "IASI" {
+		t.Fatalf("incorrect IASI L2 normalization: %+v", l2)
+	}
+	aux := NormalizeProduct(model.Product{
+		ProductKey: "iasi:EO:EUM:DAT:1099", OfficialID: "EO:EUM:DAT:1099", SourceID: "iasi",
+		Satellite: "Metop", Instrument: "IASI", DataType: "EO:EUM:DAT:1099", DisplayName: "IASI Noise Covariance Matrix",
+	})
+	if aux.Level != "AUX" || aux.AreaType != "AUX" || aux.Instrument != "Auxiliary" || aux.Metadata["processing_level_status"] != "not_applicable" {
+		t.Fatalf("incorrect IASI ancillary normalization: %+v", aux)
+	}
+}
+
+func TestIASINGProductRetainsOfficialGlobalL1CMetadata(t *testing.T) {
+	got := NormalizeProduct(model.Product{
+		ProductKey: "iasi-ng:EO:EUM:DAT:0442", OfficialID: "EO:EUM:DAT:0442",
+		SourceID: "iasi-ng", Satellite: "Metop-SG", Instrument: "IASI-NG", Level: "L1c",
+		DataType: "EO:EUM:DAT:0442", DisplayName: "Global IASI-NG Level 1c Spectral Radiance (netCDF) - Metop-SG",
+		AreaType: "GLOBAL", Resolution: "12 km", Cadence: "event",
+		Metadata: map[string]string{"official_documentation_url": "https://user.eumetsat.int/resources/user-guides/metop-sg-iasi-ng-l1c-and-l1d-data-guide"},
+	})
+	if got.Level != "L1C" || got.Instrument != "IASI-NG" || got.AreaType != "GLOBAL" || got.Resolution != "12 km" {
+		t.Fatalf("incorrect IASI-NG normalization: %+v", got)
+	}
+	if !strings.Contains(got.Metadata["official_product_url"], "user.eumetsat.int/catalogue/") || got.Metadata["level_evidence"] == "" || got.Metadata["official_documentation_url"] == "" {
+		t.Fatalf("missing IASI-NG official references: %+v", got.Metadata)
+	}
+}
+
 func TestGOESFloodProductsKeepUnspecifiedProcessingLevel(t *testing.T) {
 	got := NormalizeProduct(model.Product{
 		ProductKey: "goes18:ABI-Flood-Day",
