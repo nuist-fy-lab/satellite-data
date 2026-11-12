@@ -74,12 +74,12 @@ test('IASI generations share one monitoring family while keeping separate provid
     {source_id:'iasi',enabled:true,bytes_per_second:1024,active_transfers:1,adaptive_concurrency:2,states:{done:10}},
     {source_id:'iasi-ng',enabled:true,bytes_per_second:2048,active_transfers:2,adaptive_concurrency:3,states:{done:20}},
   ];
-  h.context.state.downloads.history.selected = 'iasi';
-  h.context.state.downloads.history.payload = {window:'1h',generated_at:at,bucket_seconds:15,providers:[
+  h.run(`state.downloads.history.selected = 'iasi'; state.downloads.history.payload = ${JSON.stringify({window:'1h',generated_at:at,bucket_seconds:15,providers:[
     {source_id:'iasi',latest:{sampled_at:at},points:[{sampled_at:at,bytes_per_second:1024,active_transfers:1,adaptive_concurrency:2}]},
     {source_id:'iasi-ng',latest:{sampled_at:at},points:[{sampled_at:at,bytes_per_second:2048,active_transfers:2,adaptive_concurrency:3}]},
-  ]};
-  h.context.renderDownloadProviders(statuses, true);
+  ]})};`);
+  h.context.statuses = statuses;
+  h.run('renderDownloadProviders(statuses, true)');
   const options = h.element('#download-monitor-provider').options.filter(option => option.value === 'iasi');
   assert.equal(options.length, 1);
   assert.equal(options[0].text, 'IASI 系列');
