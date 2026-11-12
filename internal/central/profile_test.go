@@ -73,3 +73,43 @@ func TestProfileCreationIsAtomicAndEditsDoNotOverwriteSharedCredential(t *testin
 		t.Fatal("rejected profile left an account behind", err)
 	}
 }
+
+func TestIASIGenerationsCanShareOneEUMETSATCredential(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	first, err := s.UpsertProfile(ctx, ProfileSpec{
+		AccountSpec: AccountSpec{Alias: "IASI first generation", SourceID: "iasi", ProxyMode: "direct", Enabled: true},
+		Secret:      Secret{ConsumerKey: "fixture-consumer-key", ConsumerSecret: "fixture-consumer-secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CredentialID == nil {
+		t.Fatal("first-generation IASI did not create an EUMETSAT credential")
+	}
+	credentialID := *first.CredentialID
+	second, err := s.UpsertProfile(ctx, ProfileSpec{AccountSpec: AccountSpec{
+		Alias: "IASI-NG second generation", SourceID: "iasi-ng", CredentialID: &credentialID,
+		ProxyMode: "direct", Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.CredentialID == nil || *second.CredentialID != credentialID {
+		t.Fatal("IASI-NG did not bind the existing EUMETSAT credential")
+	}
+
+	pools, err := s.Pools(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools.Credentials) != 1 || len(pools.Accounts) != 2 {
+		t.Fatalf("expected one shared credential and two provider profiles, got %d credentials and %d accounts", len(pools.Credentials), len(pools.Accounts))
+	}
+	service := NewService(s)
+	for _, sourceID := range []string{"iasi", "iasi-ng"} {
+		if _, err := service.resolve(ctx, sourceID, nil); err != nil {
+			t.Fatalf("%s could not resolve the shared EUMETSAT route: %v", sourceID, err)
+		}
+	}
+}

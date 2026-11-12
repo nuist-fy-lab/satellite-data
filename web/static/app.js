@@ -288,8 +288,7 @@ const sourceFamilyLabels = Object.freeze({
   earthcare: 'EarthCARE',
   cloudsat: 'CloudSat',
   calipso: 'CALIPSO',
-  iasi: 'IASI / Metop',
-  'iasi-ng': 'IASI-NG / Metop-SG',
+  iasi: 'IASI 系列',
   mtg: 'MTG',
   era5: 'ERA5',
 });
@@ -297,13 +296,20 @@ const sourceFamilyOrder = Object.keys(sourceFamilyLabels);
 const sourceFamilyHints = Object.freeze({
   goes: ['goes16', 'goes17', 'goes18', 'goes19'],
   himawari: ['himawari8', 'himawari9'],
+  iasi: ['iasi', 'iasi-ng'],
 });
 
 function sourceFamilyID(sourceID) {
   const id = String(sourceID || '').toLowerCase();
   if (/^goes\d+$/.test(id)) return 'goes';
   if (/^himawari\d+$/.test(id)) return 'himawari';
+  if (id === 'iasi-ng') return 'iasi';
   return id;
+}
+
+function downloadProviderFamilyID(sourceID) {
+  const id = String(sourceID || '').toLowerCase();
+  return id === 'iasi-ng' ? 'iasi' : id;
 }
 
 function familySources(familyID) {
@@ -331,7 +337,7 @@ function sourceFamilies() {
 }
 
 function savedFamily(saved = readFilters()) {
-  return saved.family || sourceFamilyID(saved.source);
+  return sourceFamilyID(saved.family || saved.source);
 }
 
 function hintedFamilySourceIDs(familyID) {
@@ -721,7 +727,7 @@ async function loadEncyclopedia() {
   const ticket = ++state.encyclopedia.loading;
   $('#catalog-status').textContent = '读取目录…';
   try {
-    const [products, module] = await Promise.all([json('/api/products'), state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js?v=43'))]);
+    const [products, module] = await Promise.all([json('/api/products'), state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js?v=44'))]);
     if (ticket !== state.encyclopedia.loading) return;
     state.encyclopedia.catalog = (products || []).filter(product => product.source_id !== 'era5').map(normalizeCatalogProduct);
     module.initialize(state.encyclopedia.catalog);
@@ -1858,8 +1864,7 @@ function hideTip() {
 function renderSources() {
   const node = $('#sources');
   node.replaceChildren();
-  for (const source of state.sources) {
-    if (source.id === 'era5') continue;
+  const appendSource = source => {
     const row = document.createElement('article');
     row.className = 'source-row';
     row.innerHTML = `
@@ -1868,6 +1873,39 @@ function renderSources() {
       <p>${esc(source.description || '')}</p>
       <small>${esc(source.method || '')}</small>`;
     node.append(row);
+  };
+  let iasiFamilyRendered = false;
+  for (const source of state.sources) {
+    if (source.id === 'era5') continue;
+    if (sourceFamilyID(source.id) === 'iasi') {
+      if (iasiFamilyRendered) continue;
+      iasiFamilyRendered = true;
+      const group = document.createElement('article');
+      group.className = 'source-family-group';
+      group.innerHTML = `
+        <div class="source-family-heading">
+          <strong>${esc(sourceFamilyLabels.iasi)}</strong>
+          <small>第一代 Metop-A / B / C 与第二代 Metop-SG；产品和时间语义分别保留，下载可共用 EUMETSAT 凭据。</small>
+        </div>
+        <div class="source-family-variants"></div>`;
+      const variants = group.querySelector('.source-family-variants');
+      for (const member of state.sources.filter(item => sourceFamilyID(item.id) === 'iasi')) {
+        const variant = document.createElement('section');
+        variant.className = 'source-family-variant';
+        const generation = member.id === 'iasi' ? '第一代 IASI' : '第二代 IASI-NG';
+        variant.innerHTML = `
+          <header>
+            <strong>${generation} · ${esc(member.name)}</strong>
+            <span class="tier ${esc(member.tier)}">${esc(tierLabels[member.tier] || member.tier)}</span>
+          </header>
+          <p>${esc(member.description || '')}</p>
+          <small><code>${esc(member.id)}</code> · ${esc(member.method || '')}</small>`;
+        variants.append(variant);
+      }
+      node.append(group);
+      continue;
+    }
+    appendSource(source);
   }
 }
 
@@ -2010,6 +2048,7 @@ function readFamilyFilters(family) {
   try {
     const saved = JSON.parse(localStorage.getItem(FAMILY_FILTER_KEY) || '{}');
     if (saved?.[family] && typeof saved[family] === 'object') return saved[family];
+    if (family === 'iasi' && saved?.['iasi-ng'] && typeof saved['iasi-ng'] === 'object') return saved['iasi-ng'];
   } catch {}
   const legacy = readFilters();
   return savedFamily(legacy) === family ? legacy : {};
@@ -3220,8 +3259,8 @@ function downloadTaskDetails(task) {
 const downloadWindowSeconds = {realtime: 300, '1h': 3600, '3h': 10800, '6h': 21600, '12h': 43200, '1d': 86400, '2d': 172800, '1w': 604800};
 
 function downloadHistoryPoints(payload, source) {
-  const sources = (payload?.providers || []).filter(item => source === 'all' || item.source_id === source);
-  if (source !== 'all') return sources[0]?.points || [];
+  const sources = (payload?.providers || []).filter(item => source === 'all' || downloadProviderFamilyID(item.source_id) === source);
+  if (source !== 'all' && source !== 'iasi') return sources[0]?.points || [];
   const buckets = new Map();
   for (const provider of sources) for (const point of provider.points || []) {
     const key = point.sampled_at;
@@ -3305,12 +3344,23 @@ function renderDownloadMonitor(statuses, liveAvailable) {
   const history = state.downloads.history;
   const selector = $('#download-monitor-provider');
   const available = uniqueSorted([...statuses.map(item => item.source_id), ...(history.payload?.providers || []).map(item => item.source_id)]);
+  const families = new Map();
+  for (const source of available) {
+    const familyID = downloadProviderFamilyID(source);
+    if (!families.has(familyID)) families.set(familyID, []);
+    families.get(familyID).push(source);
+  }
   selector.replaceChildren(new Option('全部 Provider', 'all'));
-  for (const source of available) selector.add(new Option(source, source));
-  if (history.selected !== 'all' && !available.includes(history.selected)) history.selected = 'all';
+  for (const [familyID, members] of families) {
+    selector.add(new Option(familyID === 'iasi' ? 'IASI 系列' : members[0], familyID));
+  }
+  const previousSelection = history.selected;
+  if (history.selected !== 'all') history.selected = downloadProviderFamilyID(history.selected);
+  if (history.selected !== 'all' && !families.has(history.selected)) history.selected = 'all';
+  if (history.selected !== previousSelection) localStorage.setItem('satellite-data-download-provider', history.selected);
   selector.value = history.selected;
   document.querySelectorAll('[data-download-window]').forEach(button => button.classList.toggle('active', button.dataset.downloadWindow === history.window));
-  const selected = history.selected === 'all' ? statuses.filter(item => item.enabled) : statuses.filter(item => item.source_id === history.selected);
+  const selected = history.selected === 'all' ? statuses.filter(item => item.enabled) : statuses.filter(item => downloadProviderFamilyID(item.source_id) === history.selected);
   const total = key => selected.reduce((sum, item) => sum + (Number(item[key]) || 0), 0);
   const active = total('active_transfers');
   const allowed = selected.reduce((sum, item) => sum + (Number(item.adaptive_concurrency ?? item.transfer_concurrency) || 0), 0);
@@ -3322,7 +3372,7 @@ function renderDownloadMonitor(statuses, liveAvailable) {
   $('#download-kpi-queued').textContent = hasLive ? String(queued) : '—';
   $('#download-chart-rate-now').textContent = hasLive ? downloadRate(rate) : '—';
   $('#download-chart-active-now').textContent = hasLive ? `${active} / ${allowed}` : '—';
-  const samples = history.selected === 'all' ? (history.payload?.providers || []) : (history.payload?.providers || []).filter(item => item.source_id === history.selected);
+  const samples = history.selected === 'all' ? (history.payload?.providers || []) : (history.payload?.providers || []).filter(item => downloadProviderFamilyID(item.source_id) === history.selected);
   const last = Math.max(0, ...samples.map(item => new Date(item.latest?.sampled_at).getTime() || 0));
   const age = Date.now() - last;
   $('#download-kpi-sampled').textContent = !last ? '等待样本' : age > 45_000 ? '采样中断' : downloadMonitorTime(last);
@@ -3388,7 +3438,7 @@ function mergeLinkHistory(previous, incoming, windowName) {
 
 function renderDownloadProviders(statuses, liveAvailable = true) {
   renderDownloadMonitor(statuses, liveAvailable);
-  $('#download-providers').innerHTML = statuses.map(item => {
+  const renderProvider = item => {
     const states = item.states || {};
     const waiting = (states.queued || 0) + (states.retry_wait || 0);
     const verifyPending = (states.verifying || 0) + (states.verify_wait || 0);
@@ -3408,6 +3458,18 @@ function renderDownloadProviders(statuses, liveAvailable = true) {
       chip('失败', states.failed || 0, (states.failed || 0) > 0 ? 'bad' : '') +
       chip('待授权', states.waiting_auth || 0, (states.waiting_auth || 0) > 0 ? 'bad' : '') +
       '</div></div>';
+  };
+  const groups = new Map();
+  for (const item of statuses) {
+    const familyID = downloadProviderFamilyID(item.source_id);
+    if (!groups.has(familyID)) groups.set(familyID, []);
+    groups.get(familyID).push(item);
+  }
+  $('#download-providers').innerHTML = [...groups.entries()].map(([familyID, members]) => {
+    const cards = members.map(renderProvider).join('');
+    if (familyID !== 'iasi') return cards;
+    return '<div class="download-provider-family"><div class="download-provider-family-title"><strong>IASI 系列</strong><small>第一代 IASI / Metop 与第二代 IASI-NG / Metop-SG 分列显示</small></div>' +
+      '<div class="download-provider-family-items">' + cards + '</div></div>';
   }).join('') || '<div class="pool-empty">暂无 Provider 状态</div>';
 }
 
@@ -3719,14 +3781,21 @@ function renderAccountList() {
   node.replaceChildren();
   const credentialById = new Map(state.access.credentials.map(item => [item.id, item]));
   const bound = new Set(state.access.accounts.map(item => item.credential_id).filter(Boolean));
+  const credentialUseCounts = new Map();
+  for (const account of state.access.accounts) {
+    if (account.credential_id) credentialUseCounts.set(account.credential_id, (credentialUseCounts.get(account.credential_id) || 0) + 1);
+  }
   if (!state.access.accounts.length && !state.access.credentials.length) node.innerHTML = '<div class="pool-empty">暂无访问配置</div>';
   for (const item of state.access.accounts) {
     const route = item.proxy_mode === 'direct' ? '直连' : item.proxy_mode === 'auto' ? '代理池' : `固定 · ${item.proxy_alias || '—'}`;
     const stored = credentialById.get(item.credential_id);
+    const credentialDescription = stored
+      ? `${accessKindLabels[stored.kind] || stored.kind} · Secret 已保存${credentialUseCounts.get(item.credential_id) > 1 ? ' · 共用凭据' : ''}`
+      : '匿名';
     const row = document.createElement('div');
     row.className = 'pool-row';
     row.innerHTML = `
-      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(item.source_id)} · ${esc(stored ? `${accessKindLabels[stored.kind] || stored.kind} · Secret 已保存` : '匿名')} · ${esc(route)}</small></div>
+      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(item.alias)}</strong><small>${esc(item.source_id)} · ${esc(credentialDescription)} · ${esc(route)}</small></div>
       <div class="pool-actions"><button type="button" data-edit-account="${item.id}">编辑</button><button type="button" data-delete-account="${item.id}">删除</button></div></div>
       <div class="pool-meta">${poolStatePill(item)}${stored ? credentialExpiryPill(stored) : ''}<span class="pool-pill">优先级 ${item.priority || 0}</span>${item.last_success_at ? `<span>成功 ${esc(formatAccessTime(item.last_success_at))}</span>` : ''}</div>
       ${item.last_error ? `<small class="form-error">${esc(item.last_error)}</small>` : ''}`;
@@ -3784,6 +3853,9 @@ function credentialFields() {
   } else if (kind === 'eumetsat') {
     node.innerHTML = `<div class="secret-grid">${password('credential-consumer-key','Consumer Key','从 EUMETSAT API Key Management 复制')}${password('credential-consumer-secret','Consumer Secret','从 EUMETSAT API Key Management 复制')}</div>`;
     note.textContent = '这里只填写官网 User credentials 区域的 Consumer Key + Consumer Secret。API Token 无需填写，中心会自动申请并刷新；编辑时两项都留空表示保留原凭据。';
+    if (['iasi', 'iasi-ng'].includes($('#account-source').value)) {
+      note.textContent += ' 第一代 IASI 与 IASI-NG 可分别建立 Provider 配置，并在上方选择同一条已加密 EUMETSAT 凭据，无需重复录入。';
+    }
   } else {
     node.innerHTML = `<div class="secret-grid"><label>用户名<input id="credential-username" autocomplete="off" placeholder="编辑时留空即保留"></label>${password('credential-password','密码')}</div>`;
     note.textContent = '新增必须填写账号凭据；编辑时留空表示保留原凭据。';
