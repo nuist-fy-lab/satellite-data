@@ -721,7 +721,7 @@ async function loadEncyclopedia() {
   const ticket = ++state.encyclopedia.loading;
   $('#catalog-status').textContent = '读取目录…';
   try {
-    const [products, module] = await Promise.all([json('/api/products'), state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js'))]);
+    const [products, module] = await Promise.all([json('/api/products'), state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js?v=43'))]);
     if (ticket !== state.encyclopedia.loading) return;
     state.encyclopedia.catalog = (products || []).filter(product => product.source_id !== 'era5').map(normalizeCatalogProduct);
     module.initialize(state.encyclopedia.catalog);
