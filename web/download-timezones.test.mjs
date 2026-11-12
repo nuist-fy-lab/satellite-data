@@ -65,6 +65,34 @@ test('preferences persist separately and invalid saved values fall back to the c
   assert.equal(invalid.run('state.downloads.history.displayZone'), 'BJT');
 });
 
+test('IASI generations share one monitoring family while keeping separate provider status rows', () => {
+  const h = harness();
+  const at = '2026-11-12T00:00:00Z';
+  const chartCalls = [];
+  h.context.drawDownloadChart = (...args) => chartCalls.push(args);
+  const statuses = [
+    {source_id:'iasi',enabled:true,bytes_per_second:1024,active_transfers:1,adaptive_concurrency:2,states:{done:10}},
+    {source_id:'iasi-ng',enabled:true,bytes_per_second:2048,active_transfers:2,adaptive_concurrency:3,states:{done:20}},
+  ];
+  h.context.state.downloads.history.selected = 'iasi';
+  h.context.state.downloads.history.payload = {window:'1h',generated_at:at,bucket_seconds:15,providers:[
+    {source_id:'iasi',latest:{sampled_at:at},points:[{sampled_at:at,bytes_per_second:1024,active_transfers:1,adaptive_concurrency:2}]},
+    {source_id:'iasi-ng',latest:{sampled_at:at},points:[{sampled_at:at,bytes_per_second:2048,active_transfers:2,adaptive_concurrency:3}]},
+  ]};
+  h.context.renderDownloadProviders(statuses, true);
+  const options = h.element('#download-monitor-provider').options.filter(option => option.value === 'iasi');
+  assert.equal(options.length, 1);
+  assert.equal(options[0].text, 'IASI 系列');
+  assert.equal(h.element('#download-kpi-active').textContent, '3 / 5');
+  assert.equal(chartCalls[0][1].length, 1);
+  assert.equal(chartCalls[0][1][0].bytes_per_second, 3072);
+  assert.equal(chartCalls[0][1][0].active_transfers, 3);
+  const html = h.element('#download-providers').innerHTML;
+  assert.match(html, /IASI 系列/);
+  assert.match(html, /iasi-ng/);
+  assert.equal((html.match(/class="download-provider"/g) || []).length, 2);
+});
+
 test('task control updates the form and cached request list immediately without network requests', () => {
   const h = harness();
   h.context.bind();
