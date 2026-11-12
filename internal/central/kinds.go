@@ -11,7 +11,7 @@ func ProviderKind(source string) (string, error) {
 		return "", nil
 	case "modis", "viirs":
 		return "laads", nil
-	case "mtg":
+	case "mtg", "iasi":
 		return "eumetsat", nil
 	case "earthcare":
 		return "earthcare", nil

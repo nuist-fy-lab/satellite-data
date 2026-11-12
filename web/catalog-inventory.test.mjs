@@ -25,6 +25,22 @@ test('purpose distinguishes non-image data and familiar products',()=>{
   assert.match(productDescription({display_name:'MODIS Aerosol Optical Depth'}),/气溶胶/);
   assert.match(productDescription({display_name:'GOES Cloud Top Height'}),/云顶/);
 });
+test('IASI / Metop catalog groups platforms and describes spectral, retrieval and support products',()=>{
+  const items=[
+    {source_id:'iasi',satellite:'Metop',instrument:'IASI',product_key:'iasi:l1c',data_type:'EO:EUM:DAT:METOP:IASIL1C-ALL'},
+    {source_id:'iasi',satellite:'Metop-A / Metop-B',instrument:'IASI',product_key:'iasi:co',data_type:'EO:EUM:DAT:0959'},
+    {source_id:'iasi',satellite:'Metop-B / Metop-C',instrument:'IASI',product_key:'iasi:cox',data_type:'EO:EUM:DAT:METOP:IASIL2COX'},
+    {source_id:'iasi',satellite:'Metop',instrument:'Auxiliary',product_key:'iasi:ncm',data_type:'EO:EUM:DAT:1099'},
+  ];
+  const group=groupCatalog(items).find(item=>item.id==='iasi');
+  assert.equal(group.name,'IASI / Metop');
+  assert.ok(group.satellites.has('Metop-A / Metop-B'));
+  assert.ok(group.satellites.has('Metop-B / Metop-C'));
+  assert.match(productDescription(items[0]),/8461 个光谱通道/);
+  assert.match(productDescription(items[1]),/一氧化碳/);
+  assert.match(productDescription(items[3]),/噪声协方差矩阵/);
+  assert.deepEqual(missions.Metop.launches.map(([name])=>name),['Metop-A','Metop-B','Metop-C']);
+});
 test('inventory uses half-open coverage and counts unknown files without inventing dates',()=>{
   const files=[{dataset:'era5:single',bytes:100,verified:true,start:'2024-01-01T00:00:00Z',end:'2024-02-01T00:00:00Z',variables:['temperature']},{dataset:'era5:unclassified',bytes:50,verified:false,variables:[]}];
   assert.equal(intersectsMonth(files[0],2024,0),true);assert.equal(intersectsMonth(files[0],2024,1),false);

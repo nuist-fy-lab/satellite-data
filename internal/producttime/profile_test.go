@@ -58,6 +58,28 @@ func TestExplicitScientificSemantics(t *testing.T) {
 	}
 }
 
+func TestIASIOrbitRetrievalAndAncillaryTimeSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		key, level, area, kind, semantic, subtype string
+	}{
+		{"iasi:EO:EUM:DAT:METOP:IASIL1C-ALL", "L1c", "ORBIT", "orbit", "observation", "orbit"},
+		{"iasi:EO:EUM:DAT:METOP:IASPCS01", "L1", "ORBIT", "orbit", "observation", "orbit"},
+		{"iasi:EO:EUM:DAT:METOP:IASIL2COX", "L2", "SWATH", "observation", "derived", "retrieval"},
+		{"iasi:EO:EUM:DAT:METOP:IASSND02", "L2", "ORBIT", "orbit", "derived", "retrieval"},
+		{"iasi:EO:EUM:DAT:1099", "AUX", "AUX", "observation", "ancillary", "instrument_support"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			profile := Resolve(model.Product{SourceID: "iasi", ProductKey: tc.key, Level: tc.level, AreaType: tc.area, Cadence: "event"})
+			if profile.Kind != tc.kind || profile.Semantic != tc.semantic || profile.Subtype != tc.subtype {
+				t.Fatalf("unexpected IASI time profile: %+v", profile)
+			}
+			if profile.CadenceMinutes != 0 || profile.SelectionMinutes != 0 {
+				t.Fatalf("IASI product was assigned an unsupported recurring scan axis: %+v", profile)
+			}
+		})
+	}
+}
+
 func TestResolvedCALIPSOMonthlyBoundaries(t *testing.T) {
 	p := Resolve(model.Product{SourceID: "calipso", ProductKey: "calipso:C3880523239-LARC_CLOUD", Cadence: "event"})
 	start := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)

@@ -38,6 +38,7 @@ satellite-data-downloader ──► 经校验的正式科研归档
 | **MODIS (Terra / Aqua)** | Collection 6.1 / 7 L1B & L2 | LAADS API v2 目录 + Token 认证断点 HTTPS |
 | **VIIRS (SNPP / NOAA-20 / 21)** | L1B & L2 科学产品 | NASA CMR / LAADS + Earthdata Cloud HTTPS |
 | **MTG (Meteosat-12)** | FCI | EUMETSAT Data Store OpenSearch + OAuth2 |
+| **IASI / Metop-A、-B、-C** | L1C 全光谱与主成分、L2 大气探测和痕量气体廓线、仪器噪声协方差 | EUMETSAT Data Store Browse / OpenSearch + OAuth2 |
 | **EarthCARE** | L1 / L2 轨道产品 | ESA MAAP STAC + OIDC 认证 HTTPS |
 | **CALIPSO** | CALIOP L1 / L2 | NASA CMR + Earthdata Login ASDC HTTPS |
 | **CloudSat** | 2B-GEOPROF / CPR | CIRA DPC THREDDS 目录 + 认证 HTTPServer |

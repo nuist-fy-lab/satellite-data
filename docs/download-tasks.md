@@ -21,6 +21,19 @@ behavior. Official THREDDS listings include 2008 annual and 2008–2009 DJF
 seasonal files. Metadata discovery does not establish authenticated file
 download success.
 
+IASI / Metop L1C spectra, principal-component products, combined sounding
+products and the orbit-based climate records use the official EUMETSAT
+granule start/end as orbit coverage. The FORLI-CO L2 collection is indexed as
+individual timestamped retrievals rather than a recurring scan grid. The
+noise-covariance collection is ancillary data; its product timestamp is
+parsed from the product identifier because the upstream product-level date
+range is intentionally broad.
+
+The EUMETSAT portal may list additional IASI records beyond the Data Store
+Browse/OpenSearch collection index. They are not advertised as downloadable
+by this provider until an equivalent searchable and downloadable endpoint is
+verified.
+
 The server returns `time_profile` in both the download catalogue and task summaries. A five-minute polar granule duration does not imply a recurring five-minute scan schedule. A rolling composite published daily remains a daily product.
 
 `kind` remains the scheduling contract. Additive `semantic`, `subtype` and

@@ -22,7 +22,7 @@ func NewRegistry() (*provider.Registry, error) {
 
 func NewRegistryWithCloudSatMetadata(reader cloudsat.MetadataReader) (*provider.Registry, error) {
 	objects := objectstore.NewClient(nil)
-	providers := make([]provider.Provider, 0, 12)
+	providers := make([]provider.Provider, 0, 14)
 	for _, satellite := range []int{16, 17, 18, 19} {
 		p, err := goes.New(satellite, objects)
 		if err != nil {
@@ -38,6 +38,7 @@ func NewRegistryWithCloudSatMetadata(reader cloudsat.MetadataReader) (*provider.
 		providers = append(providers, p)
 	}
 	providers = append(providers, eumetsat.New(nil))
+	providers = append(providers, eumetsat.NewIASI(nil))
 	providers = append(providers, laads.New(nil))
 	providers = append(providers, viirs.New(nil))
 	providers = append(providers, earthcare.New(nil))

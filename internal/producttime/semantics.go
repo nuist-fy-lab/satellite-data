@@ -128,7 +128,7 @@ func applySemantics(p model.Product, profile Profile) Profile {
 		case "himawari8", "himawari9":
 			familyKey = "himawari:" + code
 		}
-		switch scientificFamilies[familyKey] {
+		switch scientificFamily(familyKey) {
 		case "swath":
 			set("observation", "swath", "沿轨观测", 0)
 		case "orbit":

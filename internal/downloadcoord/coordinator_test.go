@@ -14,6 +14,9 @@ func TestProviderForSource(t *testing.T) {
 	if got, ok := ProviderForSource("viirs"); !ok || got != "viirs" {
 		t.Fatalf("viirs => %q ok=%v", got, ok)
 	}
+	if got, ok := ProviderForSource("iasi"); !ok || got != "iasi" {
+		t.Fatalf("iasi => %q ok=%v", got, ok)
+	}
 	if got, ok := ProviderForSource("himawari9"); !ok || got != "himawari9" {
 		t.Fatalf("himawari9 => %q ok=%v", got, ok)
 	}
@@ -36,6 +39,21 @@ func TestArchiveRelativeDirKeepsAnExplicitLevelSlotWhenUnspecified(t *testing.T)
 	}
 	got := archiveRelativeDir("mtg", product, time.Date(2026, 9, 24, 1, 2, 3, 0, time.UTC))
 	want := "mtg/MTG/FCI/Unspecified/EO_EUM_DAT_1089/2026/09/24"
+	if got != want {
+		t.Fatalf("path=%q want=%q", got, want)
+	}
+}
+
+func TestIASIArchiveUsesGranulePlatformInsteadOfCollectionPlatformGroup(t *testing.T) {
+	product := model.Product{
+		Satellite: "Metop", Instrument: "IASI", Level: "L1c", DataType: "EO:EUM:DAT:METOP:IASIL1C-ALL",
+	}
+	granule := model.Granule{
+		Start:    time.Date(2025, 6, 7, 0, 0, 0, 0, time.UTC),
+		Metadata: map[string]string{"satellite": "Metop-B"},
+	}
+	got := archiveRelativeDirForGranule("iasi", product, granule)
+	want := "iasi/Metop-B/IASI/L1C/EO_EUM_DAT_METOP_IASIL1C-ALL/2025/06/07"
 	if got != want {
 		t.Fatalf("path=%q want=%q", got, want)
 	}
