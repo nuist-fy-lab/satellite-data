@@ -39,6 +39,7 @@ All providers use official cloud object stores, STAC/CMR catalogues, or authenti
 | **VIIRS (SNPP / NOAA-20 / 21)** | L1B & L2 science products | NASA CMR / LAADS + Earthdata Cloud HTTPS |
 | **MTG (Meteosat-12)** | FCI | EUMETSAT Data Store OpenSearch + OAuth2 |
 | **IASI / Metop-A, -B, -C** | L1C spectra / principal components, L2 sounding and trace-gas profiles, instrument noise covariance | EUMETSAT Data Store Browse / OpenSearch + OAuth2 |
+| **IASI-NG / Metop-SG-A1** | Pre-operational global L1C calibrated spectral radiance | EUMETSAT Data Store Browse / OpenSearch + OAuth2 |
 | **EarthCARE** | L1 / L2 orbits | ESA MAAP STAC + OIDC-protected HTTPS |
 | **CALIPSO** | CALIOP L1 / L2 | NASA CMR + Earthdata Login ASDC HTTPS |
 | **CloudSat** | 2B-GEOPROF / CPR | CIRA DPC THREDDS catalogue + authenticated HTTPServer |

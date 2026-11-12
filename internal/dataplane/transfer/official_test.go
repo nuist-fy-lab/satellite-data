@@ -72,6 +72,7 @@ func TestOfficialChecksumAPIsWithRealMetadataShapes(t *testing.T) {
 		{"GOES_MD5_CRC32C", model.Task{TaskSpec: model.TaskSpec{SourceID: "goes", URL: "https://storage.googleapis.com/gcp-public-data-goes-18/ABI-L2-CMIPF/2023/file.nc"}}, 2},
 		{"MTG_Browse_MD5", model.Task{TaskSpec: model.TaskSpec{SourceID: "mtg", GranuleID: "mtg:FCI-product", CollectionID: "mtg:EO:EUM:DAT:0678"}}, 1},
 		{"IASI_Browse_MD5", model.Task{TaskSpec: model.TaskSpec{SourceID: "iasi", GranuleID: "iasi:IASI_xxx_1C_M01_20250606225057Z_20250607003257Z_N_O_20250606234204Z", CollectionID: "iasi:EO:EUM:DAT:METOP:IASIL1C-ALL"}}, 1},
+		{"IASI_NG_Browse_MD5", model.Task{TaskSpec: model.TaskSpec{SourceID: "iasi-ng", GranuleID: "iasi-ng:W_XX-EUMETSAT-Darmstadt,SAT,SGA1-IAS-1C-RAD_C_EUMT_20261007075432_G_O_20261007064237_20261007064354_C_N_T__", CollectionID: "iasi-ng:EO:EUM:DAT:0442"}}, 1},
 		{"Himawari9_FULL_OBJECT", model.Task{TaskSpec: model.TaskSpec{SourceID: "himawari9", URL: "https://noaa-himawari9.s3.amazonaws.com/AHI-L1b-FLDK/file.dat"}}, 1},
 		{"Himawari8_ETag_not_MD5", model.Task{TaskSpec: model.TaskSpec{SourceID: "himawari8", URL: "https://noaa-himawari8.s3.amazonaws.com/file.dat"}}, 0},
 		{"EarthCARE_no_checksum", model.Task{TaskSpec: model.TaskSpec{SourceID: "earthcare"}}, 0},

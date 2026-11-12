@@ -26,6 +26,9 @@ END-of-mission marker. Only a confirmed end of science observations gets END.
   launched in 2012 and Metop-C in 2018. The IASI product archive may have a
   product-specific Metop-A cutoff earlier than the satellite retirement date.
   https://www.eumetsat.int/our-satellites/metop-series
+- Metop-SG-A1 launched on 13 August 2025 and carries IASI-NG. The current
+  global IASI-NG L1C Data Store collection begins on 7 October 2026.
+  https://www.eumetsat.int/our-satellites/metop-series
 - EarthCARE launched in 2024; MTG-I1 launched in 2022. The MTG row represents
   a satellite family in the current provider catalogue.
   https://www.esa.int/Applications/Observing_the_Earth/FutureEO/EarthCARE

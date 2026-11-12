@@ -41,6 +41,14 @@ test('IASI / Metop catalog groups platforms and describes spectral, retrieval an
   assert.match(productDescription(items[3]),/噪声协方差矩阵/);
   assert.deepEqual(missions.Metop.launches.map(([name])=>name),['Metop-A','Metop-B','Metop-C']);
 });
+test('IASI-NG is a separate Metop-SG family with the published L1C collection',()=>{
+  const item={source_id:'iasi-ng',satellite:'Metop-SG',instrument:'IASI-NG',product_key:'iasi-ng:EO:EUM:DAT:0442',data_type:'EO:EUM:DAT:0442',level:'L1C'};
+  const group=groupCatalog([item]).find(entry=>entry.id==='iasi-ng');
+  assert.equal(group.name,'IASI-NG / Metop-SG');
+  assert.ok(group.satellites.has('Metop-SG'));
+  assert.match(productDescription(item),/16,921 个光谱采样点/);
+  assert.deepEqual(missions['Metop-SG'].launches,[['Metop-SG-A1','2025-08-13']]);
+});
 test('inventory uses half-open coverage and counts unknown files without inventing dates',()=>{
   const files=[{dataset:'era5:single',bytes:100,verified:true,start:'2024-01-01T00:00:00Z',end:'2024-02-01T00:00:00Z',variables:['temperature']},{dataset:'era5:unclassified',bytes:50,verified:false,variables:[]}];
   assert.equal(intersectsMonth(files[0],2024,0),true);assert.equal(intersectsMonth(files[0],2024,1),false);

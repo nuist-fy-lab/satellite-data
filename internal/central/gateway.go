@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-var sources = []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "iasi", "earthcare", "calipso", "cloudsat", "era5"}
+var sources = []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "iasi", "iasi-ng", "earthcare", "calipso", "cloudsat", "era5"}
 
 func allowedHost(source, host string) bool {
 	switch source {
@@ -29,7 +29,7 @@ func allowedHost(source, host string) bool {
 		return host == "noaa-himawari9.s3.amazonaws.com"
 	case "modis", "viirs":
 		return host == "ladsweb.modaps.eosdis.nasa.gov" || host == "data.laadsdaac.earthdatacloud.nasa.gov"
-	case "mtg", "iasi":
+	case "mtg", "iasi", "iasi-ng":
 		return host == "api.eumetsat.int"
 	case "earthcare":
 		return host == "catalog.maap.eo.esa.int"

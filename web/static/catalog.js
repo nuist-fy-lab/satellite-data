@@ -24,6 +24,7 @@ export const missions = {
   'Metop-A': {launch:'2006-10-19',url:'https://www.eumetsat.int/metop'},
   'Metop-B': {launch:'2012-09-17',url:'https://www.eumetsat.int/metop'},
   'Metop-C': {launch:'2018-11-07',url:'https://www.eumetsat.int/metop'},
+  'Metop-SG': {url:'https://www.eumetsat.int/our-satellites/metop-series',text:'EUMETSAT 第二代极轨气象卫星系列。当前 IASI-NG 全球 L1C 集合来自首颗载星 Metop-SG-A1。',launches:[['Metop-SG-A1','2025-08-13']]},
 };
 
 const instruments = {
@@ -47,11 +48,12 @@ const instruments = {
   LI: ['闪电成像仪','MTG-I 光学闪电观测。',MTG],
   IRS: ['红外探测仪','MTG-S 红外高光谱探测，提供大气温湿结构信息。',MTG],
   IASI: ['红外大气探测干涉仪','傅里叶变换高光谱红外探测仪，测量大气热辐射，用于温度、水汽、痕量气体、云和地表参数反演。','https://user.eumetsat.int/s3/eup-strapi-media/Product_User_Guide_IASI_Level_1c_FCDR_release_2_v1_A_d32efe2626.pdf'],
+  'IASI-NG': ['新一代红外大气探测干涉仪','Metop-SG 搭载的新一代高光谱红外探测仪，提供高分辨率辐射观测，用于大气温湿廓线、云、气溶胶和痕量气体研究。','https://user.eumetsat.int/resources/user-guides/metop-sg-iasi-ng-l1c-and-l1d-data-guide'],
   Synergy: ['多仪器协同产品','组合多个仪器的观测与反演，不是独立的传感器。','https://portal.maap.eo.esa.int/earthcare/earthcare-data-offer/'],
   Auxiliary: ['辅助数据','校准、几何定位或反演所需的辅助信息，不是影像观测产品。','https://portal.maap.eo.esa.int/earthcare/earthcare-data-offer/'],
   Orbit: ['轨道资料','轨道预测、重建与几何定位所需的数据，不是影像观测产品。','https://portal.maap.eo.esa.int/earthcare/earthcare-data-offer/'],
 };
-const familyNames = {goes:'GOES',himawari:'Himawari',modis:'MODIS',viirs:'VIIRS',cloudsat:'CloudSat',calipso:'CALIPSO',iasi:'IASI / Metop',earthcare:'EarthCARE',mtg:'MTG'};
+const familyNames = {goes:'GOES',himawari:'Himawari',modis:'MODIS',viirs:'VIIRS',cloudsat:'CloudSat',calipso:'CALIPSO',iasi:'IASI / Metop','iasi-ng':'IASI-NG / Metop-SG',earthcare:'EarthCARE',mtg:'MTG'};
 export const family = id => id.replace(/^goes\d+$/,'goes').replace(/^himawari\d+$/,'himawari');
 export const dateText = value => !value ? '' : /^\d{4}-\d{2}-\d{2}$/.test(value) ? value+' · 日期精度' : value.replace('T',' ').replace(/Z$/,' UTC');
 export function safeURL(value) {
@@ -74,6 +76,7 @@ export function productDescription(product) {
     if(type==='EO:EUM:DAT:1027')return '基于 IASI 观测反演的臭氧总量与垂直廓线。';
     if(type==='EO:EUM:DAT:1099')return '仪器噪声协方差矩阵，描述光谱通道测量噪声及通道间误差相关性。';
   }
+  if(product.source_id==='iasi-ng')return 'IASI-NG L1C 校准并完成地理定位的高光谱红外辐射观测，包含 16,921 个光谱采样点，覆盖 645–2,760 cm⁻¹，空间分辨率约 12 km。适用于大气温湿结构、云、气溶胶和痕量气体研究。';
   if(product.source_id==='earthcare') {
     if(product.level?.startsWith('L1'))return `${product.instrument}的${product.level}仪器测量产品，供校准、定位及后续地球物理量反演使用；具体测量模式见官方定义。`;
     const kind=type.split('_').filter(Boolean)[1];
@@ -183,7 +186,7 @@ function render() {
     for(const product of own.sort((a,b)=>(a.data_type || '').localeCompare(b.data_type || '') || (a.version || '').localeCompare(b.version || ''))) {
       const details=document.createElement('details');details.className='catalog-product';details.dataset.product=product.product_key;
       const range=[dateText(product.metadata?.time_start),dateText(product.metadata?.time_end)].filter(Boolean).join(' 至 ');
-      const rows=[['官方集合 ID',product.official_id],['处理级别',['AUX','ORBIT'].includes(product.level)?'':product.level],['集合版本',product.version],['分辨率',product.resolution],['空间范围',product.area_type],['数据频率',product.cadence==='event'?'':product.cadence],['官方时间范围',range]].filter(([,value])=>value);
+      const rows=[['官方集合 ID',product.official_id],['处理级别',['AUX','ORBIT'].includes(product.level)?'':product.level],['处理状态',product.metadata?.processing_status],['平台',product.metadata?.platforms],['集合版本',product.version],['分辨率',product.resolution],['光谱采样点',product.metadata?.spectral_samples],['光谱范围',product.metadata?.spectral_range],['空间范围',product.area_type],['数据频率',product.cadence==='event'?'':product.cadence],['官方时间范围',range]].filter(([,value])=>value);
       details.innerHTML=`<summary><strong>${esc(product.data_type)}</strong><span>${esc([product.level,product.version,product.metadata?.access_class].filter(Boolean).join(' · '))}</span></summary><div class="catalog-product-body"><h3>${esc(product.display_name || product.data_type)}</h3><p>${esc(productDescription(product))}</p><dl>${rows.map(([label,value])=>`<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('')}</dl>${product.metadata?.description?`<details class="catalog-official-description"><summary>官方摘要</summary><p>${esc(product.metadata.description)}</p></details>`:''}<div class="catalog-product-links">${link(product.metadata?.official_product_url,'官方产品目录')}${link(product.metadata?.official_documentation_url,'官方产品说明')}${link(product.metadata?.level_evidence,'元数据依据')}</div></div>`;
       section.append(details);
     }

@@ -16,3 +16,18 @@ func TestRegistryRegistersIASIMetop(t *testing.T) {
 		t.Fatalf("unexpected IASI source: %+v", source)
 	}
 }
+
+func TestRegistryRegistersIASINGMetopSG(t *testing.T) {
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := registry.Provider("iasi-ng")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := registered.Source()
+	if source.ID != "iasi-ng" || source.Name != "IASI-NG / Metop-SG" {
+		t.Fatalf("unexpected IASI-NG source: %+v", source)
+	}
+}

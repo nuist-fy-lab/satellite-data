@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS cursors (
 );
 `
 
-var providers = []string{"modis", "viirs", "calipso", "goes", "mtg", "iasi", "himawari9", "himawari8", "earthcare", "cloudsat", "era5"}
+var providers = []string{"modis", "viirs", "calipso", "goes", "mtg", "iasi", "iasi-ng", "himawari9", "himawari8", "earthcare", "cloudsat", "era5"}
 
 type candidate struct {
 	id                                                      int64

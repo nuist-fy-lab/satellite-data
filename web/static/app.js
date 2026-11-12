@@ -289,6 +289,7 @@ const sourceFamilyLabels = Object.freeze({
   cloudsat: 'CloudSat',
   calipso: 'CALIPSO',
   iasi: 'IASI / Metop',
+  'iasi-ng': 'IASI-NG / Metop-SG',
   mtg: 'MTG',
   era5: 'ERA5',
 });
@@ -356,7 +357,7 @@ const missionPeriods = {
   'GOES-18': {start: 2022}, 'GOES-19': {start: 2024},
   'Himawari-8': {start: 2015, status: '备用'}, 'Himawari-9': {start: 2022},
   'Metop': {start: 2006}, 'Metop-A': {start: 2006, end: '2021-11-30'},
-  'Metop-B': {start: 2012}, 'Metop-C': {start: 2018},
+  'Metop-B': {start: 2012}, 'Metop-C': {start: 2018}, 'Metop-SG': {start: 2025},
   'EarthCARE': {start: 2024}, 'MTG': {start: 2022},
 };
 
@@ -443,7 +444,7 @@ function rebuildFilters(changed = 'source', update = true) {
   if (['source','satellite','instrument','level'].includes(changed)) fillMetadataSelect(areaEl, filteredCollections(3), 'area_type');
   if (['source','satellite','instrument','level','area'].includes(changed)) fillMetadataSelect(resolutionEl, filteredCollections(4), 'resolution');
   const products = filteredCollections(5).sort((a, b) => {
-    if (sourceEl.value !== 'mtg' && sourceEl.value !== 'iasi') return 0;
+    if (sourceEl.value !== 'mtg' && sourceEl.value !== 'iasi' && sourceEl.value !== 'iasi-ng') return 0;
     return Number(!/^L1/i.test(a.level)) - Number(!/^L1/i.test(b.level));
   });
   const previous = productEl.value;
@@ -3561,7 +3562,7 @@ async function loadMonitor(schedule = true) {
 const accessKindLabels = {
   laads: 'LAADS', earthdata: 'Earthdata', earthcare: 'ESA MAAP', eumetsat: 'EUMETSAT', cloudsat: 'CloudSat DPC', cds: 'CDS',
 };
-const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', iasi: 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat', era5: 'cds'};
+const providerKinds = {modis: 'laads', viirs: 'laads', mtg: 'eumetsat', iasi: 'eumetsat', 'iasi-ng': 'eumetsat', earthcare: 'earthcare', calipso: 'earthdata', cloudsat: 'cloudsat', era5: 'cds'};
 const credentialGuides = {
   cds: {
     title: 'Copernicus CDS Personal Access Token',
@@ -3597,7 +3598,7 @@ const credentialGuides = {
   },
   eumetsat: {
     title: 'EUMETSAT API 凭据 · Consumer Key / Consumer Secret',
-    summary: '用于 MTG 与 IASI / Metop。这里只保存 API Key Management 提供的 Consumer Key + Consumer Secret；中心会用 OAuth2 client_credentials 自动换取短期 Access Token。',
+    summary: '用于 MTG、IASI / Metop 与 IASI-NG / Metop-SG。这里只保存 API Key Management 提供的 Consumer Key + Consumer Secret；中心会用 OAuth2 client_credentials 自动换取短期 Access Token。',
     steps: ['登录 EUMETSAT Data Store / User Portal。', '进入 API Key Management，在 User credentials 区域找到 Consumer key 与 Consumer secret。', '只把这两个值分别复制到下方两个输入框；页面下方的一小时 API token 不需要复制。'],
     note: '本凭据表单只接收 Consumer Key + Consumer Secret。中心会自动向 EUMETSAT /token 端点申请并续期 Bearer Access Token。',
     url: 'https://api.eumetsat.int/api-key/',

@@ -12,7 +12,7 @@ import (
 )
 
 func TestProductKeysAndDataSelectionForEverySource(t *testing.T) {
-	products := []string{"goes16:GLM-L2-LCFA", "goes17:GLM-L2-LCFA", "goes18:ABI-L1b-RadF", "goes19:ABI-L1b-RadF", "himawari8:AHI-L1b-FLDK", "himawari9:AHI-L1b-FLDK", "modis:C123-LAADS", "viirs:C456-LAADS", "mtg:EO:EUM:DAT:0678", "iasi:EO:EUM:DAT:METOP:IASIL1C-ALL", "earthcare:ATL_NOM_1B", "calipso:C789-ASDC", "cloudsat:2B-GEOPROF_R05", "era5:reanalysis-era5-single-levels"}
+	products := []string{"goes16:GLM-L2-LCFA", "goes17:GLM-L2-LCFA", "goes18:ABI-L1b-RadF", "goes19:ABI-L1b-RadF", "himawari8:AHI-L1b-FLDK", "himawari9:AHI-L1b-FLDK", "modis:C123-LAADS", "viirs:C456-LAADS", "mtg:EO:EUM:DAT:0678", "iasi:EO:EUM:DAT:METOP:IASIL1C-ALL", "iasi-ng:EO:EUM:DAT:0442", "earthcare:ATL_NOM_1B", "calipso:C789-ASDC", "cloudsat:2B-GEOPROF_R05", "era5:reanalysis-era5-single-levels"}
 	for _, product := range products {
 		t.Run(product, func(t *testing.T) {
 			calls := 0

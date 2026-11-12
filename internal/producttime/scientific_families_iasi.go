@@ -13,9 +13,16 @@ var iasiScientificFamilies = map[string]string{
 	"iasi:EO:EUM:DAT:0590":              "orbit",
 }
 
+var iasiNGScientificFamilies = map[string]string{
+	"iasi-ng:EO:EUM:DAT:0442": "swath",
+}
+
 func scientificFamily(key string) string {
 	if family := scientificFamilies[key]; family != "" {
 		return family
 	}
-	return iasiScientificFamilies[key]
+	if family := iasiScientificFamilies[key]; family != "" {
+		return family
+	}
+	return iasiNGScientificFamilies[key]
 }

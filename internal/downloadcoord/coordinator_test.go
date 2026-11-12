@@ -17,6 +17,9 @@ func TestProviderForSource(t *testing.T) {
 	if got, ok := ProviderForSource("iasi"); !ok || got != "iasi" {
 		t.Fatalf("iasi => %q ok=%v", got, ok)
 	}
+	if got, ok := ProviderForSource("iasi-ng"); !ok || got != "iasi-ng" {
+		t.Fatalf("iasi-ng => %q ok=%v", got, ok)
+	}
 	if got, ok := ProviderForSource("himawari9"); !ok || got != "himawari9" {
 		t.Fatalf("himawari9 => %q ok=%v", got, ok)
 	}
@@ -54,6 +57,21 @@ func TestIASIArchiveUsesGranulePlatformInsteadOfCollectionPlatformGroup(t *testi
 	}
 	got := archiveRelativeDirForGranule("iasi", product, granule)
 	want := "iasi/Metop-B/IASI/L1C/EO_EUM_DAT_METOP_IASIL1C-ALL/2025/06/07"
+	if got != want {
+		t.Fatalf("path=%q want=%q", got, want)
+	}
+}
+
+func TestIASINGArchiveUsesGranulePlatform(t *testing.T) {
+	product := model.Product{
+		Satellite: "Metop-SG-A1", Instrument: "IASI-NG", Level: "L1c", DataType: "EO:EUM:DAT:0442",
+	}
+	granule := model.Granule{
+		Start:    time.Date(2026, 10, 7, 6, 42, 37, 0, time.UTC),
+		Metadata: map[string]string{"satellite": "Metop-SG-A1"},
+	}
+	got := archiveRelativeDirForGranule("iasi-ng", product, granule)
+	want := "iasi-ng/Metop-SG-A1/IASI-NG/L1C/EO_EUM_DAT_0442/2026/10/07"
 	if got != want {
 		t.Fatalf("path=%q want=%q", got, want)
 	}

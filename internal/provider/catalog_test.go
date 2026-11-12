@@ -112,6 +112,22 @@ func TestIASIProductsRetainOrbitRetrievalAndAncillaryClassifications(t *testing.
 	}
 }
 
+func TestIASINGProductRetainsOfficialGlobalL1CMetadata(t *testing.T) {
+	got := NormalizeProduct(model.Product{
+		ProductKey: "iasi-ng:EO:EUM:DAT:0442", OfficialID: "EO:EUM:DAT:0442",
+		SourceID: "iasi-ng", Satellite: "Metop-SG", Instrument: "IASI-NG", Level: "L1c",
+		DataType: "EO:EUM:DAT:0442", DisplayName: "Global IASI-NG Level 1c Spectral Radiance (netCDF) - Metop-SG",
+		AreaType: "GLOBAL", Resolution: "12 km", Cadence: "event",
+		Metadata: map[string]string{"official_documentation_url": "https://user.eumetsat.int/resources/user-guides/metop-sg-iasi-ng-l1c-and-l1d-data-guide"},
+	})
+	if got.Level != "L1C" || got.Instrument != "IASI-NG" || got.AreaType != "GLOBAL" || got.Resolution != "12 km" {
+		t.Fatalf("incorrect IASI-NG normalization: %+v", got)
+	}
+	if !strings.Contains(got.Metadata["official_product_url"], "user.eumetsat.int/catalogue/") || got.Metadata["level_evidence"] == "" || got.Metadata["official_documentation_url"] == "" {
+		t.Fatalf("missing IASI-NG official references: %+v", got.Metadata)
+	}
+}
+
 func TestGOESFloodProductsKeepUnspecifiedProcessingLevel(t *testing.T) {
 	got := NormalizeProduct(model.Product{
 		ProductKey: "goes18:ABI-Flood-Day",

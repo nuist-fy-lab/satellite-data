@@ -69,7 +69,7 @@ func (r *OfficialResolver) Resolve(ctx context.Context, task model.Task) ([]Offi
 		return r.cmrChecksums(ctx, id, task.Name)
 	case "goes":
 		return r.goesChecksums(ctx, task.URL)
-	case "mtg", "iasi":
+	case "mtg", "iasi", "iasi-ng":
 		return r.eumetsatChecksums(ctx, task.SourceID, task.CollectionID, task.GranuleID)
 	case "himawari9":
 		return r.s3Checksums(ctx, task.URL)

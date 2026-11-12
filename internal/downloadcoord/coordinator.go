@@ -42,7 +42,7 @@ func New(registry *provider.Registry, store *state.Store, client *downloader.Cli
 }
 
 func (c *Coordinator) Run(ctx context.Context) {
-	for _, providerID := range []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "iasi", "earthcare", "calipso", "cloudsat", "era5"} {
+	for _, providerID := range []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "iasi", "iasi-ng", "earthcare", "calipso", "cloudsat", "era5"} {
 		providerID := providerID
 		c.wg.Add(1)
 		go func() {
@@ -61,7 +61,7 @@ func ProviderForSource(sourceID string) (string, bool) {
 	switch sourceID {
 	case "goes16", "goes17", "goes18", "goes19":
 		return "goes", true
-	case "modis", "viirs", "mtg", "iasi", "earthcare", "calipso", "cloudsat", "era5":
+	case "modis", "viirs", "mtg", "iasi", "iasi-ng", "earthcare", "calipso", "cloudsat", "era5":
 		return sourceID, true
 	case "himawari8", "himawari9":
 		return sourceID, true
@@ -392,7 +392,7 @@ func archiveRelativeDir(sourceID string, product model.Product, at time.Time) st
 }
 
 func archiveRelativeDirForGranule(sourceID string, product model.Product, granule model.Granule) string {
-	if sourceID == "iasi" {
+	if sourceID == "iasi" || sourceID == "iasi-ng" {
 		if satellite := strings.TrimSpace(granule.Metadata["satellite"]); satellite != "" {
 			product.Satellite = satellite
 		}

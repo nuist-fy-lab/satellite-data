@@ -32,6 +32,15 @@ func TestIASIUsesTheEUMETSATDownloadHost(t *testing.T) {
 	}
 }
 
+func TestIASINGUsesTheEUMETSATDownloadHost(t *testing.T) {
+	if !allowedHost("iasi-ng", "api.eumetsat.int") {
+		t.Fatal("IASI-NG should use the official EUMETSAT Data Store host")
+	}
+	if allowedHost("iasi-ng", "example.invalid") {
+		t.Fatal("IASI-NG accepted an untrusted download host")
+	}
+}
+
 func TestERA5TasksUseOnlyTheStableCentreReference(t *testing.T) {
 	if !allowedHost("era5", "cds.climate.copernicus.eu") {
 		t.Fatal("stable CDS job reference was rejected")

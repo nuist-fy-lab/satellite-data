@@ -330,7 +330,7 @@
             <form id="account-form" class="pool-form hidden">
               <input type="hidden" id="account-id">
               <label>别名<input id="account-alias" maxlength="64" required placeholder="例如 ERA5 主访问"></label>
-              <label>Provider<select id="account-source"><option value="goes">GOES</option><option value="himawari8">Himawari 8</option><option value="himawari9">Himawari 9</option><option value="modis">MODIS</option><option value="viirs">VIIRS</option><option value="mtg">MTG</option><option value="iasi">IASI / Metop</option><option value="earthcare">EarthCARE</option><option value="calipso">CALIPSO</option><option value="cloudsat">CloudSat</option><option value="era5">ERA5 / ERA5-Land</option></select></label>
+              <label>Provider<select id="account-source"><option value="goes">GOES</option><option value="himawari8">Himawari 8</option><option value="himawari9">Himawari 9</option><option value="modis">MODIS</option><option value="viirs">VIIRS</option><option value="mtg">MTG</option><option value="iasi">IASI / Metop</option><option value="iasi-ng">IASI-NG / Metop-SG</option><option value="earthcare">EarthCARE</option><option value="calipso">CALIPSO</option><option value="cloudsat">CloudSat</option><option value="era5">ERA5 / ERA5-Land</option></select></label>
               <label id="account-credential-row">沿用已加密凭据<select id="account-credential"></select></label>
               <aside id="credential-guide" class="credential-guide"></aside>
               <div id="credential-secret-fields"></div>
@@ -371,6 +371,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=42"></script>
+  <script type="module" src="/app.js?v=43"></script>
 </body>
 </html>

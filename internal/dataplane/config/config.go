@@ -54,6 +54,7 @@ func Load() Config {
 		provider("viirs", true, 4, 4, 2, 5*time.Minute, "laads"),
 		provider("mtg", true, 2, 2, 1, 10*time.Minute, "eumetsat"),
 		provider("iasi", true, 2, 2, 1, 10*time.Minute, "eumetsat"),
+		provider("iasi-ng", true, 2, 2, 1, 10*time.Minute, "eumetsat"),
 		provider("earthcare", true, 2, 2, 1, 10*time.Minute, "earthcare"),
 		provider("calipso", true, 3, 3, 2, 10*time.Minute, "earthdata"),
 		provider("cloudsat", true, 2, 2, 2, 10*time.Minute, "cloudsat"),

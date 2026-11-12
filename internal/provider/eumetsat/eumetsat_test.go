@@ -247,3 +247,81 @@ func (r *rewriteEUMETSATHost) RoundTrip(request *http.Request) (*http.Response, 
 	copy.URL.Host = r.host
 	return r.target.RoundTrip(copy)
 }
+
+func TestIASINGSearchUsesThePublishedGlobalL1CCollection(t *testing.T) {
+	productID := "W_XX-EUMETSAT-Darmstadt,SAT,SGA1-IAS-1C-RAD_C_EUMT_20261007075432_G_O_20261007064237_20261007064354_C_N_T__"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/data/browse/1.0.0/collections":
+			_ = json.NewEncoder(w).Encode(map[string]any{"links": []any{
+				map[string]any{"rel": "collection/details", "title": "EO:EUM:DAT:0442", "datasetTitle": "Global IASI-NG Level 1c Spectral Radiance (netCDF) - Metop-SG", "href": "https://api.eumetsat.int/data/browse/1.0.0/collections/EO%3AEUM%3ADAT%3A0442?format=json", "numberOfProducts": 38780},
+				map[string]any{"rel": "collection/details", "title": "EO:EUM:DAT:METOP:IASIL1C-ALL", "datasetTitle": "IASI Level 1C - All Spectral Samples - Metop - Global", "numberOfProducts": 95577},
+				map[string]any{"rel": "collection/details", "title": "EO:EUM:DAT:0436", "datasetTitle": "Global 3MI L1b radiance data (netCDF) - Metop-SG", "numberOfProducts": 4707},
+			}})
+		case "/data/search-products/1.0.0/os":
+			if r.URL.Query().Get("pi") != "EO:EUM:DAT:0442" {
+				t.Errorf("unexpected IASI-NG collection query: %s", r.URL.RawQuery)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"totalResults": 1,
+				"features": []any{map[string]any{
+					"id": productID,
+					"properties": map[string]any{
+						"date":    "2026-10-07T06:42:37Z/2026-10-07T06:43:54Z",
+						"updated": "2026-10-07T09:33:43.122Z",
+						"acquisitionInformation": []any{map[string]any{
+							"platform":              map[string]any{"platformShortName": "SGA1"},
+							"instrument":            map[string]any{"instrumentShortName": "IAS"},
+							"acquisitionParameters": map[string]any{"orbitNumber": 5971},
+						}},
+						"productInformation": map[string]any{"productType": "IASRAD1C", "size": 69200},
+						"links": map[string]any{"data": []any{map[string]any{
+							"href":      "https://api.eumetsat.int/data/download/1.0.0/collections/EO%3AEUM%3ADAT%3A0442/products/" + productID,
+							"mediaType": "application/zip",
+						}}},
+					},
+				}},
+			})
+		default:
+			t.Errorf("unexpected IASI-NG request %s", r.URL)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	p := NewIASING(&http.Client{Transport: &rewriteEUMETSATHost{target: server.Client().Transport, host: strings.TrimPrefix(server.URL, "https://")}})
+	collections, err := p.Collections(t.Context())
+	if err != nil || len(collections) != 1 {
+		t.Fatalf("IASI-NG collections=%d err=%v", len(collections), err)
+	}
+	collection := collections[0]
+	if collection.ID != "iasi-ng:EO:EUM:DAT:0442" || collection.SourceID != "iasi-ng" || collection.Satellite != "Metop-SG" || collection.Instrument != "IASI-NG" || collection.Level != "L1c" || collection.Metadata["area_type"] != "GLOBAL" || collection.Metadata["platforms"] != "Metop-SG-A1" || collection.Metadata["product_count"] != "38780" || collection.Metadata["spectral_samples"] != "16921" {
+		t.Fatalf("unexpected IASI-NG collection: %+v", collection)
+	}
+	start := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	granules, err := p.Search(t.Context(), model.Query{CollectionID: collection.ID, Start: start, End: end})
+	if err != nil || len(granules) != 1 {
+		t.Fatalf("IASI-NG granules=%d err=%v", len(granules), err)
+	}
+	granule := granules[0]
+	wantStart := time.Date(2026, 10, 7, 6, 42, 37, 0, time.UTC)
+	wantEnd := time.Date(2026, 10, 7, 6, 43, 54, 0, time.UTC)
+	if granule.ID != "iasi-ng:"+productID || granule.Metadata["satellite"] != "Metop-SG-A1" || granule.Metadata["instrument"] != "IASI-NG" || granule.Metadata["orbit_number"] != "5971" || granule.Metadata["product_type"] != "IASRAD1C" {
+		t.Fatalf("unexpected IASI-NG granule metadata: %+v", granule.Metadata)
+	}
+	if !granule.Start.Equal(wantStart) || !granule.End.Equal(wantEnd) || len(granule.Assets) != 1 || granule.Assets[0].AuthRef != "eumetsat" || granule.Assets[0].Name != productID+".zip" {
+		t.Fatalf("unexpected IASI-NG granule: %+v", granule)
+	}
+}
+
+func TestIASINGCollectionClassification(t *testing.T) {
+	if !isIASINGCollection("Global IASI-NG Level 1c Spectral Radiance - Metop-SG") {
+		t.Fatal("IASI-NG collection was not recognized")
+	}
+	if isIASINGCollection("IASI Level 1C - All Spectral Samples - Metop - Global") {
+		t.Fatal("first-generation IASI collection entered IASI-NG")
+	}
+	if got := iasiNGLevel("Global IASI-NG Level 1d Principal Components - Metop-SG"); got != "L1d" {
+		t.Fatalf("IASI-NG L1D level=%q", got)
+	}
+}

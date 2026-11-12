@@ -156,6 +156,19 @@ func NormalizeProduct(item model.Product) model.Product {
 		if item.Level != "" && item.Level != "AUX" {
 			item.Metadata["level_evidence"] = catalogEvidence(item)
 		}
+	case item.SourceID == "iasi-ng":
+		if item.Instrument == "" {
+			item.Instrument = "IASI-NG"
+		}
+		if item.AreaType == "" && item.DataType == "EO:EUM:DAT:0442" {
+			item.AreaType = "GLOBAL"
+		}
+		if item.Metadata["official_documentation_url"] == "" {
+			item.Metadata["official_documentation_url"] = "https://user.eumetsat.int/resources/user-guides/metop-sg-iasi-ng-l1c-and-l1d-data-guide"
+		}
+		if item.Level != "" {
+			item.Metadata["level_evidence"] = catalogEvidence(item)
+		}
 	case strings.HasPrefix(item.SourceID, "goes"):
 		if !strings.HasPrefix(item.DataType, "ABI-") {
 			item.Cadence = "event"
@@ -266,6 +279,8 @@ func ProductCatalogURL(item model.Product) string {
 		return "https://catalog.maap.eo.esa.int/catalogue/collections/" + url.PathEscape(collection) + "?httpAccept=text%2Fhtml"
 	case item.SourceID == "mtg", item.SourceID == "iasi":
 		return "https://data.eumetsat.int/product/" + url.PathEscape(item.OfficialID)
+	case item.SourceID == "iasi-ng":
+		return "https://user.eumetsat.int/catalogue/" + url.PathEscape(item.OfficialID)
 	case strings.HasPrefix(item.SourceID, "goes"):
 		bucket := "gcp-public-data-goes-" + strings.TrimPrefix(item.SourceID, "goes")
 		return "https://storage.googleapis.com/storage/v1/b/" + bucket + "/o?" + url.Values{"prefix": {item.DataType + "/"}, "delimiter": {"/"}}.Encode()
@@ -331,7 +346,7 @@ func catalogEvidence(item model.Product) string {
 		return "https://www.cloudsat.cira.colostate.edu/data-products"
 	case item.SourceID == "earthcare":
 		return "https://portal.maap.eo.esa.int/earthcare/earthcare-data-offer/"
-	case item.SourceID == "mtg", item.SourceID == "iasi":
+	case item.SourceID == "mtg", item.SourceID == "iasi", item.SourceID == "iasi-ng":
 		return "https://api.eumetsat.int/data/browse/1.0.0/collections/" + item.OfficialID
 	case strings.HasPrefix(item.SourceID, "goes"):
 		return "https://www.ncei.noaa.gov/products/goes-terrestrial-weather-abi-glm"

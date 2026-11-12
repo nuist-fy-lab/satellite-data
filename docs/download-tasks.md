@@ -29,6 +29,12 @@ noise-covariance collection is ancillary data; its product timestamp is
 parsed from the product identifier because the upstream product-level date
 range is intentionally broad.
 
+IASI-NG / Metop-SG currently exposes the global L1C collection
+`EO:EUM:DAT:0442`. Its short granules use the exact EUMETSAT `date` interval
+and are scheduled as coverage-based observations, not a fixed recurring scan
+grid. L1D is documented by EUMETSAT but is not yet exposed as a downloadable
+collection in the Browse/OpenSearch catalogue.
+
 The EUMETSAT portal may list additional IASI records beyond the Data Store
 Browse/OpenSearch collection index. They are not advertised as downloadable
 by this provider until an equivalent searchable and downloadable endpoint is

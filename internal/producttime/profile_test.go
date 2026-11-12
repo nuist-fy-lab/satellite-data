@@ -80,6 +80,16 @@ func TestIASIOrbitRetrievalAndAncillaryTimeSemantics(t *testing.T) {
 	}
 }
 
+func TestIASINGUsesGranuleCoverageWithoutInventingScanCadence(t *testing.T) {
+	profile := Resolve(model.Product{
+		SourceID: "iasi-ng", ProductKey: "iasi-ng:EO:EUM:DAT:0442",
+		Level: "L1c", AreaType: "GLOBAL", Cadence: "event",
+	})
+	if profile.Kind != "observation" || profile.Semantic != "observation" || profile.Subtype != "swath" || profile.CadenceMinutes != 0 || profile.SelectionMinutes != 0 {
+		t.Fatalf("unexpected IASI-NG time semantics: %+v", profile)
+	}
+}
+
 func TestResolvedCALIPSOMonthlyBoundaries(t *testing.T) {
 	p := Resolve(model.Product{SourceID: "calipso", ProductKey: "calipso:C3880523239-LARC_CLOUD", Cadence: "event"})
 	start := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
