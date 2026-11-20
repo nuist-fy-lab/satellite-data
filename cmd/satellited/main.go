@@ -144,6 +144,10 @@ func main() {
 	}
 	defer authStore.Close()
 	centralService := central.NewService(centralStore)
+	if err := centralService.ConfigureDownloadEgress(os.Getenv("SATELLITE_DOWNLOAD_EGRESS_FILE")); err != nil {
+		slog.Error("configure satellite download SSH egress", "error", err)
+		os.Exit(1)
+	}
 	go func() {
 		if err := central.RunGateway(ctx, runtimeConfig.CentralSocket, centralService); err != nil && ctx.Err() == nil {
 			slog.Error("central access gateway stopped", "error", err)

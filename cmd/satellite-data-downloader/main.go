@@ -34,6 +34,10 @@ func main() {
 		os.Exit(1)
 	}
 	cfg := config.Load()
+	if cfg.EgressConfigError != nil {
+		slog.Error("configure satellite download SSH egress", "error", cfg.EgressConfigError)
+		os.Exit(1)
+	}
 	for _, path := range []string{filepath.Dir(cfg.SocketPath), filepath.Dir(cfg.DBPath), cfg.DownloadRoot} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			slog.Error("create runtime directory", "path", path, "error", err)

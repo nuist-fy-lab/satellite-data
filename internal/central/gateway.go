@@ -64,6 +64,15 @@ func allowedRedirectHost(source, host string) bool {
 
 func (s *Service) Gateway() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/egress/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		if s.egress == nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"enabled": false})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "routes": s.egress.Snapshot()})
+	})
 	mux.HandleFunc("GET /v1/access/status", func(w http.ResponseWriter, r *http.Request) {
 		status := make(map[string]bool, len(sources))
 		for _, source := range sources {
@@ -120,7 +129,23 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		}
 		binding = &original
 	}
-	route, err := s.resolve(r.Context(), request.SourceID, binding)
+	var transferEgressID string
+	var override *url.URL
+	if s.egress != nil {
+		selected, release, acquireErr := s.egress.Acquire(r.Context(), request.SourceID)
+		if acquireErr != nil {
+			http.Error(w, "no available satellite download egress", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
+		transferEgressID = selected.ID
+		override, err = url.Parse(selected.Proxy)
+		if err != nil {
+			http.Error(w, "invalid satellite download egress", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	route, err := s.resolveFetch(r.Context(), request.SourceID, binding, override)
 	if err != nil {
 		http.Error(w, "centre access route is unavailable", http.StatusServiceUnavailable)
 		return
@@ -192,7 +217,11 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := route.client.Do(upstream)
 	if err != nil {
-		s.Store.markProxyFailure(r.Context(), route)
+		if s.egress != nil {
+			s.egress.MarkNetworkFailure(transferEgressID)
+		} else {
+			s.Store.markProxyFailure(r.Context(), route)
+		}
 		http.Error(w, "centre upstream request failed", http.StatusBadGateway)
 		return
 	}

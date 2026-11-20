@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
+	"github.com/nuist-fy-lab/satellite-data/internal/egress"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider/era5"
 )
@@ -26,11 +27,24 @@ var ErrChangedCredential = errors.New("CDS job credential changed; restore the o
 type Service struct {
 	Store         *Store
 	clientFactory func(*url.URL) *http.Client
+	egress        *egress.Pool
 	mu            sync.Mutex
 	authorizers   map[string]Authorizer
 	// Each pool belongs to one MODIS account, credential revision and network
 	// route. Never share authentication cookies or connections across routes.
 	modisPools map[string]*modisPool
+}
+
+// ConfigureDownloadEgress selects the optional, download-only SSH SOCKS5
+// pool. Provider discovery and CDS job control retain their saved account
+// routes; each fetch acquires its own pinned egress until streaming finishes.
+func (s *Service) ConfigureDownloadEgress(path string) error {
+	cfg, err := egress.Load(path)
+	if err != nil {
+		return err
+	}
+	s.egress = egress.NewPool(cfg)
+	return nil
 }
 
 // Each concurrent LAADS fetch leases one HTTP/2 transport for its entire
@@ -60,17 +74,21 @@ type route struct {
 }
 
 func (s *Service) resolve(ctx context.Context, source string, binding *Binding) (route, error) {
-	return s.resolveRoute(ctx, source, binding, false)
+	return s.resolveRoute(ctx, source, binding, false, nil)
+}
+
+func (s *Service) resolveFetch(ctx context.Context, source string, binding *Binding, proxy *url.URL) (route, error) {
+	return s.resolveRoute(ctx, source, binding, false, proxy)
 }
 
 // Route readiness probes check credentials and routing without acquiring an
 // HTTP/2 transfer lease. Status requests must remain responsive even if all
 // eight MODIS connections are occupied by long-running scientific downloads.
 func (s *Service) probeRoute(ctx context.Context, source string) (route, error) {
-	return s.resolveRoute(ctx, source, nil, true)
+	return s.resolveRoute(ctx, source, nil, true, nil)
 }
 
-func (s *Service) resolveRoute(ctx context.Context, source string, binding *Binding, probeOnly bool) (route, error) {
+func (s *Service) resolveRoute(ctx context.Context, source string, binding *Binding, probeOnly bool, egressProxy *url.URL) (route, error) {
 	kind, err := ProviderKind(source)
 	if err != nil {
 		return route{}, err
@@ -176,6 +194,15 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 			}
 			proxyURL = u
 		}
+		// The account proxy still governs credential discovery and CDS control.
+		// An explicit download route changes only this fetch's HTTP transport.
+		if egressProxy != nil {
+			proxyURL = egressProxy
+		}
+		transportIdentity := ""
+		if proxyURL != nil {
+			transportIdentity = proxyURL.String()
+		}
 		var client *http.Client
 		var keepIdleConnections bool
 		var release func()
@@ -188,7 +215,7 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 			// Reuse TLS/TCP connections without sharing a cookie jar or credentials
 			// between different user accounts, secret revisions or proxy routes.
 			key := fmt.Sprintf("%s:%d:%s:%d:%s:%d:%s", source, account.ID, account.UpdatedAt,
-				credentialID, fingerprint, proxyID, proxyVersion)
+				credentialID, fingerprint, proxyID, proxyVersion+":"+transportIdentity)
 			transport, returnToPool, leaseErr := s.leaseMODISTransport(ctx, key, proxyURL)
 			if leaseErr != nil {
 				return route{}, leaseErr
@@ -215,7 +242,7 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 		}
 		var authorizer Authorizer
 		if kind != "" {
-			cacheKey := fmt.Sprintf("%d:%s:%d:%s", credentialID, credentialVersion, proxyID, proxyVersion)
+			cacheKey := fmt.Sprintf("%d:%s:%d:%s:%s", credentialID, credentialVersion, proxyID, proxyVersion, transportIdentity)
 			s.mu.Lock()
 			authorizer = s.authorizers[cacheKey]
 			if authorizer == nil {
