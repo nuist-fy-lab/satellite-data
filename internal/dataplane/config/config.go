@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nuist-fy-lab/satellite-data/internal/egress"
 )
 
 type Provider struct {
@@ -39,6 +41,8 @@ type Config struct {
 	ArchiveGroupWritable bool
 	ArchiveEventSocket   string
 	Providers            []Provider
+	EgressConfigError    error
+	EgressUniqueIPs      int
 }
 
 func Load() Config {
@@ -60,7 +64,7 @@ func Load() Config {
 		provider("cloudsat", true, 2, 2, 2, 10*time.Minute, "cloudsat"),
 		provider("era5", true, 2, 2, 2, 10*time.Minute, "cds"),
 	}
-	return Config{
+	cfg := Config{
 		SocketPath:           expandHomeToken(env("SATDOWN_SOCKET", filepath.Join(runtime, "satellite-data-downloader", "downloader.sock")), home),
 		DBPath:               expandHomeToken(env("SATDOWN_DB", filepath.Join(state, "downloader.sqlite3")), home),
 		CentralSocket:        expandHomeToken(env("SATDOWN_CENTRAL_SOCKET", filepath.Join(runtime, "satellite-data", "central.sock")), home),
@@ -70,6 +74,26 @@ func Load() Config {
 		ArchiveEventSocket:   expandHomeToken(env("SATDOWN_ARCHIVE_EVENT_SOCKET", filepath.Join(runtime, "satellite-data", "archive-events.sock")), home),
 		Providers:            providers,
 	}
+	// Each distinct observed NAT public IP contributes its own transfer slots.
+	// Duplicate WANs sharing an IP contribute no additional concurrency. The
+	// centre independently enforces the per-IP limits during every fetch.
+	if path := strings.TrimSpace(os.Getenv("SATELLITE_DOWNLOAD_EGRESS_FILE")); path != "" {
+		pool, err := egress.Load(path)
+		if err != nil {
+			cfg.EgressConfigError = err
+			return cfg
+		}
+		cfg.EgressUniqueIPs = pool.UniquePublicIPs()
+		for idx := range cfg.Providers {
+			p := &cfg.Providers[idx]
+			// Existing source-specific values are per-IP budgets. Do not inflate
+			// the verification pool or retry/scheduler rates.
+			perIP := min(p.TransferConcurrency, pool.Limit(p.SourceID))
+			p.TransferConcurrency = min(128, perIP*cfg.EgressUniqueIPs)
+			p.InitialTransferConcurrency = min(p.TransferConcurrency, p.InitialTransferConcurrency*cfg.EgressUniqueIPs)
+		}
+	}
+	return cfg
 }
 
 func defaultArchiveRoot(home string) string {
@@ -98,7 +122,7 @@ func runtimeRoot(home string) string {
 
 func provider(source string, enabled bool, initialTransfers, maxTransfers, verifiers int, timeout time.Duration, authRef string) Provider {
 	prefix := "SATDOWN_" + strings.ToUpper(strings.ReplaceAll(source, "-", "_"))
-	transferConcurrency := envInt(prefix+"_TRANSFER_CONCURRENCY", maxTransfers, 1, 32)
+	transferConcurrency := envInt(prefix+"_TRANSFER_CONCURRENCY", maxTransfers, 1, 128)
 	// Some LAADS connections remain slow but keep making useful progress.
 	// Recycling *every* MODIS connection every two minutes forces fresh TCP
 	// slow starts and prevents long granules from ever finishing. Prefer
