@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -102,18 +103,35 @@ func (c *Config) Limit(source string) int {
 }
 
 type Pool struct {
-	mu      sync.Mutex
-	cfg     *Config
-	next    map[string]int
-	active  map[string]map[string]int
-	blocked map[string]time.Time
+	mu        sync.Mutex
+	cfg       *Config
+	next      map[string]int
+	active    map[string]map[string]int
+	blocked   map[string]time.Time
+	transfers map[string]*routeTransfers
+}
+
+type routeTransfers struct {
+	active    int
+	bytes     uint64
+	lastAt    time.Time
+	lastBytes uint64
+	rate      *float64
+	smoothed  float64
 }
 
 func NewPool(cfg *Config) *Pool {
 	if cfg == nil {
 		return nil
 	}
-	return &Pool{cfg: cfg, next: make(map[string]int), active: make(map[string]map[string]int), blocked: make(map[string]time.Time)}
+	transfers := make(map[string]*routeTransfers, len(cfg.Routes))
+	for _, route := range cfg.Routes {
+		transfers[route.ID] = &routeTransfers{}
+	}
+	return &Pool{
+		cfg: cfg, next: make(map[string]int), active: make(map[string]map[string]int),
+		blocked: make(map[string]time.Time), transfers: transfers,
+	}
 }
 
 // Acquire keeps one file transfer pinned to one public IP. Two tunnels with
@@ -138,11 +156,13 @@ func (p *Pool) Acquire(ctx context.Context, source string) (Route, func(), error
 				continue
 			}
 			p.active[source][route.PublicIP]++
+			p.transfers[route.ID].active++
 			p.next[source] = (idx + 1) % len(p.cfg.Routes)
 			p.mu.Unlock()
 			return route, func() {
 				p.mu.Lock()
 				p.active[source][route.PublicIP]--
+				p.transfers[route.ID].active--
 				p.mu.Unlock()
 			}, nil
 		}
@@ -164,11 +184,27 @@ func (p *Pool) MarkNetworkFailure(routeID string) {
 	p.mu.Unlock()
 }
 
+// RecordBytes counts downloaded file data for the specific route, even when
+// multiple routes share a public IP and its concurrency budget.
+func (p *Pool) RecordBytes(routeID string, n int) {
+	if p == nil || n <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if route := p.transfers[routeID]; route != nil {
+		route.bytes += uint64(n)
+	}
+}
+
 type Status struct {
-	ID          string         `json:"id"`
-	PublicIP    string         `json:"public_ip"`
-	Blocked     bool           `json:"blocked"`
-	ActiveBySrc map[string]int `json:"active_by_source"`
+	ID              string         `json:"id"`
+	PublicIP        string         `json:"public_ip"`
+	Blocked         bool           `json:"blocked"`
+	ActiveBySrc     map[string]int `json:"active_by_source"`
+	ActiveTransfers int            `json:"active_transfers"`
+	DownloadMbps    *float64       `json:"download_mbps,omitempty"`
+	SmoothedMbps    *float64       `json:"smoothed_mbps,omitempty"`
 }
 
 func (p *Pool) Snapshot() []Status {
@@ -177,9 +213,31 @@ func (p *Pool) Snapshot() []Status {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	now := time.Now()
 	out := make([]Status, 0, len(p.cfg.Routes))
 	for _, r := range p.cfg.Routes {
-		entry := Status{ID: r.ID, PublicIP: r.PublicIP, Blocked: time.Now().Before(p.blocked[r.ID]), ActiveBySrc: make(map[string]int)}
+		route := p.transfers[r.ID]
+		entry := Status{
+			ID: r.ID, PublicIP: r.PublicIP, Blocked: now.Before(p.blocked[r.ID]),
+			ActiveBySrc: make(map[string]int), ActiveTransfers: route.active,
+		}
+		interval := now.Sub(route.lastAt)
+		switch {
+		case route.lastAt.IsZero() || interval > 2*time.Minute:
+			route.lastAt, route.lastBytes, route.rate = now, route.bytes, nil
+		case interval >= 4*time.Second:
+			rate := float64(route.bytes-route.lastBytes) * 8 / interval.Seconds() / 1e6
+			if route.rate == nil {
+				route.smoothed = rate
+			} else {
+				route.smoothed += (1 - math.Exp(-interval.Seconds()/30)) * (rate - route.smoothed)
+			}
+			route.lastAt, route.lastBytes, route.rate = now, route.bytes, &rate
+		}
+		if route.rate != nil {
+			smoothed := route.smoothed
+			entry.DownloadMbps, entry.SmoothedMbps = route.rate, &smoothed
+		}
 		for src, counts := range p.active {
 			entry.ActiveBySrc[src] = counts[r.PublicIP]
 		}

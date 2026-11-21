@@ -94,6 +94,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("POST /api/v1/access/logout", s.accessLogout)
 	mux.HandleFunc("GET /api/v1/access/session", s.accessSession)
 	mux.HandleFunc("GET /api/v1/access/pools", s.accessPools)
+	mux.HandleFunc("GET /api/v1/access/download-egress", s.accessDownloadEgress)
 	mux.HandleFunc("POST /api/v1/access/credentials", s.accessCredential)
 	mux.HandleFunc("DELETE /api/v1/access/credentials/{id}", s.deleteAccessCredential)
 	mux.HandleFunc("POST /api/v1/access/proxies", s.accessProxy)
@@ -413,6 +414,19 @@ func (s *Server) accessPools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, pools)
+}
+
+func (s *Server) accessDownloadEgress(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.adminUser(r); err != nil {
+		s.writeAdminError(w, r)
+		return
+	}
+	if s.central == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("central access unavailable"))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"routes": s.central.DownloadEgressStatus()})
 }
 
 func (s *Server) accessCredential(w http.ResponseWriter, r *http.Request) {

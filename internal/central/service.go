@@ -35,6 +35,10 @@ type Service struct {
 	modisPools map[string]*modisPool
 }
 
+func (s *Service) DownloadEgressStatus() []egress.Status {
+	return s.egress.Snapshot()
+}
+
 // ConfigureDownloadEgress selects the optional, download-only SSH SOCKS5
 // pool. Provider discovery and CDS job control retain their saved account
 // routes; each fetch acquires its own pinned egress until streaming finishes.

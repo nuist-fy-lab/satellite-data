@@ -117,7 +117,11 @@ function setSidebar(expanded, persist = false) {
 
 function setView(id) {
   $('main').classList.toggle('calendar-wide', id === 'calendar-view');
-  if (id !== 'access-view') clearCLIKey();
+  if (id !== 'access-view') {
+    clearCLIKey();
+    clearTimeout(accessEgressTimer);
+    accessEgressRequest?.abort();
+  }
   if (id !== 'monitor-view') clearTimeout(state.monitor.poll);
   if (id !== 'calendar-view') stopIndexStream();
   if (id !== 'downloads-view') {
@@ -3616,10 +3620,48 @@ const credentialGuides = {
 
 async function loadAccess() {
   $('#access-error').textContent = '';
+  loadAccessEgress();
   try {
     await loadAccessPools();
   } catch (error) {
     $('#access-error').textContent = error.message;
+  }
+}
+
+let accessEgressTimer;
+let accessEgressRequest;
+
+async function loadAccessEgress() {
+  clearTimeout(accessEgressTimer);
+  accessEgressRequest?.abort();
+  const request = new AbortController();
+  accessEgressRequest = request;
+  const node = $('#download-egress-list');
+  try {
+    const payload = await json('/api/v1/access/download-egress', {signal: request.signal});
+    if (request.signal.aborted) return;
+    const routes = payload.routes || [];
+    $('#access-egress-count').textContent = routes.length;
+    node.innerHTML = routes.length ? routes.map(route => {
+      const label = route.id === 'direct' ? '直连' : route.id;
+      const rate = Number.isFinite(route.download_mbps)
+        ? `${route.download_mbps.toFixed(1)} Mbps · 平滑 ${route.smoothed_mbps.toFixed(1)} Mbps`
+        : '速率采集中';
+      const cooldown = route.blocked ? ' · 冷却中' : '';
+      return `<div class="pool-row">
+        <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(label)}</strong><small>${esc(route.public_ip)}</small></div></div>
+        <div class="pool-meta"><span>${route.active_transfers} 个文件${cooldown}</span><span>${rate}</span></div>
+      </div>`;
+    }).join('') : '<div class="pool-empty">未配置独立下载出口</div>';
+  } catch (error) {
+    if (!request.signal.aborted) {
+      $('#access-egress-count').textContent = '—';
+      node.innerHTML = '<div class="pool-empty">下载出口数据暂不可用</div>';
+    }
+  } finally {
+    if (accessEgressRequest === request && !request.signal.aborted) {
+      accessEgressTimer = setTimeout(loadAccessEgress, 5000);
+    }
   }
 }
 
@@ -3682,7 +3724,6 @@ async function loadAccessPools() {
   const bound = new Set(state.access.accounts.map(item => item.credential_id).filter(Boolean));
   $('#access-account-count').textContent = state.access.accounts.length;
   $('#access-credential-count').textContent = state.access.credentials.filter(item => !bound.has(item.id)).length;
-  $('#access-proxy-count').textContent = state.access.proxies.length;
   renderAccountList();
   renderProxyList();
   rebuildAccessSelects();
