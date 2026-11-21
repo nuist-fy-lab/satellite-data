@@ -62,8 +62,8 @@ func (d *transferDiagnostics) trace() *httptrace.ClientTrace {
 	}}
 }
 
-func (d *transferDiagnostics) writer(destination io.Writer) io.Writer {
-	return diagnosticsWriter{Writer: destination, diagnostics: d}
+func (d *transferDiagnostics) writer(destination io.Writer, recordBytes func(int)) io.Writer {
+	return diagnosticsWriter{Writer: destination, diagnostics: d, recordBytes: recordBytes}
 }
 
 func (d *transferDiagnostics) start(ctx context.Context) func() {
@@ -138,12 +138,16 @@ func (d *transferDiagnostics) sample(now time.Time, intervalBytes int64, interva
 type diagnosticsWriter struct {
 	io.Writer
 	diagnostics *transferDiagnostics
+	recordBytes func(int)
 }
 
 func (w diagnosticsWriter) Write(data []byte) (int, error) {
 	n, err := w.Writer.Write(data)
 	if n > 0 {
 		w.diagnostics.bytes.Add(int64(n))
+		if w.recordBytes != nil {
+			w.recordBytes(n)
+		}
 	}
 	return n, err
 }

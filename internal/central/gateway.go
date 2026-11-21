@@ -71,7 +71,7 @@ func (s *Service) Gateway() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{"enabled": false})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "routes": s.egress.Snapshot()})
+		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "routes": s.DownloadEgressStatus()})
 	})
 	mux.HandleFunc("GET /v1/access/status", func(w http.ResponseWriter, r *http.Request) {
 		status := make(map[string]bool, len(sources))
@@ -238,7 +238,11 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(response.StatusCode)
-	_, copyErr := io.CopyBuffer(diagnostics.writer(w), response.Body, make([]byte, 128<<10))
+	var recordBytes func(int)
+	if transferEgressID != "" && response.StatusCode/100 == 2 {
+		recordBytes = func(n int) { s.egress.RecordBytes(transferEgressID, n) }
+	}
+	_, copyErr := io.CopyBuffer(diagnostics.writer(w, recordBytes), response.Body, make([]byte, 128<<10))
 	if copyErr == nil && response.StatusCode/100 == 2 {
 		s.Store.markResult(context.WithoutCancel(r.Context()), route, true)
 	}

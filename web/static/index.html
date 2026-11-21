@@ -321,7 +321,7 @@
         <div class="access-summary">
           <article><span>访问配置</span><strong id="access-account-count">0</strong></article>
           <article><span>待绑定凭据</span><strong id="access-credential-count">0</strong></article>
-          <article><span>代理</span><strong id="access-proxy-count">0</strong></article>
+          <article><span>下载出口</span><strong id="access-egress-count">—</strong></article>
         </div>
 
         <div class="access-grid">
@@ -345,7 +345,7 @@
           </section>
 
           <section class="pool-card">
-            <div class="pool-head"><div><strong>IP 代理池</strong><small>HTTP / HTTPS / SOCKS5，可限制 Provider</small></div><button type="button" data-pool-new="proxy">新增</button></div>
+            <div class="pool-head"><div><strong>手动代理</strong><small>HTTP / HTTPS / SOCKS5，可限制 Provider</small></div><button type="button" data-pool-new="proxy">新增</button></div>
             <form id="proxy-form" class="pool-form hidden">
               <input type="hidden" id="proxy-id">
               <label>别名<input id="proxy-alias" maxlength="64" required placeholder="例如 US-West-01"></label>
@@ -359,6 +359,11 @@
             </form>
             <div id="proxy-list" class="pool-list"></div>
           </section>
+
+          <section class="pool-card">
+            <div class="pool-head"><div><strong>下载出口</strong><small>自动分配 · 同一公网 IP 共享并发额度</small></div></div>
+            <div id="download-egress-list" class="pool-list"></div>
+          </section>
         </div>
       </section>
       <section id="cli-panel" class="cli-key-manager" aria-label="CLI API Key">
@@ -371,6 +376,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=43"></script>
+  <script type="module" src="/app.js?v=44"></script>
 </body>
 </html>
