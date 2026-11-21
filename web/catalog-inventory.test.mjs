@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import test from 'node:test';
-import {groupCatalog,productDescription,safeURL,dateText,missions} from './static/catalog.js';
+import {family,groupCatalog,productDescription,safeURL,dateText,missions} from './static/catalog.js';
+import {downloadProviderFamilyID,sourceFamilyID} from './static/source-family.js';
 import {inventorySummary,intersectsMonth,interval,monthDays} from './static/era5-inventory.js';
 
 test('catalog hierarchy retains joint platforms, source families and official identities',()=>{
@@ -25,28 +26,33 @@ test('purpose distinguishes non-image data and familiar products',()=>{
   assert.match(productDescription({display_name:'MODIS Aerosol Optical Depth'}),/气溶胶/);
   assert.match(productDescription({display_name:'GOES Cloud Top Height'}),/云顶/);
 });
-test('IASI / Metop catalog groups platforms and describes spectral, retrieval and support products',()=>{
+test('IASI generations share one family while retaining platform, instrument and product distinctions',()=>{
+  assert.equal(family('iasi'),'iasi');
+  assert.equal(family('iasi-ng'),'iasi');
+  assert.equal(sourceFamilyID('iasi-ng'),'iasi');
+  assert.equal(sourceFamilyID('goes18'),'goes');
+  assert.equal(sourceFamilyID('himawari9'),'himawari');
+  assert.equal(downloadProviderFamilyID('iasi-ng'),'iasi');
+  assert.equal(downloadProviderFamilyID('goes18'),'goes18');
   const items=[
     {source_id:'iasi',satellite:'Metop',instrument:'IASI',product_key:'iasi:l1c',data_type:'EO:EUM:DAT:METOP:IASIL1C-ALL'},
     {source_id:'iasi',satellite:'Metop-A / Metop-B',instrument:'IASI',product_key:'iasi:co',data_type:'EO:EUM:DAT:0959'},
     {source_id:'iasi',satellite:'Metop-B / Metop-C',instrument:'IASI',product_key:'iasi:cox',data_type:'EO:EUM:DAT:METOP:IASIL2COX'},
     {source_id:'iasi',satellite:'Metop',instrument:'Auxiliary',product_key:'iasi:ncm',data_type:'EO:EUM:DAT:1099'},
+    {source_id:'iasi-ng',satellite:'Metop-SG',instrument:'IASI-NG',product_key:'iasi-ng:EO:EUM:DAT:0442',data_type:'EO:EUM:DAT:0442',level:'L1C'},
   ];
   const group=groupCatalog(items).find(item=>item.id==='iasi');
-  assert.equal(group.name,'IASI / Metop');
+  assert.equal(groupCatalog(items).length,1);
+  assert.equal(group.name,'IASI 系列');
   assert.ok(group.satellites.has('Metop-A / Metop-B'));
   assert.ok(group.satellites.has('Metop-B / Metop-C'));
+  assert.ok(group.satellites.get('Metop').instruments.has('IASI'));
+  assert.ok(group.satellites.get('Metop-SG').instruments.has('IASI-NG'));
   assert.match(productDescription(items[0]),/8461 个光谱通道/);
   assert.match(productDescription(items[1]),/一氧化碳/);
   assert.match(productDescription(items[3]),/噪声协方差矩阵/);
+  assert.match(productDescription(items[4]),/16,921 个光谱采样点/);
   assert.deepEqual(missions.Metop.launches.map(([name])=>name),['Metop-A','Metop-B','Metop-C']);
-});
-test('IASI-NG is a separate Metop-SG family with the published L1C collection',()=>{
-  const item={source_id:'iasi-ng',satellite:'Metop-SG',instrument:'IASI-NG',product_key:'iasi-ng:EO:EUM:DAT:0442',data_type:'EO:EUM:DAT:0442',level:'L1C'};
-  const group=groupCatalog([item]).find(entry=>entry.id==='iasi-ng');
-  assert.equal(group.name,'IASI-NG / Metop-SG');
-  assert.ok(group.satellites.has('Metop-SG'));
-  assert.match(productDescription(item),/16,921 个光谱采样点/);
   assert.deepEqual(missions['Metop-SG'].launches,[['Metop-SG-A1','2025-08-13']]);
 });
 test('inventory uses half-open coverage and counts unknown files without inventing dates',()=>{

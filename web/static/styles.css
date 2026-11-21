@@ -315,6 +315,16 @@ main.calendar-wide{width:100%}
 .source-row{display:grid;grid-template-columns:150px 94px minmax(220px,1fr) minmax(260px,1.6fr);gap:12px;padding:12px 4px;border-bottom:1px solid #eaeef2;align-items:start}
 .source-row strong{font-size:12px}
 .source-row p,.source-row small{margin:0;color:var(--muted);line-height:1.5;font-size:11px}
+.source-family-group{padding:12px 4px;border-bottom:1px solid #eaeef2}
+.source-family-heading{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.source-family-heading strong{font-size:12px}
+.source-family-heading small{color:var(--muted);font-size:11px;line-height:1.5}
+.source-family-variants{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
+.source-family-variant{min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px}
+.source-family-variant header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.source-family-variant header strong{font-size:12px}
+.source-family-variant p,.source-family-variant small{display:block;margin:0;color:var(--muted);font-size:11px;line-height:1.5}
+.source-family-variant small{margin-top:5px}
 .tier{display:inline-flex;border-radius:999px;padding:3px 7px;font-size:10px;border:1px solid var(--line);width:max-content}
 .tier.anonymous{color:#1a7f37;background:#dafbe1;border-color:#aceebb}
 .tier.token{color:#0969da;background:#ddf4ff;border-color:#b6e3ff}
@@ -480,6 +490,12 @@ main.calendar-wide{width:100%}
 .download-pagination button:disabled{opacity:.45;cursor:not-allowed}
 .download-pagination #download-page-summary{margin-right:auto}
 .download-provider{display:flex;align-items:center;gap:14px;padding:10px 2px;border-bottom:1px solid var(--line);font-size:11px;min-width:0}
+.download-provider-family{padding:10px 0;border-bottom:1px solid var(--line)}
+.download-provider-family-title{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:0 2px 4px}
+.download-provider-family-title strong{font-size:12px}
+.download-provider-family-title small{color:var(--muted);font-size:10px}
+.download-provider-family .download-provider{padding-left:10px}
+.download-provider-family .download-provider:last-child{border-bottom:0}
 .download-provider-name{flex:0 0 120px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .download-provider-chips{display:grid;grid-template-columns:minmax(102px,1.25fr) minmax(74px,.9fr) minmax(74px,.9fr) minmax(82px,1fr) minmax(78px,.9fr) minmax(68px,.8fr) minmax(66px,.78fr) minmax(76px,.9fr);align-items:center;gap:6px;min-width:0;flex:1}
 .download-provider-chip{display:inline-flex;align-items:center;gap:4px;min-width:0;border-radius:999px;padding:4px 8px;background:#f6f8fa;color:var(--muted);font-size:10px;line-height:1.2;white-space:nowrap}
@@ -617,6 +633,7 @@ main.calendar-wide{width:100%}
   .product-head{align-items:flex-start;flex-wrap:wrap}
   .source-summary{grid-template-columns:1fr}
   .source-row{grid-template-columns:1fr}
+  .source-family-variants{grid-template-columns:1fr}
   .access-grid{grid-template-columns:1fr}.access-summary{grid-template-columns:repeat(3,minmax(0,1fr))}
   .monitor-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.monitor-link-grid{grid-template-columns:1fr}.monitor-chart-grid{grid-template-columns:1fr}.monitor-head-actions{flex-wrap:wrap;justify-content:flex-end}
 }

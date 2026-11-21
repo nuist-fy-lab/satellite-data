@@ -54,7 +54,12 @@ window.styleFixture = async function(view, mode, wide) {
   coverage.dayData = {mode:'grid',cadence:10,official_state:2,indexing:false,times,cells};
   coverage.cells = new Map(cells.map(cell => [cell[0]+':'+cell[1],cell]));
   renderSatelliteTimelines(); renderCoverageShell(); renderCoverageYear(); renderCoverageMonth(); renderCoverageDay();
-  state.sources = [{name:'GOES-18',tier:'anonymous',description:'ABI full disk',method:'NOAA S3'}, {name:'ERA5 / ERA5-Land',tier:'token',description:'ECMWF reanalysis',method:'CDS asynchronous request'}];
+  state.sources = [
+    {id:'goes18',name:'GOES-18',tier:'anonymous',description:'ABI full disk',method:'NOAA S3'},
+    {id:'iasi',name:'IASI / Metop',tier:'token',description:'First-generation infrared sounder',method:'EUMETSAT Data Store'},
+    {id:'iasi-ng',name:'IASI-NG / Metop-SG',tier:'token',description:'Second-generation infrared sounder',method:'EUMETSAT Data Store'},
+    {id:'era5',name:'ERA5 / ERA5-Land',tier:'token',description:'ECMWF reanalysis',method:'CDS asynchronous request'},
+  ];
   renderSources();
   state.access.credentials = [{id:1,alias:'ERA5 primary',kind:'cds',state:'ready',enabled:true}];
   state.access.accounts = [{id:1,alias:'ERA5 primary',source_id:'era5',credential_id:1,proxy_mode:'direct',state:'ready',enabled:true}];
@@ -70,9 +75,18 @@ window.styleFixture = async function(view, mode, wide) {
     id:1,collection_id:'goes18:ABI-L1b-RadF',satellite:'GOES-18',product_code:'ABI-L1b-RadF',product_name:'Full disk radiance',state:'done',files_done:720,assets_queued:720,
     start:'2026-12-31T20:00:00Z',end:'2027-01-01T02:00:00Z',selection:{band:6,times:['00:00','12:00']}}]}];
   const transferPoints = Array.from({length:24}, (_, i) => ({sampled_at:new Date(Date.now()-(23-i)*150000).toISOString(),bytes_per_second:1048576,active_transfers:2,adaptive_concurrency:4}));
-  state.downloads.providers = [{source_id:'goes',enabled:true,bytes_per_second:1048576,active_transfers:2,adaptive_concurrency:4,states:{done:720}}];
+  state.downloads.providers = [
+    {source_id:'goes',enabled:true,bytes_per_second:1048576,active_transfers:2,adaptive_concurrency:4,states:{done:720}},
+    {source_id:'iasi',enabled:true,bytes_per_second:1048576,active_transfers:1,adaptive_concurrency:2,states:{done:10}},
+    {source_id:'iasi-ng',enabled:true,bytes_per_second:524288,active_transfers:1,adaptive_concurrency:2,states:{done:5}},
+  ];
+  state.downloads.history.selected = 'iasi';
   state.downloads.history.payload = {window:'1h',generated_at:new Date().toISOString(),bucket_seconds:15,
-    providers:[{source_id:'goes',latest:transferPoints.at(-1),points:transferPoints}]};
+    providers:[
+      {source_id:'goes',latest:transferPoints.at(-1),points:transferPoints},
+      {source_id:'iasi',latest:transferPoints.at(-1),points:transferPoints},
+      {source_id:'iasi-ng',latest:transferPoints.at(-1),points:transferPoints.map(point=>({...point,bytes_per_second:524288,active_transfers:1,adaptive_concurrency:2}))},
+    ]};
   syncDownloadTimezones();
   renderDownloadTasks(state.downloads.tasks);
   refreshDownloadFilters();
@@ -106,6 +120,17 @@ window.downloadConfirmationFixture = function(open) {
   const dialog=$('#download-confirm'),box=dialog.getBoundingClientRect();
   return {open:dialog.open,content:$('#dl-confirm-summary').textContent,left:box.left,right:box.right,
     width:innerWidth,scroll:dialog.scrollWidth,client:dialog.clientWidth};
+};
+window.iasiFamilyFixture = function() {
+  const option = [...$('#download-monitor-provider').options].find(item=>item.value==='iasi');
+  return {
+    sourceGroups:document.querySelectorAll('#sources .source-family-group').length,
+    sourceVariants:document.querySelectorAll('#sources .source-family-variant').length,
+    monitorOptions:[...$('#download-monitor-provider').options].filter(item=>item.value==='iasi').length,
+    monitorLabel:option?.text || '',
+    providerGroups:document.querySelectorAll('#download-providers .download-provider-family').length,
+    providerRows:document.querySelectorAll('#download-providers .download-provider-family .download-provider').length,
+  };
 };
 window.downloadTemporalFixture = function() {
   for (const kind of ['observation','orbit','daily','composite','monthly','annual']) {
@@ -339,7 +364,7 @@ window.regionalFixtureSetup = function() {
 };
 `;
 const assets = new Map();
-for (const file of ['index.html','login.html','styles.css','login.js','catalog.js','era5-inventory.js','icons.svg']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
+for (const file of ['index.html','login.html','styles.css','login.js','catalog.js','source-family.js','era5-inventory.js','icons.svg']) assets.set(file, await readFile(new URL('./static/'+file, import.meta.url)));
 assets.set('app.js', Buffer.from(app+fixture));
 const server = createServer((req, res) => {
   const path = new URL(req.url,'http://localhost').pathname;
@@ -495,6 +520,11 @@ try {
         assert.equal(catalog.satellites,2);assert.equal(catalog.products,1);
         assert.ok(catalog.link.startsWith('https://storage.googleapis.com/'));
       }
+      if(view==='catalog-view' && mode==='sources') {
+        const family=await driver.executeScript('return window.iasiFamilyFixture()');
+        assert.equal(family.sourceGroups,1,'IASI generations should share one source family card');
+        assert.equal(family.sourceVariants,2,'both IASI generations should remain visible within the family');
+      }
       const metrics = await driver.executeScript(`
         const bad = [];
         for (const node of document.querySelectorAll('.view.active button,.view.active input,.view.active select')) {
@@ -506,6 +536,11 @@ try {
       assert.ok(metrics.scroll<=metrics.width+1,view+' '+mode+' overflows: '+JSON.stringify(metrics));
       assert.deepEqual(metrics.bad,[],view+' has collapsed controls');
       if (view === 'downloads-view') {
+        const family=await driver.executeScript('return window.iasiFamilyFixture()');
+        assert.equal(family.monitorOptions,1,'IASI generations should share one monitoring selector');
+        assert.equal(family.monitorLabel,'IASI 系列');
+        assert.equal(family.providerGroups,1,'IASI provider statuses should share one family group');
+        assert.equal(family.providerRows,2,'generation-specific transfer status rows should remain visible');
         const filterLayout=await driver.executeScript('return window.downloadFilterLayoutFixture()');
         const expectedColumns=filterLayout.width<=290?1:filterLayout.width<=480?2:filterLayout.width<=780?3:5;
         assert.equal(filterLayout.columns,expectedColumns,'responsive product facets: '+JSON.stringify(filterLayout));
