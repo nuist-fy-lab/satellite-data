@@ -103,12 +103,15 @@ func (c *Config) Limit(source string) int {
 }
 
 type Pool struct {
-	mu        sync.Mutex
-	cfg       *Config
-	next      map[string]int
-	active    map[string]map[string]int
-	blocked   map[string]time.Time
-	transfers map[string]*routeTransfers
+	mu          sync.Mutex
+	cfg         *Config
+	next        map[string]int
+	active      map[string]map[string]int
+	blocked     map[string]time.Time
+	transfers   map[string]*routeTransfers
+	sourceStats map[string]map[string]*sourceRouteMetric
+	lastProbe   map[string]time.Time
+	now         func() time.Time
 }
 
 type routeTransfers struct {
@@ -120,6 +123,26 @@ type routeTransfers struct {
 	smoothed  float64
 }
 
+type sourceRouteMetric struct {
+	active       int
+	bytes        uint64
+	sampleAt     time.Time
+	sampleBytes  uint64
+	emaBps       float64
+	hasSample    bool
+	lastObserved time.Time
+}
+
+const (
+	sourceRateSampleInterval     = 2 * time.Second
+	sourceRateReleaseMinInterval = 1 * time.Second
+	sourceRateMaxInterval        = 2 * time.Minute
+	sourceRateHalfLifeSeconds    = 20.0
+	sourceRouteProbeInterval     = 2 * time.Minute
+	sourceProbeCooldown          = 15 * time.Second
+	loadPenaltyFactor            = 0.5
+)
+
 func NewPool(cfg *Config) *Pool {
 	if cfg == nil {
 		return nil
@@ -129,9 +152,162 @@ func NewPool(cfg *Config) *Pool {
 		transfers[route.ID] = &routeTransfers{}
 	}
 	return &Pool{
-		cfg: cfg, next: make(map[string]int), active: make(map[string]map[string]int),
-		blocked: make(map[string]time.Time), transfers: transfers,
+		cfg:         cfg,
+		next:        make(map[string]int),
+		active:      make(map[string]map[string]int),
+		blocked:     make(map[string]time.Time),
+		transfers:   transfers,
+		sourceStats: make(map[string]map[string]*sourceRouteMetric),
+		lastProbe:   make(map[string]time.Time),
+		now:         time.Now,
 	}
+}
+
+func (p *Pool) clock() time.Time {
+	if p != nil && p.now != nil {
+		return p.now()
+	}
+	return time.Now()
+}
+
+func (p *Pool) metricLocked(source, routeID string) *sourceRouteMetric {
+	byRoute := p.sourceStats[source]
+	if byRoute == nil {
+		byRoute = make(map[string]*sourceRouteMetric, len(p.cfg.Routes))
+		p.sourceStats[source] = byRoute
+	}
+	m := byRoute[routeID]
+	if m == nil {
+		m = &sourceRouteMetric{}
+		byRoute[routeID] = m
+	}
+	return m
+}
+
+func (p *Pool) sampleSourceLocked(m *sourceRouteMetric, now time.Time, onRelease bool) {
+	if m == nil || m.active <= 0 || m.sampleAt.IsZero() {
+		return
+	}
+	elapsed := now.Sub(m.sampleAt)
+	minInterval := sourceRateSampleInterval
+	if onRelease && m.bytes > m.sampleBytes {
+		minInterval = sourceRateReleaseMinInterval
+	}
+	if elapsed < minInterval {
+		return
+	}
+	if elapsed > sourceRateMaxInterval {
+		m.sampleAt = now
+		m.sampleBytes = m.bytes
+		return
+	}
+	perConnBps := float64(m.bytes-m.sampleBytes) / elapsed.Seconds() / float64(m.active)
+	if !m.hasSample {
+		m.emaBps = perConnBps
+		m.hasSample = true
+	} else {
+		alpha := 1 - math.Exp(-elapsed.Seconds()/sourceRateHalfLifeSeconds)
+		m.emaBps += alpha * (perConnBps - m.emaBps)
+	}
+	m.sampleAt = now
+	m.sampleBytes = m.bytes
+	m.lastObserved = now
+}
+
+func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (int, bool) {
+	for _, m := range p.sourceStats[source] {
+		if m.active > 0 {
+			p.sampleSourceLocked(m, now, false)
+		}
+	}
+	n := len(p.cfg.Routes)
+	eligible := make([]int, 0, n)
+	start := p.next[source]
+	for offset := 0; offset < n; offset++ {
+		idx := (start + offset) % n
+		route := p.cfg.Routes[idx]
+		if now.Before(p.blocked[route.ID]) || p.active[source][route.PublicIP] >= limit {
+			continue
+		}
+		eligible = append(eligible, idx)
+	}
+	if len(eligible) == 0 {
+		return 0, false
+	}
+
+	// Priority 1: explore unmeasured idle routes first, spreading across IPs.
+	bestUnmeasuredIdx := -1
+	bestUnmeasuredActive := 0
+	for _, idx := range eligible {
+		route := p.cfg.Routes[idx]
+		m := p.metricLocked(source, route.ID)
+		if m.hasSample || m.active != 0 {
+			continue
+		}
+		activeOnIP := p.active[source][route.PublicIP]
+		if bestUnmeasuredIdx == -1 || activeOnIP < bestUnmeasuredActive {
+			bestUnmeasuredIdx = idx
+			bestUnmeasuredActive = activeOnIP
+		}
+	}
+	if bestUnmeasuredIdx != -1 {
+		return bestUnmeasuredIdx, true
+	}
+
+	// Priority 2: periodically probe one stale idle route (rate-limited by cooldown).
+	if p.lastProbe[source].IsZero() || now.Sub(p.lastProbe[source]) >= sourceProbeCooldown {
+		bestProbeIdx := -1
+		var oldestObserved time.Time
+		for _, idx := range eligible {
+			route := p.cfg.Routes[idx]
+			m := p.metricLocked(source, route.ID)
+			if m.active == 0 && m.hasSample && now.Sub(m.lastObserved) >= sourceRouteProbeInterval {
+				if bestProbeIdx == -1 || m.lastObserved.Before(oldestObserved) {
+					bestProbeIdx = idx
+					oldestObserved = m.lastObserved
+				}
+			}
+		}
+		if bestProbeIdx != -1 {
+			p.lastProbe[source] = now
+			return bestProbeIdx, true
+		}
+	}
+
+	// Priority 3: select highest live-throughput route adjusted by per-IP load.
+	var sumBps float64
+	var measuredCount int
+	for _, idx := range eligible {
+		m := p.metricLocked(source, p.cfg.Routes[idx].ID)
+		if m.hasSample {
+			sumBps += m.emaBps
+			measuredCount++
+		}
+	}
+	fallbackBps := 1.0
+	if measuredCount > 0 {
+		fallbackBps = sumBps / float64(measuredCount)
+	}
+
+	bestIdx := -1
+	bestScore := -1.0
+	bestActiveOnIP := 0
+	for _, idx := range eligible {
+		route := p.cfg.Routes[idx]
+		m := p.metricLocked(source, route.ID)
+		bps := fallbackBps
+		if m.hasSample {
+			bps = m.emaBps
+		}
+		activeOnIP := p.active[source][route.PublicIP]
+		score := bps / (1.0 + loadPenaltyFactor*float64(activeOnIP))
+		if bestIdx == -1 || score > bestScore || (score == bestScore && activeOnIP < bestActiveOnIP) {
+			bestIdx = idx
+			bestScore = score
+			bestActiveOnIP = activeOnIP
+		}
+	}
+	return bestIdx, true
 }
 
 // Acquire keeps one file transfer pinned to one public IP. Two tunnels with
@@ -149,21 +325,29 @@ func (p *Pool) Acquire(ctx context.Context, source string) (Route, func(), error
 		if p.active[source] == nil {
 			p.active[source] = make(map[string]int)
 		}
-		for offset := 0; offset < len(p.cfg.Routes); offset++ {
-			idx := (p.next[source] + offset) % len(p.cfg.Routes)
+		now := p.clock()
+		if idx, ok := p.selectRouteLocked(source, limit, now); ok {
 			route := p.cfg.Routes[idx]
-			if time.Now().Before(p.blocked[route.ID]) || p.active[source][route.PublicIP] >= limit {
-				continue
-			}
+			m := p.metricLocked(source, route.ID)
 			p.active[source][route.PublicIP]++
 			p.transfers[route.ID].active++
+			if m.active == 0 {
+				m.sampleAt = now
+				m.sampleBytes = m.bytes
+			}
+			m.active++
 			p.next[source] = (idx + 1) % len(p.cfg.Routes)
 			p.mu.Unlock()
+			var once sync.Once
 			return route, func() {
-				p.mu.Lock()
-				p.active[source][route.PublicIP]--
-				p.transfers[route.ID].active--
-				p.mu.Unlock()
+				once.Do(func() {
+					p.mu.Lock()
+					p.sampleSourceLocked(m, p.clock(), true)
+					m.active--
+					p.active[source][route.PublicIP]--
+					p.transfers[route.ID].active--
+					p.mu.Unlock()
+				})
 			}, nil
 		}
 		p.mu.Unlock()
@@ -180,20 +364,31 @@ func (p *Pool) MarkNetworkFailure(routeID string) {
 		return
 	}
 	p.mu.Lock()
-	p.blocked[routeID] = time.Now().Add(30 * time.Second)
+	p.blocked[routeID] = p.clock().Add(30 * time.Second)
 	p.mu.Unlock()
 }
 
 // RecordBytes counts downloaded file data for the specific route, even when
 // multiple routes share a public IP and its concurrency budget.
 func (p *Pool) RecordBytes(routeID string, n int) {
-	if p == nil || n <= 0 {
+	p.RecordSourceBytes("", routeID, n)
+}
+
+// RecordSourceBytes counts downloaded file data for the route and updates the
+// per-(source, route) live throughput estimator used by Acquire.
+func (p *Pool) RecordSourceBytes(source, routeID string, n int) {
+	if p == nil || n <= 0 || routeID == "" {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if route := p.transfers[routeID]; route != nil {
 		route.bytes += uint64(n)
+	}
+	if source != "" {
+		m := p.metricLocked(source, routeID)
+		m.bytes += uint64(n)
+		p.sampleSourceLocked(m, p.clock(), false)
 	}
 }
 
@@ -213,7 +408,7 @@ func (p *Pool) Snapshot() []Status {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	now := time.Now()
+	now := p.clock()
 	out := make([]Status, 0, len(p.cfg.Routes))
 	for _, r := range p.cfg.Routes {
 		route := p.transfers[r.ID]

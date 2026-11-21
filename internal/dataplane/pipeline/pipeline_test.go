@@ -283,3 +283,56 @@ func TestCongestionClassification(t *testing.T) {
 		t.Fatal("one recycled slow connection should not reduce provider concurrency")
 	}
 }
+
+func TestHighCeilingBurst502CutsOncePerEpochAndSustainedCongestionStillHalves(t *testing.T) {
+	now := time.Now()
+	flow := &providerFlow{limit: 72, initial: 36, active: 10, gap: 200 * time.Millisecond}
+
+	// Four congested completions within 2s must halve once (72->36) instead of collapsing.
+	for i := 0; i < 4; i++ {
+		flow.finishAt(now.Add(time.Duration(i)*500*time.Millisecond), false, true, 72)
+	}
+	if flow.limit != 36 {
+		t.Fatalf("burst 502 collapsed limit to %d, want 36", flow.limit)
+	}
+	if flow.errorRate > 0.5 {
+		t.Fatalf("high-ceiling errorRate=%.3f exceeded cap 0.5", flow.errorRate)
+	}
+
+	// Sustained congestion after congestionCutEpoch (10s) still halves (36->18).
+	flow.active++
+	flow.finishAt(now.Add(11*time.Second), false, true, 72)
+	if flow.limit != 18 {
+		t.Fatalf("sustained congestion limit=%d, want 18", flow.limit)
+	}
+}
+
+func TestHighCeilingFastRecoveryViaCompletionsAndProgressProbe(t *testing.T) {
+	now := time.Now()
+	flow := &providerFlow{limit: 2, initial: 36, errorRate: 0.5, gap: 400 * time.Millisecond}
+
+	for i := 0; i < 45; i++ {
+		flow.active++
+		flow.finishAt(now.Add(time.Duration(i)*time.Second), true, false, 72)
+	}
+	if flow.limit < 36 || flow.limit > 72 {
+		t.Fatalf("expected fast recovery to >=36 within 45 completions, got %d", flow.limit)
+	}
+	for i := 45; i < 140; i++ {
+		flow.active++
+		flow.finishAt(now.Add(time.Duration(i)*time.Second), true, false, 72)
+	}
+	if flow.limit != 72 {
+		t.Fatalf("expected recovery bounded at ceiling 72, got %d", flow.limit)
+	}
+
+	probeFlow := &providerFlow{limit: 2, initial: 36, active: 2, probeAt: now, gap: 200 * time.Millisecond}
+	for i := 1; i <= 8; i++ {
+		probeFlow.active = probeFlow.limit
+		probeFlow.addBytes(2 << 20)
+		probeFlow.probeProgress(now.Add(time.Duration(i)*progressProbeInterval), 72)
+	}
+	if probeFlow.limit < 36 || probeFlow.limit > 72 {
+		t.Fatalf("expected probeProgress fast recovery to >=36 in 8 intervals, got %d", probeFlow.limit)
+	}
+}

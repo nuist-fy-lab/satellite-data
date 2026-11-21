@@ -46,17 +46,19 @@ func (r *Runtime) ArchiveRootFor(source string) (string, error) {
 
 type providerFlow struct {
 	sync.Mutex
-	limit, active, successes int
-	bytes, lastBytes         int64
-	lastSample               time.Time
-	rate                     float64
-	gap                      time.Duration
-	nextStart                time.Time
-	errorRate                float64
-	normalTransferRates      []float64
-	probeAt                  time.Time
-	probeBytes               int64
-	probeBlockedUntil        time.Time
+	limit, initial, active, successes int
+	bytes, lastBytes                  int64
+	lastSample                        time.Time
+	rate                              float64
+	gap                               time.Duration
+	nextStart                         time.Time
+	errorRate                         float64
+	normalTransferRates               []float64
+	probeAt                           time.Time
+	probeBytes                        int64
+	probeBlockedUntil                 time.Time
+	lastCongestionCut                 time.Time
+	now                               func() time.Time
 }
 
 const (
@@ -64,7 +66,27 @@ const (
 	// solely after eight *completed files* deadlocks concurrency at four.
 	progressProbeInterval = 45 * time.Second
 	progressProbeMinBytes = 512 << 10
+	congestionCutEpoch    = 10 * time.Second
 )
+
+func (f *providerFlow) clock() time.Time {
+	if f != nil && f.now != nil {
+		return f.now()
+	}
+	return time.Now()
+}
+
+func recoveryStep(limit, initial, ceiling int) int {
+	if ceiling <= 8 {
+		return 1
+	}
+	target := max(initial, ceiling/2)
+	if limit < target {
+		step := max(1, min(limit, target-limit))
+		return min(step, max(2, ceiling/8))
+	}
+	return max(1, ceiling/16)
+}
 
 func (f *providerFlow) start() bool {
 	f.Lock()
@@ -111,28 +133,48 @@ func (f *providerFlow) cooldown(delay time.Duration) {
 }
 
 func (f *providerFlow) finish(success, congested bool, ceiling int) {
+	f.finishAt(f.clock(), success, congested, ceiling)
+}
+
+func (f *providerFlow) finishAt(now time.Time, success, congested bool, ceiling int) {
 	f.Lock()
 	defer f.Unlock()
 	f.active--
 	if congested {
 		f.errorRate = f.errorRate*0.8 + 0.2
+		if ceiling > 8 && f.errorRate > 0.5 {
+			f.errorRate = 0.5
+		}
 		if f.errorRate >= 0.2 {
-			f.limit = max(1, f.limit/2)
-			f.gap = min(5*time.Second, max(100*time.Millisecond, f.gap*2))
-			if next := time.Now().Add(f.gap); next.After(f.nextStart) {
-				f.nextStart = next
+			if ceiling <= 8 || f.lastCongestionCut.IsZero() || now.Sub(f.lastCongestionCut) >= congestionCutEpoch {
+				f.limit = max(1, f.limit/2)
+				f.gap = min(5*time.Second, max(100*time.Millisecond, f.gap*2))
+				if next := now.Add(f.gap); next.After(f.nextStart) {
+					f.nextStart = next
+				}
+				if ceiling > 8 {
+					f.lastCongestionCut = now
+				}
 			}
 		}
 		f.successes = 0
 		// True provider congestion (429/5xx or timeout), unlike a slow but
 		// progressing stream, prevents immediate upward exploration.
-		f.probeBlockedUntil = time.Now().Add(3 * progressProbeInterval)
-		f.probeAt, f.probeBytes = time.Now(), f.bytes
+		f.probeBlockedUntil = now.Add(3 * progressProbeInterval)
+		f.probeAt, f.probeBytes = now, f.bytes
 	} else if success {
-		f.errorRate *= 0.8
+		if ceiling > 8 {
+			f.errorRate *= 0.7
+		} else {
+			f.errorRate *= 0.8
+		}
 		f.successes++
-		if f.successes >= 8 && f.errorRate < 0.1 {
-			f.limit = min(ceiling, f.limit+1)
+		required := 8
+		if ceiling > 8 && f.limit < max(f.initial, ceiling/2) {
+			required = min(8, max(2, f.limit))
+		}
+		if f.successes >= required && f.errorRate < 0.1 {
+			f.limit = min(ceiling, f.limit+recoveryStep(f.limit, f.initial, ceiling))
 			f.gap = max(100*time.Millisecond, f.gap*4/5)
 			f.successes = 0
 		}
@@ -176,7 +218,7 @@ func (f *providerFlow) probeProgress(now time.Time, ceiling int) (oldLimit, newL
 	if f.errorRate >= 0.2 || f.limit >= ceiling {
 		return oldLimit, newLimit, rate
 	}
-	f.limit++
+	f.limit = min(ceiling, f.limit+recoveryStep(f.limit, f.initial, ceiling))
 	f.gap = max(100*time.Millisecond, f.gap*4/5)
 	f.successes = 0
 	return oldLimit, f.limit, rate
@@ -246,7 +288,8 @@ func New(cfg config.Config, state *store.Store, accessManager *access.Manager) (
 			return nil, fmt.Errorf("duplicate provider %q", item.SourceID)
 		}
 		providers[item.SourceID] = item
-		flows[item.SourceID] = &providerFlow{limit: max(1, min(item.InitialTransferConcurrency, item.TransferConcurrency)),
+		initial := max(1, min(item.InitialTransferConcurrency, item.TransferConcurrency))
+		flows[item.SourceID] = &providerFlow{limit: initial, initial: initial,
 			gap: 200 * time.Millisecond, lastSample: time.Now(), probeAt: time.Now()}
 	}
 	return &Runtime{
@@ -267,7 +310,7 @@ func (r *Runtime) Run(ctx context.Context) {
 			continue
 		}
 		item := item
-		if item.SourceID == "modis" {
+		if item.TransferConcurrency > 1 {
 			r.wg.Add(1)
 			go func() {
 				defer r.wg.Done()
@@ -280,8 +323,8 @@ func (r *Runtime) Run(ctx context.Context) {
 					case now := <-ticker.C:
 						before, after, rate := r.flows[item.SourceID].probeProgress(now, item.TransferConcurrency)
 						if after > before {
-							slog.Info("adaptive MODIS concurrency grows on useful in-flight progress",
-								"from", before, "to", after, "ceiling", item.TransferConcurrency,
+							slog.Info("adaptive concurrency grows on useful in-flight progress",
+								"provider", item.SourceID, "from", before, "to", after, "ceiling", item.TransferConcurrency,
 								"aggregate_bytes_per_second", rate)
 						}
 					}

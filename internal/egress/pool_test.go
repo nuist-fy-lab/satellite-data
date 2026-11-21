@@ -91,3 +91,192 @@ func TestNetworkFailureCoolsOnlyOneRoute(t *testing.T) {
 	}
 	release()
 }
+
+func newTimedPool(cfg *Config, start time.Time) (*Pool, *time.Time) {
+	p := NewPool(cfg)
+	clock := start
+	p.now = func() time.Time { return clock }
+	return p, &clock
+}
+
+func TestAcquirePrefersFasterRoutesForSource(t *testing.T) {
+	start := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	p, clock := newTimedPool(&Config{
+		Routes: []Route{
+			{ID: "fast", Proxy: "socks5://127.0.0.1:13880", PublicIP: "198.51.100.1"},
+			{ID: "slow", Proxy: "socks5://127.0.0.1:13881", PublicIP: "198.51.100.2"},
+		},
+		PerIPLimits: map[string]int{"goes": 2, "modis": 2},
+	}, start)
+
+	r1, rel1, err := p.Acquire(context.Background(), "goes")
+	if err != nil || r1.ID != "fast" {
+		t.Fatalf("expected unmeasured fast first, got %+v err=%v", r1, err)
+	}
+	*clock = clock.Add(2 * time.Second)
+	p.RecordSourceBytes("goes", "fast", 2*(500<<10))
+	rel1()
+
+	r2, rel2, err := p.Acquire(context.Background(), "goes")
+	if err != nil || r2.ID != "slow" {
+		t.Fatalf("expected unmeasured slow second, got %+v err=%v", r2, err)
+	}
+	*clock = clock.Add(2 * time.Second)
+	p.RecordSourceBytes("goes", "slow", 2*(40<<10))
+	rel2()
+
+	// Both fast transfers should prefer "fast" up to its per-IP limit (2) before spilling to "slow".
+	g1, gRel1, err := p.Acquire(context.Background(), "goes")
+	if err != nil || g1.ID != "fast" {
+		t.Fatalf("goes pick 1=%+v err=%v", g1, err)
+	}
+	g2, gRel2, err := p.Acquire(context.Background(), "goes")
+	if err != nil || g2.ID != "fast" {
+		t.Fatalf("goes pick 2=%+v err=%v", g2, err)
+	}
+	g3, gRel3, err := p.Acquire(context.Background(), "goes")
+	if err != nil || g3.ID != "slow" {
+		t.Fatalf("goes pick 3 (spill)=%+v err=%v", g3, err)
+	}
+	gRel1()
+	gRel2()
+	gRel3()
+
+	// Source isolation: slow "slow" for goes must not affect modis when modis measures "slow" as faster.
+	m1, mRel1, err := p.Acquire(context.Background(), "modis")
+	if err != nil || m1.ID != "fast" {
+		t.Fatalf("modis explore 1=%+v err=%v", m1, err)
+	}
+	*clock = clock.Add(2 * time.Second)
+	p.RecordSourceBytes("modis", "fast", 2*(30<<10))
+	mRel1()
+
+	m2, mRel2, err := p.Acquire(context.Background(), "modis")
+	if err != nil || m2.ID != "slow" {
+		t.Fatalf("modis explore 2=%+v err=%v", m2, err)
+	}
+	*clock = clock.Add(2 * time.Second)
+	p.RecordSourceBytes("modis", "slow", 2*(400<<10))
+	mRel2()
+
+	mPick, mPickRel, err := p.Acquire(context.Background(), "modis")
+	if err != nil || mPick.ID != "slow" {
+		t.Fatalf("modis should prefer slow route (faster for modis), got %+v err=%v", mPick, err)
+	}
+	mPickRel()
+
+	gPick, gPickRel, err := p.Acquire(context.Background(), "goes")
+	if err != nil || gPick.ID != "fast" {
+		t.Fatalf("goes should still prefer fast route, got %+v err=%v", gPick, err)
+	}
+	gPickRel()
+}
+
+func TestAcquireProbesStaleSlowRouteAndPromotesRecovery(t *testing.T) {
+	start := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	p, clock := newTimedPool(&Config{
+		Routes: []Route{
+			{ID: "fast", Proxy: "socks5://127.0.0.1:13880", PublicIP: "198.51.100.1"},
+			{ID: "slow1", Proxy: "socks5://127.0.0.1:13881", PublicIP: "198.51.100.2"},
+			{ID: "slow2", Proxy: "socks5://127.0.0.1:13882", PublicIP: "198.51.100.3"},
+		},
+		PerIPLimits: map[string]int{"goes": 2},
+	}, start)
+
+	for _, sample := range []struct {
+		wantID string
+		kbps   int
+	}{
+		{"fast", 500},
+		{"slow1", 40},
+		{"slow2", 40},
+	} {
+		r, rel, err := p.Acquire(context.Background(), "goes")
+		if err != nil || r.ID != sample.wantID {
+			t.Fatalf("initial explore got %+v want %s err=%v", r, sample.wantID, err)
+		}
+		*clock = clock.Add(2 * time.Second)
+		p.RecordSourceBytes("goes", sample.wantID, 2*(sample.kbps<<10))
+		rel()
+	}
+
+	// Keep fast fresh at +1m so only slow1 and slow2 become stale (>= 2m).
+	*clock = start.Add(1 * time.Minute)
+	keepFresh, keepFreshRel, err := p.Acquire(context.Background(), "goes")
+	if err != nil || keepFresh.ID != "fast" {
+		t.Fatalf("expected fast before staleness, got %+v err=%v", keepFresh, err)
+	}
+	*clock = clock.Add(2 * time.Second)
+	p.RecordSourceBytes("goes", "fast", 2*(500<<10))
+	keepFreshRel()
+
+	// After sourceRouteProbeInterval (2m), the oldest idle stale route (slow1) is probed once.
+	*clock = start.Add(2*time.Minute + 10*time.Second)
+	probe, probeRel, err := p.Acquire(context.Background(), "goes")
+	if err != nil || probe.ID != "slow1" {
+		t.Fatalf("expected stale probe of slow1, got %+v err=%v", probe, err)
+	}
+
+	// During sourceProbeCooldown (15s), slow2 is not probed; fast route is selected instead.
+	*clock = start.Add(2*time.Minute + 15*time.Second)
+	duringCooldown, duringRel, err := p.Acquire(context.Background(), "goes")
+	if err != nil || duringCooldown.ID != "fast" {
+		t.Fatalf("expected fast during probe cooldown, got %+v err=%v", duringCooldown, err)
+	}
+	duringRel()
+
+	// Simulate slow1 recovering to high throughput (~2500 KiB/s -> EMA exceeds fast's 500 KiB/s).
+	*clock = start.Add(2*time.Minute + 20*time.Second)
+	p.RecordSourceBytes("goes", "slow1", 10*(2500<<10))
+	probeRel()
+
+	// Within probe cooldown so slow2 isn't probed; recovered slow1 now outranks fast.
+	*clock = start.Add(2*time.Minute + 21*time.Second)
+	promoted, promotedRel, err := p.Acquire(context.Background(), "goes")
+	if err != nil || promoted.ID != "slow1" {
+		t.Fatalf("expected recovered slow1 to outrank fast, got %+v err=%v", promoted, err)
+	}
+	promotedRel()
+}
+
+func TestAcquireDecaysStalledActiveRoute(t *testing.T) {
+	start := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	p, clock := newTimedPool(&Config{
+		Routes: []Route{
+			{ID: "routeA", Proxy: "socks5://127.0.0.1:13880", PublicIP: "198.51.100.1"},
+			{ID: "routeB", Proxy: "socks5://127.0.0.1:13881", PublicIP: "198.51.100.2"},
+		},
+		PerIPLimits: map[string]int{"goes": 4},
+	}, start)
+
+	rA, relA, err := p.Acquire(context.Background(), "goes")
+	if err != nil || rA.ID != "routeA" {
+		t.Fatalf("init routeA=%+v err=%v", rA, err)
+	}
+	*clock = clock.Add(2 * time.Second)
+	p.RecordSourceBytes("goes", "routeA", 2*(500<<10))
+	relA()
+
+	rB, relB, err := p.Acquire(context.Background(), "goes")
+	if err != nil || rB.ID != "routeB" {
+		t.Fatalf("init routeB=%+v err=%v", rB, err)
+	}
+	*clock = clock.Add(2 * time.Second)
+	p.RecordSourceBytes("goes", "routeB", 2*(400<<10))
+	relB()
+
+	// Acquire routeA and stall with 0 bytes transferred for 40s.
+	*clock = clock.Add(1 * time.Second)
+	stalled, stalledRel, err := p.Acquire(context.Background(), "goes")
+	if err != nil || stalled.ID != "routeA" {
+		t.Fatalf("expected routeA before stall, got %+v err=%v", stalled, err)
+	}
+	*clock = clock.Add(40 * time.Second)
+
+	next, nextRel, err := p.Acquire(context.Background(), "goes")
+	if err != nil || next.ID != "routeB" {
+		t.Fatalf("expected stalled routeA to decay below routeB, got %+v err=%v", next, err)
+	}
+	nextRel()
+	stalledRel()
+}

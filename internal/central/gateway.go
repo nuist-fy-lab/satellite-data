@@ -240,7 +240,7 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(response.StatusCode)
 	var recordBytes func(int)
 	if transferEgressID != "" && response.StatusCode/100 == 2 {
-		recordBytes = func(n int) { s.egress.RecordBytes(transferEgressID, n) }
+		recordBytes = func(n int) { s.egress.RecordSourceBytes(request.SourceID, transferEgressID, n) }
 	}
 	_, copyErr := io.CopyBuffer(diagnostics.writer(w, recordBytes), response.Body, make([]byte, 128<<10))
 	if copyErr == nil && response.StatusCode/100 == 2 {
