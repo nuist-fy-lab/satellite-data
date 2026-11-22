@@ -5,23 +5,40 @@ authentication and the AES-GCM Vault. `satellite-data-downloader` owns only task
 queues, transfers, verification and archive promotion. It no longer reads tokens
 from environment variables or opens a master key.
 
-The CLI only controls the centre: submitting download tasks and administrator-owned
-ERA5 requests, querying catalogues and task status, and changing ordinary settings. It never handles provider
-credentials/accounts, encryption, provider authentication or actual file
-transfers. Centre-side discovery and download workers perform all downloads.
-Provider proxy route settings belong to the centre too. A future CLI settings
-API must expose only non-secret settings or references to centrally configured
-proxies, with server-side authorization; proxy credentials are not CLI settings.
+The CLI controls centre operations including download tasks, catalogue queries,
+administrator-owned ERA5 requests and access profiles. The centre holds all
+provider secrets and handles upstream authentication. The download workers
+transfer files through the centre. The CLI uses metadata and references for
+credentials and proxies.
 
 The CLI authenticates only with a Satellite API Key created on the web page.
 `GET/POST/DELETE /api/v1/me/api-keys` are owner-web-session-only; mutations
 also require `X-Satellite-Action: 1` and reject foreign origins. The full Key is
 returned once with `Cache-Control: no-store`. Only its SHA-256 digest and public
 ID are stored; list responses contain no Secret. Revocation and disabling an
-owner take effect at the next request. Keys cannot read/mutate provider access
-pools or manage other Keys, even with an accompanying web cookie. The CLI uses
+owner take effect at the next request. Administrator keys can manage access
+profiles through the CLI access API. API key management and changes to the
+credential and proxy stores require a portal session. The CLI uses
 `satellite config set` for hidden input and private `0600` configuration, sends
 Bearer authorization only to the configured centre and never follows redirects.
+
+## CLI access profiles
+
+An administrator's CLI API key can list credential and proxy references and
+create, update or delete access profiles for any supported source.
+
+```sh
+satellite access list --json
+satellite access save --source cloudsat --alias "CloudSat archive" --credential 10 --proxy-mode fixed --proxy 3
+satellite access save --id 21 --source cloudsat --alias "CloudSat archive" --credential 10 --proxy-mode fixed --proxy 3 --enabled=false
+satellite access delete --id 21
+```
+
+Use the IDs returned by the list and save commands. Supply the desired routing
+settings when editing a profile. Omitting `--credential` retains the saved
+credential on an existing authenticated profile. A fixed proxy requires
+`--proxy-mode fixed --proxy ID`. Deleting a profile leaves the saved credential
+and proxy available to other profiles.
 
 ## Earthdata credentials for MODIS and VIIRS
 

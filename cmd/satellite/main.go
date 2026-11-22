@@ -66,6 +66,12 @@ func main() {
 		err = c.downloadBatchStatus(args[2:])
 	case "download providers":
 		err = c.downloadProviders(args[2:]...)
+	case "access list":
+		err = c.accessList(args[2:])
+	case "access save":
+		err = c.accessSave(args[2:])
+	case "access delete":
+		err = c.accessDelete(args[2:])
 	case "era5 schema":
 		err = c.era5Schema(args[2:])
 	case "era5 submit":
@@ -362,6 +368,9 @@ func usage() {
   satellite download list [--limit 50] [--json]
   satellite download status --id 1 [--json]
   satellite download providers [--json]
+  satellite access list [--json]
+  satellite access save --source SOURCE --alias ALIAS [--id ID] [--credential ID] [--proxy-mode direct|auto|fixed] [--proxy ID] [--priority N] [--enabled=false] [--json]
+  satellite access delete --id ID
   satellite era5 schema --collection era5:reanalysis-era5-single-levels
   satellite era5 submit --collection era5:reanalysis-era5-single-levels --variable 2m_temperature --product-type reanalysis --year 2024 --month 01 --day 01 --time 00:00 --area 32.25,-118.75,32,-118.5 --data-format netcdf --download-format unarchived [--json]
   satellite era5 submit --collection era5:reanalysis-era5-single-levels --inputs-file request.json [--json]

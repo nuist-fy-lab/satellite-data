@@ -9,7 +9,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/authstore"
 )
 
-// Keys control operational APIs, never the web-only credential or key manager.
+// Administrator keys can also manage access profiles via the CLI access API.
 func (s *Server) withPortalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && (r.URL.Path == "/healthz" || r.URL.Path == "/login" || r.URL.Path == "/login.js" || r.URL.Path == "/styles.css" || r.URL.Path == "/app.js" || r.URL.Path == "/favicon.ico") {
@@ -26,14 +26,27 @@ func (s *Server) withPortalAuth(next http.Handler) http.Handler {
 		isAPI := strings.HasPrefix(r.URL.Path, "/api/")
 		if r.Header.Get("Authorization") != "" {
 			w.Header().Set("Cache-Control", "no-store")
-			if _, err := s.cliUser(r); err != nil {
+			user, err := s.cliUser(r)
+			if err != nil {
 				writeError(w, http.StatusUnauthorized, errors.New("invalid or revoked CLI API key"))
 				return
 			}
-			if !cliRouteAllowed(r.Method, r.URL.Path) {
+			if r.URL.Path == cliAccessPath {
+				if user.Role != "admin" {
+					writeError(w, http.StatusForbidden, errors.New("administrator role required"))
+					return
+				}
+				if !sameOrigin(w, r) {
+					return
+				}
+			} else if !cliRouteAllowed(r.Method, r.URL.Path) {
 				writeError(w, http.StatusForbidden, errors.New("web session required for access and API key management"))
 				return
 			}
+		} else if r.URL.Path == cliAccessPath {
+			w.Header().Set("Cache-Control", "no-store")
+			writeError(w, http.StatusUnauthorized, errors.New("administrator CLI API key required"))
+			return
 		} else if s.portalAuth {
 			w.Header().Set("Cache-Control", "no-store")
 			if _, err := s.webUser(r); err != nil {
