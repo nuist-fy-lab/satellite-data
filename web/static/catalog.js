@@ -1,3 +1,5 @@
+import {sourceFamilyID} from './source-family.js?v=44';
+
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const unique = values => [...new Set(values)].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
@@ -53,8 +55,8 @@ const instruments = {
   Auxiliary: ['辅助数据','校准、几何定位或反演所需的辅助信息，不是影像观测产品。','https://portal.maap.eo.esa.int/earthcare/earthcare-data-offer/'],
   Orbit: ['轨道资料','轨道预测、重建与几何定位所需的数据，不是影像观测产品。','https://portal.maap.eo.esa.int/earthcare/earthcare-data-offer/'],
 };
-const familyNames = {goes:'GOES',himawari:'Himawari',modis:'MODIS',viirs:'VIIRS',cloudsat:'CloudSat',calipso:'CALIPSO',iasi:'IASI / Metop','iasi-ng':'IASI-NG / Metop-SG',earthcare:'EarthCARE',mtg:'MTG'};
-export const family = id => id.replace(/^goes\d+$/,'goes').replace(/^himawari\d+$/,'himawari');
+const familyNames = {goes:'GOES',himawari:'Himawari',modis:'MODIS',viirs:'VIIRS',cloudsat:'CloudSat',calipso:'CALIPSO',iasi:'IASI 系列',earthcare:'EarthCARE',mtg:'MTG'};
+export const family = sourceFamilyID;
 export const dateText = value => !value ? '' : /^\d{4}-\d{2}-\d{2}$/.test(value) ? value+' · 日期精度' : value.replace('T',' ').replace(/Z$/,' UTC');
 export function safeURL(value) {
   try { const url=new URL(value); return url.protocol==='https:' && !url.username && !url.password ? url.href : ''; } catch { return ''; }
