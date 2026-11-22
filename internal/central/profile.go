@@ -17,7 +17,8 @@ import (
 // Existing shared credentials stay encrypted and referenced by ID.
 type ProfileSpec struct {
 	AccountSpec
-	Secret Secret `json:"secret"`
+	CredentialKind string `json:"credential_kind,omitempty"`
+	Secret         Secret `json:"secret"`
 }
 
 func (s *Store) UpsertProfile(ctx context.Context, spec ProfileSpec) (downloader.Account, error) {
@@ -35,8 +36,15 @@ func (s *Store) UpsertProfile(ctx context.Context, spec ProfileSpec) (downloader
 	if hasSecret && spec.CredentialID != nil {
 		return downloader.Account{}, errors.New("choose a saved credential or enter a new secret, not both")
 	}
+	newKind := kind
+	if spec.CredentialKind != "" {
+		if !hasSecret || !compatibleCredentialKind(kind, spec.CredentialKind) {
+			return downloader.Account{}, errors.New("credential does not match provider")
+		}
+		newKind = spec.CredentialKind
+	}
 	if hasSecret {
-		if err := ValidateSecret(kind, spec.Secret); err != nil {
+		if err := ValidateSecret(newKind, spec.Secret); err != nil {
 			return downloader.Account{}, err
 		}
 	}
@@ -91,7 +99,7 @@ func (s *Store) UpsertProfile(ctx context.Context, spec ProfileSpec) (downloader
 		if err := json.Unmarshal(data, &credential); err != nil {
 			return account, err
 		}
-		if credential.Kind != kind {
+		if !compatibleCredentialKind(kind, credential.Kind) {
 			return account, errors.New("credential does not match provider")
 		}
 	}
@@ -104,7 +112,7 @@ func (s *Store) UpsertProfile(ctx context.Context, spec ProfileSpec) (downloader
 		if err != nil {
 			return account, errors.New("credential vault unavailable")
 		}
-		expiry, err := InspectCredentialExpiry(kind, encrypted, s.vault)
+		expiry, err := InspectCredentialExpiry(newKind, encrypted, s.vault)
 		if err != nil {
 			return account, errors.New("credential expiry could not be inspected")
 		}
@@ -113,7 +121,7 @@ func (s *Store) UpsertProfile(ctx context.Context, spec ProfileSpec) (downloader
 			return account, errors.New("credential identifier unavailable")
 		}
 		credential = downloader.Credential{
-			Storage: "central", Alias: fmt.Sprintf("profile-%d-%s", spec.ID, hex.EncodeToString(nonce[:])), Kind: kind,
+			Storage: "central", Alias: fmt.Sprintf("profile-%d-%s", spec.ID, hex.EncodeToString(nonce[:])), Kind: newKind,
 			Enabled: true, Priority: spec.Priority, State: "ready", SecretHint: "configured", UpdatedAt: stamp(),
 			ExpiresAt: expiry.ExpiresAt, ExpiryStatus: expiry.Status, ExpirySource: expiry.Source, ExpiryCheckedAt: expiry.CheckedAt,
 		}

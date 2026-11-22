@@ -70,6 +70,7 @@ func NewService(store *Store, clients ...*http.Client) *Service {
 type route struct {
 	accountID, credentialID, proxyID                             int64
 	accountVersion, credentialVersion, proxyVersion, fingerprint string
+	credentialKind                                               string
 	client                                                       *http.Client
 	keepIdleConnections                                          bool
 	release                                                      func()
@@ -78,21 +79,21 @@ type route struct {
 }
 
 func (s *Service) resolve(ctx context.Context, source string, binding *Binding) (route, error) {
-	return s.resolveRoute(ctx, source, binding, false, nil)
+	return s.resolveRoute(ctx, source, binding, false, nil, "")
 }
 
-func (s *Service) resolveFetch(ctx context.Context, source string, binding *Binding, proxy *url.URL) (route, error) {
-	return s.resolveRoute(ctx, source, binding, false, proxy)
+func (s *Service) resolveFetch(ctx context.Context, source string, binding *Binding, proxy *url.URL, host string) (route, error) {
+	return s.resolveRoute(ctx, source, binding, false, proxy, host)
 }
 
 // Route readiness probes check credentials and routing without acquiring an
 // HTTP/2 transfer lease. Status requests must remain responsive even if all
 // eight MODIS connections are occupied by long-running scientific downloads.
 func (s *Service) probeRoute(ctx context.Context, source string) (route, error) {
-	return s.resolveRoute(ctx, source, nil, true, nil)
+	return s.resolveRoute(ctx, source, nil, true, nil, "")
 }
 
-func (s *Service) resolveRoute(ctx context.Context, source string, binding *Binding, probeOnly bool, egressProxy *url.URL) (route, error) {
+func (s *Service) resolveRoute(ctx context.Context, source string, binding *Binding, probeOnly bool, egressProxy *url.URL, host string) (route, error) {
 	kind, err := ProviderKind(source)
 	if err != nil {
 		return route{}, err
@@ -121,6 +122,23 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 	if !hasPool && kind == "" {
 		pools.Accounts = append(pools.Accounts, downloader.Account{SourceID: source, Enabled: true, ProxyMode: "direct"})
 	}
+	credentials := make(map[int64]downloader.Credential, len(pools.Credentials))
+	for _, credential := range pools.Credentials {
+		credentials[credential.ID] = credential
+	}
+	if kind == "laads" {
+		preferredKind := kind
+		if host == laadsCloudHost {
+			preferredKind = "earthdata"
+		}
+		isPreferred := func(account downloader.Account) bool {
+			return account.CredentialID != nil && credentials[*account.CredentialID].Kind == preferredKind
+		}
+		// Preserve priority and rotation among accounts using the same credential kind.
+		sort.SliceStable(pools.Accounts, func(i, j int) bool {
+			return isPreferred(pools.Accounts[i]) && !isPreferred(pools.Accounts[j])
+		})
+	}
 	for _, account := range pools.Accounts {
 		if account.SourceID != source || !account.Enabled || account.State == "auth_required" || (kind != "" && account.CredentialID == nil) {
 			continue
@@ -128,24 +146,21 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 		if binding != nil && (account.ID != binding.AccountID || account.CredentialID == nil || *account.CredentialID != binding.CredentialID) {
 			continue
 		}
-		credentialReady := kind == ""
-		var credentialVersion string
-		for _, credential := range pools.Credentials {
-			if account.CredentialID != nil && credential.ID == *account.CredentialID && credential.Kind == kind && credential.Enabled && credential.State != "auth_required" {
-				credentialReady = true
-				credentialVersion = credential.UpdatedAt
-				break
-			}
-		}
-		if !credentialReady {
-			continue
-		}
 		var plain []byte
 		var secret Secret
-		var credentialID int64
+		var credential downloader.Credential
 		if account.CredentialID != nil {
-			credentialID = *account.CredentialID
-			plain, err = s.Store.readSecret(ctx, "credentials", credentialID)
+			credential = credentials[*account.CredentialID]
+			if !compatibleCredentialKind(kind, credential.Kind) || !credential.Enabled || credential.State == "auth_required" {
+				continue
+			}
+			if kind == "laads" && credential.Kind == "earthdata" {
+				expiry, parseErr := time.Parse(time.RFC3339, credential.ExpiresAt)
+				if parseErr == nil && !expiry.After(time.Now()) {
+					continue
+				}
+			}
+			plain, err = s.Store.readSecret(ctx, "credentials", credential.ID)
 			if err != nil || json.Unmarshal(plain, &secret) != nil {
 				return route{}, errors.New("central credential could not be opened")
 			}
@@ -219,7 +234,7 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 			// Reuse TLS/TCP connections without sharing a cookie jar or credentials
 			// between different user accounts, secret revisions or proxy routes.
 			key := fmt.Sprintf("%s:%d:%s:%d:%s:%d:%s", source, account.ID, account.UpdatedAt,
-				credentialID, fingerprint, proxyID, proxyVersion+":"+transportIdentity)
+				credential.ID, fingerprint, proxyID, proxyVersion+":"+transportIdentity)
 			transport, returnToPool, leaseErr := s.leaseMODISTransport(ctx, key, proxyURL)
 			if leaseErr != nil {
 				return route{}, leaseErr
@@ -245,12 +260,12 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 			}
 		}
 		var authorizer Authorizer
-		if kind != "" {
-			cacheKey := fmt.Sprintf("%d:%s:%d:%s:%s", credentialID, credentialVersion, proxyID, proxyVersion, transportIdentity)
+		if credential.Kind != "" {
+			cacheKey := fmt.Sprintf("%d:%s:%d:%s:%s", credential.ID, credential.UpdatedAt, proxyID, proxyVersion, transportIdentity)
 			s.mu.Lock()
 			authorizer = s.authorizers[cacheKey]
 			if authorizer == nil {
-				authorizer, err = Build(kind, secret, client)
+				authorizer, err = Build(credential.Kind, secret, client)
 				if err == nil {
 					if len(s.authorizers) >= 256 {
 						clear(s.authorizers)
@@ -266,7 +281,7 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 				return route{}, err
 			}
 		}
-		return route{accountID: account.ID, credentialID: credentialID, proxyID: proxyID, accountVersion: account.UpdatedAt, credentialVersion: credentialVersion, proxyVersion: proxyVersion, fingerprint: fingerprint, client: client, keepIdleConnections: keepIdleConnections, release: release, authorizer: authorizer, provider: era5.NewWithToken(client, secret.Token)}, nil
+		return route{accountID: account.ID, credentialID: credential.ID, proxyID: proxyID, accountVersion: account.UpdatedAt, credentialVersion: credential.UpdatedAt, proxyVersion: proxyVersion, fingerprint: fingerprint, credentialKind: credential.Kind, client: client, keepIdleConnections: keepIdleConnections, release: release, authorizer: authorizer, provider: era5.NewWithToken(client, secret.Token)}, nil
 	}
 	return route{}, ErrNoRoute
 }

@@ -23,6 +23,20 @@ pools or manage other Keys, even with an accompanying web cookie. The CLI uses
 `satellite config set` for hidden input and private `0600` configuration, sends
 Bearer authorization only to the configured centre and never follows redirects.
 
+## Earthdata credentials for MODIS and VIIRS
+
+In **Access**, add a MODIS or VIIRS access profile and select an existing
+Earthdata credential. The profile references the saved credential in the
+centre's Vault. The same credential can also be referenced by CALIPSO.
+
+For each MODIS or VIIRS fetch, the centre prefers a bound LAADS token for
+the native archive and a bound Earthdata token for the LAADS Earthdata
+Cloud endpoint. Within each credential kind, account priority and rotation
+still apply. An expired Earthdata token is skipped for MODIS and VIIRS.
+The catalogue still prefers native archive links when both links are
+available. Earthdata Login must authorize the account for the LAADS
+application before a Cloud download can succeed.
+
 ## RN SOCKS5 for MODIS
 
 The centre can create the disabled `RN-SOCKS5-MODIS` preset with

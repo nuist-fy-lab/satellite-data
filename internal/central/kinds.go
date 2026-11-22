@@ -25,6 +25,11 @@ func ProviderKind(source string) (string, error) {
 		return "", errors.New("unknown provider")
 	}
 }
+
+func compatibleCredentialKind(required, actual string) bool {
+	return actual == required || (required == "laads" && actual == "earthdata")
+}
+
 func ValidateSecret(kind string, secret Secret) error {
 	switch kind {
 	case "cds", "laads", "earthdata", "earthcare":

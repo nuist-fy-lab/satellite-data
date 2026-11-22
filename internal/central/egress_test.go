@@ -34,7 +34,7 @@ func TestConfiguredDownloadEgressOverridesOnlyFetchRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected, err := s.resolveFetch(context.Background(), "modis", nil, proxy)
+	selected, err := s.resolveFetch(context.Background(), "modis", nil, proxy, laadsArchiveHost)
 	if err != nil {
 		t.Fatal(err)
 	}

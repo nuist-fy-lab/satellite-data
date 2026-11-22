@@ -3578,7 +3578,7 @@ const credentialGuides = {
   },
   laads: {
     title: 'LAADS Download Token',
-    summary: '用于 MODIS 与 VIIRS。优先使用 LAADS 自己生成的下载 Token，而不是通用 Earthdata Token。',
+    summary: '用于 MODIS 与 VIIRS 的原生归档下载。',
     steps: ['登录 NASA LAADS DAAC。', '在 Token / Download Token 区域生成或复制当前 Token。', '把完整 Token 粘贴到下方 Token 输入框；保存后网页只保留掩码。'],
     note: '一条 LAADS 凭据可以分别绑定 MODIS、VIIRS 两个账号路由。中心会优先读取 LAADS Token 自带的 exp 到期字段；只有 Token 本身不提供 exp 时才显示“官网未提供”。',
     url: 'https://ladsweb.modaps.eosdis.nasa.gov/',
@@ -3586,7 +3586,7 @@ const credentialGuides = {
   },
   earthdata: {
     title: 'NASA Earthdata User Token',
-    summary: '当前用于 CALIPSO。需要 Earthdata Login 账号生成 User Token。',
+    summary: '用于 CALIPSO，也可将已保存的凭据绑定给 MODIS 和 VIIRS。',
     steps: ['登录 Earthdata Login。', '进入 Generate Token / User Token 页面并生成 Token。', '点击 Show Token，复制完整值后粘贴到下方。'],
     note: 'Earthdata User Token 当前有效 60 天；保存后中心会自动读取 Token 的 exp 字段显示到期时间，无需手填。',
     url: 'https://urs.earthdata.nasa.gov/',
@@ -3832,9 +3832,13 @@ function credentialFields() {
   renderCredentialGuide();
 }
 
+function accountCredentialKind() {
+  const selected = state.access.credentials.find(item => String(item.id) === $('#account-credential').value);
+  return selected?.kind || providerKinds[$('#account-source').value];
+}
+
 function renderCredentialGuide() {
-  const kind = providerKinds[$('#account-source').value];
-  const guide = credentialGuides[kind];
+  const guide = credentialGuides[accountCredentialKind()];
   const node = $('#credential-guide');
   if (!guide) {
     node.replaceChildren();
@@ -3861,7 +3865,7 @@ function rebuildAccessSelects() {
   const required = providerKinds[$('#account-source').value] || '';
   const profileByCredential = new Map(state.access.accounts.filter(item => item.credential_id).map(item => [item.credential_id, item.alias]));
   for (const item of state.access.credentials) {
-    if (item.kind !== required) continue;
+    if (item.kind !== required && !(required === 'laads' && item.kind === 'earthdata')) continue;
     credentialSelect.add(new Option(`${profileByCredential.get(item.id) || item.alias} · ${accessKindLabels[item.kind] || item.kind}`, String(item.id)));
   }
   if ([...credentialSelect.options].some(option => option.value === previousCredential)) credentialSelect.value = previousCredential;
@@ -3900,9 +3904,9 @@ function openPoolForm(kind, item = null, savedCredential = null) {
     $('#account-priority').value = item?.priority ?? 0;
     $('#account-enabled').checked = item?.enabled ?? true;
     rebuildAccessSelects();
-    credentialFields();
     $('#account-credential').value = item?.credential_id ? String(item.credential_id) : savedCredential ? String(savedCredential.id) : '';
     $('#account-proxy').value = item?.proxy_id ? String(item.proxy_id) : '';
+    credentialFields();
   }
 }
 
@@ -3966,7 +3970,7 @@ async function saveAccount(event) {
   }
   const credential = $('#account-credential').value;
   const proxy = $('#account-proxy').value;
-  const kind = providerKinds[$('#account-source').value];
+  const kind = accountCredentialKind();
   const secret = {};
   if (['laads','earthdata','earthcare','cds'].includes(kind)) secret.token = $('#credential-token')?.value || '';
   else if (kind === 'eumetsat') {
@@ -3982,6 +3986,7 @@ async function saveAccount(event) {
   const payload = {
     alias, source_id: $('#account-source').value,
     credential_id: !newSecret && credential ? Number(credential) : null, secret,
+    credential_kind: newSecret ? kind : undefined,
     proxy_mode: $('#account-proxy-mode').value,
     proxy_id: proxy ? Number(proxy) : null, priority: Number($('#account-priority').value || 0), enabled: $('#account-enabled').checked,
   };
@@ -4297,6 +4302,7 @@ function bind() {
   document.querySelectorAll('[data-pool-new]').forEach(node => node.addEventListener('click', () => openPoolForm(node.dataset.poolNew)));
   document.querySelectorAll('[data-form-cancel]').forEach(node => node.addEventListener('click', () => closePoolForm(node.dataset.formCancel)));
   $('#account-source').addEventListener('change', () => { rebuildAccessSelects(); credentialFields(); });
+  $('#account-credential').addEventListener('change', renderCredentialGuide);
   $('#account-proxy-mode').addEventListener('change', () => $('#account-proxy-row').classList.toggle('hidden', $('#account-proxy-mode').value !== 'fixed'));
   $('#proxy-form').addEventListener('submit', saveProxy);
   $('#account-form').addEventListener('submit', saveAccount);

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptrace"
 	"net/url"
 	"os"
@@ -15,9 +16,17 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 var sources = []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "iasi", "iasi-ng", "earthcare", "calipso", "cloudsat", "era5"}
+
+const (
+	laadsArchiveHost   = "ladsweb.modaps.eosdis.nasa.gov"
+	laadsCloudHost     = "data.laadsdaac.earthdatacloud.nasa.gov"
+	earthdataLoginHost = "urs.earthdata.nasa.gov"
+)
 
 func allowedHost(source, host string) bool {
 	switch source {
@@ -28,7 +37,7 @@ func allowedHost(source, host string) bool {
 	case "himawari9":
 		return host == "noaa-himawari9.s3.amazonaws.com"
 	case "modis", "viirs":
-		return host == "ladsweb.modaps.eosdis.nasa.gov" || host == "data.laadsdaac.earthdatacloud.nasa.gov"
+		return host == laadsArchiveHost || host == laadsCloudHost
 	case "mtg", "iasi", "iasi-ng":
 		return host == "api.eumetsat.int"
 	case "earthcare":
@@ -41,6 +50,36 @@ func allowedHost(source, host string) bool {
 		return host == "cds.climate.copernicus.eu"
 	default:
 		return false
+	}
+}
+
+func allowedEarthdataLogin(location *url.URL, assetHost string) bool {
+	if location.Hostname() != earthdataLoginHost || location.Path != "/oauth/authorize" {
+		return false
+	}
+	callback, err := url.Parse(location.Query().Get("redirect_uri"))
+	return err == nil && callback.Scheme == "https" && callback.User == nil &&
+		callback.Hostname() == assetHost && (callback.Port() == "" || callback.Port() == "443")
+}
+
+// Session cookies are local to a single fetch and stay with the host that issued them.
+type earthdataSessionCookies struct {
+	*cookiejar.Jar
+	assetHost string
+}
+
+func (j earthdataSessionCookies) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	host := u.Hostname()
+	if host != j.assetHost && host != earthdataLoginHost {
+		return
+	}
+	for _, cookie := range cookies {
+		if cookie.Domain != "" && !strings.EqualFold(strings.TrimPrefix(cookie.Domain, "."), host) {
+			continue
+		}
+		hostOnly := *cookie
+		hostOnly.Domain = ""
+		j.Jar.SetCookies(u, []*http.Cookie{&hostOnly})
 	}
 }
 
@@ -145,7 +184,8 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	route, err := s.resolveFetch(r.Context(), request.SourceID, binding, override)
+	assetHost := u.Hostname()
+	route, err := s.resolveFetch(r.Context(), request.SourceID, binding, override, assetHost)
 	if err != nil {
 		http.Error(w, "centre access route is unavailable", http.StatusServiceUnavailable)
 		return
@@ -155,6 +195,17 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	}
 	if !route.keepIdleConnections {
 		defer route.client.CloseIdleConnections()
+	}
+	earthdataSession := (request.SourceID == "modis" || request.SourceID == "viirs") && route.credentialKind == "earthdata"
+	// A DAAC-specific authorization failure does not invalidate a shared token.
+	recordAuthFailure := !earthdataSession && assetHost != laadsCloudHost
+	if earthdataSession {
+		jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+		if err != nil {
+			http.Error(w, "Earthdata login session could not be initialized", http.StatusInternalServerError)
+			return
+		}
+		route.client.Jar = earthdataSessionCookies{Jar: jar, assetHost: assetHost}
 	}
 	s.Store.markUsed(r.Context(), route)
 	if cdsJobID != "" {
@@ -189,7 +240,9 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	}
 	if route.authorizer != nil && cdsJobID == "" {
 		if err := route.authorizer.Authorize(r.Context(), upstream); err != nil {
-			s.Store.markResult(context.WithoutCancel(r.Context()), route, false)
+			if recordAuthFailure {
+				s.Store.markResult(context.WithoutCancel(r.Context()), route, false)
+			}
 			http.Error(w, "centre provider credential was rejected", http.StatusUnauthorized)
 			return
 		}
@@ -205,13 +258,16 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		if cdsJobID != "" && !cdsAssetHost(host) {
 			return errors.New("CDS asset redirect host is not allowed")
 		}
-		if cdsJobID == "" && !allowedRedirectHost(request.SourceID, host) {
+		if cdsJobID == "" && !allowedRedirectHost(request.SourceID, host) &&
+			!(earthdataSession && allowedEarthdataLogin(next.URL, assetHost)) {
 			return errors.New("asset redirect host is not allowed")
 		}
 		if host != u.Hostname() {
 			next.Header.Del("Authorization")
 			next.Header.Del("PRIVATE-TOKEN")
 			next.Header.Del("Cookie")
+		} else if earthdataSession && via[len(via)-1].URL.Hostname() != host {
+			return route.authorizer.Authorize(next.Context(), next)
 		}
 		return nil
 	}
@@ -227,8 +283,16 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		s.Store.markResult(context.WithoutCancel(r.Context()), route, false)
+		if recordAuthFailure {
+			s.Store.markResult(context.WithoutCancel(r.Context()), route, false)
+		}
 		http.Error(w, "centre provider credential was rejected", response.StatusCode)
+		return
+	}
+	if earthdataSession && response.StatusCode/100 == 2 &&
+		(strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") ||
+			(response.Request != nil && response.Request.URL.Hostname() == earthdataLoginHost)) {
+		http.Error(w, "Earthdata Login requires account authorization for this download", http.StatusUnauthorized)
 		return
 	}
 	for _, key := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified", "Retry-After"} {
