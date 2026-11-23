@@ -635,18 +635,9 @@ func PromoteWithOfficial(task model.Task, archiveRoot string, official []Officia
 
 	temp := filepath.Join(targetDir, fmt.Sprintf(".%s.task-%d.tmp", name, task.ID))
 	_ = os.Remove(temp)
-	if err := copyFile(task.StagingPath, temp, shared); err != nil {
+	if err := copyVerifiedFile(task.StagingPath, temp, digest, shared); err != nil {
 		_ = os.Remove(temp)
 		return PromoteResult{}, err
-	}
-	tempDigest, err := fileSHA256(temp)
-	if err != nil {
-		_ = os.Remove(temp)
-		return PromoteResult{}, err
-	}
-	if tempDigest != digest {
-		_ = os.Remove(temp)
-		return PromoteResult{}, errors.New("archive copy SHA-256 mismatch")
 	}
 	if err := os.Link(temp, target); err != nil {
 		if errors.Is(err, os.ErrExist) {
@@ -746,7 +737,7 @@ func ensureArchiveDirectory(root, relative string, groupWritable bool) error {
 	return nil
 }
 
-func copyFile(source, destination string, shared bool) error {
+func copyVerifiedFile(source, destination, expectedDigest string, shared bool) error {
 	in, err := os.Open(source)
 	if err != nil {
 		return err
@@ -770,16 +761,20 @@ func copyFile(source, destination string, shared bool) error {
 			return err
 		}
 	}
-	_, copyErr := io.CopyBuffer(out, in, make([]byte, 1<<20))
-	syncErr := out.Sync()
-	closeErr := out.Close()
+	digest := sha256.New()
+	// Hash each chunk after the destination accepts it. Comparing with the
+	// verified source digest avoids reading the temporary archive back over NFS.
+	_, copyErr := io.CopyBuffer(io.MultiWriter(out, digest), in, make([]byte, 1<<20))
 	if copyErr != nil {
+		_ = out.Close()
 		return copyErr
 	}
-	if syncErr != nil {
-		return syncErr
+	if hex.EncodeToString(digest.Sum(nil)) != expectedDigest {
+		_ = out.Close()
+		return errors.New("archive copy SHA-256 mismatch")
 	}
-	return closeErr
+	syncErr := out.Sync()
+	return errors.Join(syncErr, out.Close())
 }
 
 func fileSHA256(path string) (string, error) {

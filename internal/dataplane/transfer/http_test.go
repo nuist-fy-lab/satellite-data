@@ -34,6 +34,25 @@ func TestParseContentRange(t *testing.T) {
 	}
 }
 
+func TestCopyVerifiedFileRejectsChangedSource(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "staging")
+	if err := os.WriteFile(source, []byte("verified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := fileSHA256(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("modified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = copyVerifiedFile(source, filepath.Join(root, "archive.tmp"), digest, false)
+	if err == nil || err.Error() != "archive copy SHA-256 mismatch" {
+		t.Fatalf("same-size changed input accepted: %v", err)
+	}
+}
+
 func TestAllProvidersIgnoreCatalogByteCountAsIntegrityEvidence(t *testing.T) {
 	const body = "downloaded MODIS cloud granule"
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
