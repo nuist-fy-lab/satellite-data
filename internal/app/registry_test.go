@@ -2,6 +2,29 @@ package app
 
 import "testing"
 
+func TestRegistrySourcesExposeDownloadRoutes(t *testing.T) {
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range registry.Sources() {
+		access := source.Access
+		if access == nil || access.Catalog == "" || len(access.Downloads) == 0 {
+			t.Fatalf("source %s is missing download access metadata", source.ID)
+		}
+		switch source.ID {
+		case "goes16", "goes17", "goes18", "goes19":
+			if access.ID != "goes" || access.DefaultCredentialKind() != "" {
+				t.Fatalf("source %s did not share the public GOES route", source.ID)
+			}
+		case "modis", "viirs":
+			if len(access.Downloads) != 2 || access.Downloads[0].CredentialKind != "laads" || access.Downloads[1].CredentialKind != "earthdata" {
+				t.Fatalf("source %s is missing the native and cloud credential preferences", source.ID)
+			}
+		}
+	}
+}
+
 func TestRegistryRegistersIASIMetop(t *testing.T) {
 	registry, err := NewRegistry()
 	if err != nil {

@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/nuist-fy-lab/satellite-data/internal/sourceaccess"
+)
 
 type AccessTier string
 
@@ -21,12 +25,13 @@ const (
 )
 
 type Source struct {
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`
-	Tier         AccessTier   `json:"tier"`
-	Method       string       `json:"method"`
-	Capabilities []Capability `json:"capabilities"`
-	Description  string       `json:"description,omitempty"`
+	ID           string              `json:"id"`
+	Name         string              `json:"name"`
+	Tier         AccessTier          `json:"tier"`
+	Method       string              `json:"method"`
+	Capabilities []Capability        `json:"capabilities"`
+	Description  string              `json:"description,omitempty"`
+	Access       *sourceaccess.Route `json:"access,omitempty"`
 }
 
 type Collection struct {

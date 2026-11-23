@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/egress"
+	"github.com/nuist-fy-lab/satellite-data/internal/sourceaccess"
 )
 
 type Provider struct {
@@ -50,19 +51,19 @@ func Load() Config {
 	state := filepath.Join(home, ".local", "state", "satellite-data-downloader")
 	runtime := runtimeRoot(home)
 	providers := []Provider{
-		provider("goes", true, 4, 8, 2, 3*time.Minute, ""),
-		provider("himawari8", true, 1, 1, 1, 3*time.Minute, ""),
-		provider("himawari9", true, 1, 1, 1, 3*time.Minute, ""),
+		provider("goes", true, 4, 8, 2, 3*time.Minute),
+		provider("himawari8", true, 1, 1, 1, 3*time.Minute),
+		provider("himawari9", true, 1, 1, 1, 3*time.Minute),
 		// Begin with 4 and let AIMD expand to 8 when LAADS stays healthy.
-		provider("modis", true, 4, 8, 2, 5*time.Minute, "laads"),
-		provider("viirs", true, 4, 4, 2, 5*time.Minute, "laads"),
-		provider("mtg", true, 2, 2, 1, 10*time.Minute, "eumetsat"),
-		provider("iasi", true, 2, 2, 1, 10*time.Minute, "eumetsat"),
-		provider("iasi-ng", true, 2, 2, 1, 10*time.Minute, "eumetsat"),
-		provider("earthcare", true, 2, 2, 1, 10*time.Minute, "earthcare"),
-		provider("calipso", true, 3, 3, 2, 10*time.Minute, "earthdata"),
-		provider("cloudsat", true, 2, 2, 2, 10*time.Minute, "cloudsat"),
-		provider("era5", true, 2, 2, 2, 10*time.Minute, "cds"),
+		provider("modis", true, 4, 8, 2, 5*time.Minute),
+		provider("viirs", true, 4, 4, 2, 5*time.Minute),
+		provider("mtg", true, 2, 2, 1, 10*time.Minute),
+		provider("iasi", true, 2, 2, 1, 10*time.Minute),
+		provider("iasi-ng", true, 2, 2, 1, 10*time.Minute),
+		provider("earthcare", true, 2, 2, 1, 10*time.Minute),
+		provider("calipso", true, 3, 3, 2, 10*time.Minute),
+		provider("cloudsat", true, 2, 2, 2, 10*time.Minute),
+		provider("era5", true, 2, 2, 2, 10*time.Minute),
 	}
 	cfg := Config{
 		SocketPath:           expandHomeToken(env("SATDOWN_SOCKET", filepath.Join(runtime, "satellite-data-downloader", "downloader.sock")), home),
@@ -120,7 +121,8 @@ func runtimeRoot(home string) string {
 	return filepath.Join(home, ".local", "state")
 }
 
-func provider(source string, enabled bool, initialTransfers, maxTransfers, verifiers int, timeout time.Duration, authRef string) Provider {
+func provider(source string, enabled bool, initialTransfers, maxTransfers, verifiers int, timeout time.Duration) Provider {
+	access, _ := sourceaccess.ForRoute(source)
 	prefix := "SATDOWN_" + strings.ToUpper(strings.ReplaceAll(source, "-", "_"))
 	transferConcurrency := envInt(prefix+"_TRANSFER_CONCURRENCY", maxTransfers, 1, 128)
 	// Some LAADS connections remain slow but keep making useful progress.
@@ -162,7 +164,7 @@ func provider(source string, enabled bool, initialTransfers, maxTransfers, verif
 			FloorBytesPerSecond: envInt64(prefix+"_LOW_THROUGHPUT_FLOOR_BPS", floor, 1, 1<<40),
 			BaselineFraction:    envFloat(prefix+"_LOW_THROUGHPUT_BASELINE_FRACTION", fraction, 0.01, 1),
 		},
-		AuthRef: authRef,
+		AuthRef: access.DefaultCredentialKind(),
 	}
 }
 

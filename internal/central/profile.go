@@ -25,10 +25,11 @@ func (s *Store) UpsertProfile(ctx context.Context, spec ProfileSpec) (downloader
 	if !validSpec(spec.ID, spec.Alias, spec.Priority) {
 		return downloader.Account{}, errors.New("invalid access profile")
 	}
-	kind, err := ProviderKind(spec.SourceID)
+	access, err := accessRoute(spec.SourceID)
 	if err != nil {
 		return downloader.Account{}, err
 	}
+	kind := access.DefaultCredentialKind()
 	hasSecret := spec.Secret != (Secret{})
 	if kind == "" && (hasSecret || spec.CredentialID != nil) {
 		return downloader.Account{}, errors.New("anonymous provider cannot use a credential")
@@ -38,7 +39,7 @@ func (s *Store) UpsertProfile(ctx context.Context, spec ProfileSpec) (downloader
 	}
 	newKind := kind
 	if spec.CredentialKind != "" {
-		if !hasSecret || !compatibleCredentialKind(kind, spec.CredentialKind) {
+		if !hasSecret || !access.AcceptsCredential(spec.CredentialKind) {
 			return downloader.Account{}, errors.New("credential does not match provider")
 		}
 		newKind = spec.CredentialKind
@@ -99,7 +100,7 @@ func (s *Store) UpsertProfile(ctx context.Context, spec ProfileSpec) (downloader
 		if err := json.Unmarshal(data, &credential); err != nil {
 			return account, err
 		}
-		if !compatibleCredentialKind(kind, credential.Kind) {
+		if !access.AcceptsCredential(credential.Kind) {
 			return account, errors.New("credential does not match provider")
 		}
 	}

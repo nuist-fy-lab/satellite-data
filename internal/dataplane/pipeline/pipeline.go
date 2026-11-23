@@ -20,6 +20,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
+	"github.com/nuist-fy-lab/satellite-data/internal/sourceaccess"
 )
 
 type Runtime struct {
@@ -641,27 +642,5 @@ func isCongestion(err error) bool {
 }
 
 func allowedHost(sourceID, host string) bool {
-	host = strings.ToLower(strings.TrimSpace(host))
-	switch sourceID {
-	case "goes":
-		return host == "storage.googleapis.com"
-	case "modis", "viirs":
-		return host == "data.laadsdaac.earthdatacloud.nasa.gov" || host == "ladsweb.modaps.eosdis.nasa.gov"
-	case "mtg", "iasi", "iasi-ng":
-		return host == "api.eumetsat.int"
-	case "earthcare":
-		return host == "catalog.maap.eo.esa.int"
-	case "calipso":
-		return host == "data.asdc.earthdata.nasa.gov"
-	case "cloudsat":
-		return host == "dpc-thredds.cira.colostate.edu"
-	case "era5":
-		return host == "cds.climate.copernicus.eu"
-	case "himawari8":
-		return host == "noaa-himawari8.s3.amazonaws.com"
-	case "himawari9":
-		return host == "noaa-himawari9.s3.amazonaws.com"
-	default:
-		return false
-	}
+	return sourceaccess.AllowsHost(sourceID, strings.ToLower(strings.TrimSpace(host)))
 }

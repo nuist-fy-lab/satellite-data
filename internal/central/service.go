@@ -94,10 +94,11 @@ func (s *Service) probeRoute(ctx context.Context, source string) (route, error) 
 }
 
 func (s *Service) resolveRoute(ctx context.Context, source string, binding *Binding, probeOnly bool, egressProxy *url.URL, host string) (route, error) {
-	kind, err := ProviderKind(source)
+	access, err := accessRoute(source)
 	if err != nil {
 		return route{}, err
 	}
+	kind := access.DefaultCredentialKind()
 	pools, err := s.Store.Pools(ctx)
 	if err != nil {
 		return route{}, err
@@ -126,11 +127,8 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 	for _, credential := range pools.Credentials {
 		credentials[credential.ID] = credential
 	}
-	if kind == "laads" {
-		preferredKind := kind
-		if host == laadsCloudHost {
-			preferredKind = "earthdata"
-		}
+	if len(access.CredentialKinds) > 1 {
+		preferredKind := access.PreferredCredentialKind(host)
 		isPreferred := func(account downloader.Account) bool {
 			return account.CredentialID != nil && credentials[*account.CredentialID].Kind == preferredKind
 		}
@@ -151,7 +149,7 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 		var credential downloader.Credential
 		if account.CredentialID != nil {
 			credential = credentials[*account.CredentialID]
-			if !compatibleCredentialKind(kind, credential.Kind) || !credential.Enabled || credential.State == "auth_required" {
+			if !access.AcceptsCredential(credential.Kind) || !credential.Enabled || credential.State == "auth_required" {
 				continue
 			}
 			if kind == "laads" && credential.Kind == "earthdata" {

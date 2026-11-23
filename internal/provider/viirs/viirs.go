@@ -43,13 +43,13 @@ func (p *Provider) Source() model.Source {
 		ID:     "viirs",
 		Name:   "VIIRS Suomi-NPP / NOAA-20 / NOAA-21",
 		Tier:   model.TierToken,
-		Method: "NASA CMR canonical collection/granule catalogue + LAADS Earthdata Cloud HTTPS transfer",
+		Method: "NASA CMR catalogue + LAADS HTTPS downloads",
 		Capabilities: []model.Capability{
 			model.CapabilityCatalog,
 			model.CapabilitySearch,
 			model.CapabilityDownload,
 		},
-		Description: "VIIRS products are discovered through the LAADS CMR provider. Science assets prefer LAADS Earthdata Cloud HTTPS and use the same LAADS download token as MODIS.",
+		Description: "VIIRS downloads prefer the native LAADS archive. Earthdata Cloud HTTPS is also supported.",
 	}
 }
 

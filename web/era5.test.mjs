@@ -28,7 +28,7 @@ function harness(product, schema) {
     return elements.get(id);
   };
   const context = vm.createContext({
-    document: {querySelector: element},
+    document: {querySelector: element, querySelectorAll: () => []},
     localStorage: {getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value)},
     Option: function(text, value) { this.text = text; this.value = value; this.selected = false; },
     fetch: async (url, options = {}) => {
@@ -39,6 +39,10 @@ function harness(product, schema) {
     setTimeout, clearTimeout, console,
   });
   vm.runInContext(withoutBoot, context);
+  vm.runInContext(`state.sources = [
+    {id:'era5',access:{id:'era5',name:'ERA5 / ERA5-Land',credential_kinds:['cds']}},
+    {id:'modis',access:{id:'modis',name:'MODIS',credential_kinds:['laads','earthdata']}},
+  ];`, context);
   context.testProduct = product;
   vm.runInContext('state.selected = testProduct; state.era5.selected = testProduct; state.era5.seq = 1;', context);
   return {context, element, storage, requests};
@@ -73,9 +77,9 @@ test('portal login precedes data loading and credentials have no second login fo
   assert.match(html, /id="portal-logout"/);
   assert.match(html, /id="cli-panel"/);
   assert.equal(html.includes('id="cli-view"'),false);
-  assert.match(html,/https:\/\/github\.com\/nuist-fy-lab\/satellite-data-downloader/);
+  assert.match(html,/https:\/\/github\.com\/nuist-fy-lab\/satellite-data"/);
   assert.match(html,/data-view="calendar-view"[^\n]+数据日历/);
-  assert.match(html,/data-view="access-view"[^\n]+访问凭据/);
+  assert.match(html,/data-view="access-view"[^\n]+数据访问/);
   assert.match(loginHTML, /name="username"/);
   assert.match(loginHTML, /name="password"[^>]+type="password"|type="password"[^>]+name="password"/);
   const boot = app.slice(app.lastIndexOf('async function boot()'));
@@ -169,21 +173,20 @@ test('late CLI Key creation response cannot restore a dismissed Key', async () =
   assert.equal(h.storage.size, 0);
 });
 
-test('unified ERA5 profile saves a new Token and clears secret inputs', async () => {
+test('CDS credential saves separately and clears the token input', async () => {
   const h = harness(product(), schema(false));
-  h.element('#account-source').value = 'era5';
+  h.element('#credential-kind').value = 'cds';
   h.context.credentialFields();
   assert.match(h.element('#credential-secret-fields').innerHTML, /credential-token/);
   assert.match(h.element('#credential-secret-fields').innerHTML, /type="password"/);
   h.element('#credential-token').value = 'fixture-cds-token';
-  h.element('#account-alias').value = 'ERA5';
-  h.element('#account-proxy-mode').value = 'direct';
-  h.element('#account-enabled').checked = true;
-  await h.context.saveAccount({preventDefault() {}});
+  h.element('#credential-alias').value = 'ERA5';
+  h.element('#credential-enabled').checked = true;
+  await h.context.saveCredential({preventDefault() {}});
   const request = h.requests.find(item => item.method === 'POST');
-  assert.equal(request.url, '/api/v1/access/profiles');
+  assert.equal(request.url, '/api/v1/access/credentials');
   assert.deepEqual(JSON.parse(request.body).secret, {token: 'fixture-cds-token'});
-  assert.equal(JSON.parse(request.body).source_id, 'era5');
+  assert.equal(JSON.parse(request.body).kind, 'cds');
   assert.equal(h.storage.size, 0);
   assert.equal(h.element('#credential-secret-fields').innerHTML, '');
 });
@@ -209,7 +212,17 @@ test('unified profile binds existing CDS token without sending it to the browser
   const request = h.requests.find(item => item.method === 'POST');
   assert.equal(request.url, '/api/v1/access/profiles');
   assert.equal(JSON.parse(request.body).credential_id, 7);
-  assert.deepEqual(JSON.parse(request.body).secret, {});
+  assert.equal(Object.hasOwn(JSON.parse(request.body), 'secret'), false);
+});
+
+test('MODIS selector uses compatible credential kinds from the source route', () => {
+  const h = harness(product(), schema(false));
+  h.element('#account-source').value = 'modis';
+  vm.runInContext(`state.access.credentials = [
+    {id:1,alias:'native',kind:'laads'}, {id:2,alias:'cloud',kind:'earthdata'}, {id:3,alias:'CDS',kind:'cds'},
+  ];`, h.context);
+  h.context.rebuildAccessSelects();
+  assert.deepEqual(h.element('#account-credential').options.map(option => option.value), ['', '1', '2']);
 });
 
 test('each satellite gets a timeline; only confirmed mission ends show END', () => {

@@ -43,13 +43,13 @@ func (p *Provider) Source() model.Source {
 		ID:     "modis",
 		Name:   "MODIS Terra / Aqua",
 		Tier:   model.TierToken,
-		Method: "NASA CMR canonical collection/granule catalogue + LAADS Earthdata Cloud HTTPS transfer",
+		Method: "NASA CMR catalogue + LAADS HTTPS downloads",
 		Capabilities: []model.Capability{
 			model.CapabilityCatalog,
 			model.CapabilitySearch,
 			model.CapabilityDownload,
 		},
-		Description: "CMR is the canonical MODIS catalogue for the LAADS provider. Science assets are selected from LAADS Earthdata Cloud HTTPS links.",
+		Description: "MODIS downloads prefer the native LAADS archive. Earthdata Cloud HTTPS is also supported.",
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/sourceaccess"
 )
 
 var ErrUnsupportedCollection = errors.New("unsupported collection")
@@ -44,7 +45,11 @@ func (r *Registry) Sources() []model.Source {
 	defer r.mu.RUnlock()
 	out := make([]model.Source, 0, len(r.providers))
 	for _, p := range r.providers {
-		out = append(out, p.Source())
+		source := p.Source()
+		if access, ok := sourceaccess.ForSource(source.ID); ok {
+			source.Access = &access
+		}
+		out = append(out, source)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

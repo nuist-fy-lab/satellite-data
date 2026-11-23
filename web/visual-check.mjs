@@ -54,12 +54,23 @@ window.styleFixture = async function(view, mode, wide) {
   coverage.dayData = {mode:'grid',cadence:10,official_state:2,indexing:false,times,cells};
   coverage.cells = new Map(cells.map(cell => [cell[0]+':'+cell[1],cell]));
   renderSatelliteTimelines(); renderCoverageShell(); renderCoverageYear(); renderCoverageMonth(); renderCoverageDay();
-  state.sources = [{name:'GOES-18',tier:'anonymous',description:'ABI full disk',method:'NOAA S3'}, {name:'ERA5 / ERA5-Land',tier:'token',description:'ECMWF reanalysis',method:'CDS asynchronous request'}];
+  state.sources = [
+    {id:'goes18',name:'GOES-18',access:{id:'goes',name:'GOES',catalog:'NOAA NODD · GCS',downloads:[
+      {name:'NOAA NODD · GCS',host:'storage.googleapis.com'},
+    ]}},
+    {id:'modis',name:'MODIS',access:{id:'modis',name:'MODIS',catalog:'NASA CMR · LAADS',credential_kinds:['laads','earthdata'],downloads:[
+      {name:'LAADS 原生归档',host:'ladsweb.modaps.eosdis.nasa.gov',credential_kind:'laads'},
+      {name:'LAADS Earthdata Cloud',host:'data.laadsdaac.earthdatacloud.nasa.gov',credential_kind:'earthdata'},
+    ]}},
+    {id:'era5',name:'ERA5 / ERA5-Land',access:{id:'era5',name:'ERA5 / ERA5-Land',catalog:'Copernicus CDS · STAC',credential_kinds:['cds'],downloads:[
+      {name:'Copernicus CDS · 按需生成',host:'cds.climate.copernicus.eu',credential_kind:'cds'},
+    ]}},
+  ];
   renderSources();
   state.access.credentials = [{id:1,alias:'ERA5 primary',kind:'cds',state:'ready',enabled:true}];
   state.access.accounts = [{id:1,alias:'ERA5 primary',source_id:'era5',credential_id:1,proxy_mode:'direct',state:'ready',enabled:true}];
   state.access.proxies = [{id:1,alias:'US West',scheme:'socks5',endpoint_hint:'proxy.example:1080',providers:['era5','mtg'],state:'ready',enabled:true}];
-  renderAccountList(); renderProxyList(); rebuildAccessSelects();
+  renderAccountList(); renderCredentialList(); renderProxyList(); rebuildAccessSources(); rebuildAccessSelects();
   const points = Array.from({length:24}, (_, i) => ({at:new Date(Date.now()-(23-i)*150000).toISOString(),latency_ms:170+i%5*10,jitter_ms:4+i%3,loss_pct:0}));
   state.monitor.payload = {origin:'c2ln1',links:['GOES-18','EarthCARE','ERA5','MTG'].map((name,i) => ({name,source_id:['goes18','earthcare','era5','mtg'][i],target:['noaa-goes18.s3.amazonaws.com','earthcare.example','cds.climate.copernicus.eu','api.eumetsat.int'][i],port:443,latest:points.at(-1),points}))};
   renderMonitor();
@@ -96,6 +107,7 @@ window.styleFixture = async function(view, mode, wide) {
     $('#catalog-products-panel').classList.toggle('hidden',sources);
     $('#catalog-sources-panel').classList.toggle('hidden',!sources);
     $('.catalog-search').classList.toggle('hidden',sources);
+    $('#refresh-sources').classList.toggle('hidden',!sources);
   }
   // The sidebar animates for 180ms; measure only after its layout settles.
   await new Promise(resolve=>setTimeout(resolve,250));

@@ -42,9 +42,9 @@ and proxy available to other profiles.
 
 ## Earthdata credentials for MODIS and VIIRS
 
-In **Access**, add a MODIS or VIIRS access profile and select an existing
-Earthdata credential. The profile references the saved credential in the
-centre's Vault. The same credential can also be referenced by CALIPSO.
+In **数据访问 → 访问配置**, add a MODIS or VIIRS profile and select an
+Earthdata credential. Manage its token and expiry under **凭据**. The
+same Vault entry can also be referenced by CALIPSO.
 
 For each MODIS or VIIRS fetch, the centre prefers a bound LAADS token for
 the native archive and a bound Earthdata token for the LAADS Earthdata

@@ -3,31 +3,21 @@ package central
 import (
 	"errors"
 	"strings"
+
+	"github.com/nuist-fy-lab/satellite-data/internal/sourceaccess"
 )
 
 func ProviderKind(source string) (string, error) {
-	switch source {
-	case "goes", "himawari8", "himawari9":
-		return "", nil
-	case "modis", "viirs":
-		return "laads", nil
-	case "mtg", "iasi", "iasi-ng":
-		return "eumetsat", nil
-	case "earthcare":
-		return "earthcare", nil
-	case "calipso":
-		return "earthdata", nil
-	case "cloudsat":
-		return "cloudsat", nil
-	case "era5":
-		return "cds", nil
-	default:
-		return "", errors.New("unknown provider")
-	}
+	route, err := accessRoute(source)
+	return route.DefaultCredentialKind(), err
 }
 
-func compatibleCredentialKind(required, actual string) bool {
-	return actual == required || (required == "laads" && actual == "earthdata")
+func accessRoute(source string) (sourceaccess.Route, error) {
+	route, ok := sourceaccess.ForRoute(source)
+	if !ok {
+		return route, errors.New("unknown data source")
+	}
+	return route, nil
 }
 
 func ValidateSecret(kind string, secret Secret) error {

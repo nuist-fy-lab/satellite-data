@@ -283,6 +283,18 @@ func (c *client) sourceList(args ...string) error {
 		return json.NewEncoder(os.Stdout).Encode(payload.Sources)
 	}
 	for _, source := range payload.Sources {
+		if source.Access != nil {
+			endpoints := make([]string, 0, len(source.Access.Downloads))
+			for _, endpoint := range source.Access.Downloads {
+				label := endpoint.Host
+				if endpoint.CredentialKind != "" {
+					label += " (" + endpoint.CredentialKind + ")"
+				}
+				endpoints = append(endpoints, label)
+			}
+			fmt.Printf("%-12s %s | %s | %s\n", source.ID, source.Name, source.Access.Catalog, strings.Join(endpoints, ", "))
+			continue
+		}
 		fmt.Printf("%-12s %-14s %-16s %s\n", source.ID, source.Tier, source.Name, source.Method)
 	}
 	return nil

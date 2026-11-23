@@ -270,16 +270,16 @@ func (s *Store) UpsertAccount(ctx context.Context, spec AccountSpec) (downloader
 	if !validSpec(spec.ID, spec.Alias, spec.Priority) {
 		return downloader.Account{}, errors.New("invalid central account")
 	}
-	kind, err := ProviderKind(spec.SourceID)
+	access, err := accessRoute(spec.SourceID)
 	if err != nil {
 		return downloader.Account{}, err
 	}
 	var credential downloader.Credential
-	if kind != "" {
+	if access.DefaultCredentialKind() != "" {
 		if spec.CredentialID == nil {
 			return downloader.Account{}, errors.New("provider requires a central credential")
 		}
-		if err := s.readMetadata(ctx, "credentials", *spec.CredentialID, &credential); err != nil || !compatibleCredentialKind(kind, credential.Kind) {
+		if err := s.readMetadata(ctx, "credentials", *spec.CredentialID, &credential); err != nil || !access.AcceptsCredential(credential.Kind) {
 			return downloader.Account{}, errors.New("credential does not match provider")
 		}
 	} else if spec.CredentialID != nil {

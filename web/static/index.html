@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=32">
+  <link rel="stylesheet" href="/styles.css?v=33">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -22,7 +22,7 @@
       <a class="nav-item" href="/era5" data-view="era5-view"><span class="nav-icon">▤</span><span class="nav-label">ERA5</span></a>
       <a class="nav-item" href="/catalog" data-view="catalog-view"><span class="nav-icon">≡</span><span class="nav-label">产品目录</span></a>
       <a class="nav-item" href="/monitor" data-view="monitor-view"><span class="nav-icon">∿</span><span class="nav-label">运行监控</span></a>
-      <a class="nav-item" href="/access" data-view="access-view"><span class="nav-icon">⌘</span><span class="nav-label">访问凭据</span></a>
+      <a class="nav-item" href="/access" data-view="access-view"><span class="nav-icon">⌘</span><span class="nav-label">数据访问</span></a>
     </nav>
     <div class="sidebar-status" title="Satellite Data 服务状态">
       <i id="service-dot"></i><span class="nav-label" id="service-label">连接中</span>
@@ -174,17 +174,14 @@
     </section>
 
     <section class="view" id="catalog-view">
-      <header class="simple-header"><div class="brand">卫星与产品</div><div class="catalog-head-controls"><div class="coverage-switch" role="tablist" aria-label="目录视图"><button type="button" data-catalog-tab="products" class="active" role="tab" aria-selected="true">产品目录</button><button type="button" data-catalog-tab="sources" role="tab" aria-selected="false">数据源</button></div><label class="catalog-search"><input id="catalog-search" type="search" placeholder="搜索" aria-label="搜索卫星、仪器、产品"></label></div></header>
+      <header class="simple-header"><div class="brand">卫星与产品</div><div class="catalog-head-controls"><div class="coverage-switch" role="tablist" aria-label="目录视图"><button type="button" data-catalog-tab="products" class="active" role="tab" aria-selected="true">产品目录</button><button type="button" data-catalog-tab="sources" role="tab" aria-selected="false">数据源</button></div><label class="catalog-search"><input id="catalog-search" type="search" placeholder="搜索" aria-label="搜索卫星、仪器、产品"></label><button id="refresh-sources" class="icon-button hidden" type="button" title="刷新数据源" aria-label="刷新数据源"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button></div></header>
       <div id="catalog-status" class="form-error" role="status"></div>
       <div id="catalog-products-panel" class="catalog-layout"><nav id="catalog-tree" class="catalog-tree" aria-label="卫星与仪器目录"></nav><section id="catalog-content" class="catalog-content"></section></div>
       <section id="catalog-sources-panel" class="hidden">
-        <button id="refresh-sources" class="icon-button" type="button" title="刷新数据源" aria-label="刷新数据源"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button>
-      <div class="source-summary">
-        <article><span>匿名直连</span><strong id="tier-anonymous">—</strong></article>
-        <article><span>登录 / Token</span><strong id="tier-token">—</strong></article>
-        <article><span>特殊访问</span><strong id="tier-special">—</strong></article>
-      </div>
-      <div id="sources" class="source-list"></div>
+        <table class="source-list" aria-label="数据源与下载端点">
+          <thead><tr><th scope="col">数据源</th><th scope="col">发现目录</th><th scope="col">下载端点</th></tr></thead>
+          <tbody id="sources"></tbody>
+        </table>
       </section>
     </section>
 
@@ -225,7 +222,7 @@
           <h2>传输监控</h2>
           <div class="download-monitor-controls">
             <label>时区 <select id="download-monitor-timezone" aria-label="传输监控时区"><option value="UTC">UTC</option><option value="BJT" selected>BJT</option></select></label>
-            <label>Provider <select id="download-monitor-provider" aria-label="监控 Provider"><option value="all">全部 Provider</option></select></label>
+            <label>数据源 <select id="download-monitor-provider" aria-label="监控数据源"><option value="all">全部数据源</option></select></label>
             <div id="download-monitor-windows" class="download-monitor-windows" role="group" aria-label="下载监控时间窗口">
               <button type="button" data-download-window="realtime">实时</button>
               <button type="button" data-download-window="1h">1h</button>
@@ -250,7 +247,7 @@
           <div class="download-monitor-plot"><div class="download-plot-head"><strong>活动传输</strong><span id="download-chart-active-now">—</span></div><div class="download-plot-legend"><span><i class="transfer-active"></i>活动传输</span><span><i class="transfer-limit"></i>动态上限</span></div><div class="download-plot-canvas" id="download-chart-active"></div></div>
         </div>
       </section>
-      <section class="download-section"><h2>Provider 传输</h2><div id="download-providers" class="download-list"></div></section>
+      <section class="download-section"><h2>数据源传输</h2><div id="download-providers" class="download-list"></div></section>
       <section class="download-section"><h2>下载任务</h2><div id="download-tasks" class="download-queue-list"></div>
         <nav id="download-pages" class="download-pagination hidden" aria-label="下载任务分页">
           <span id="download-page-summary" aria-live="polite"></span>
@@ -263,7 +260,7 @@
 
     <section class="view" id="monitor-view">
       <header class="simple-header monitor-header">
-        <div><div class="brand">链路监控</div><div class="subbrand">c2ln1 → Provider · TCP 443 延迟、抖动与丢包</div></div>
+        <div><div class="brand">链路监控</div><div class="subbrand">c2ln1 → 上游端点</div></div>
         <div class="monitor-head-actions">
           <span class="monitor-origin"><i></i><strong id="monitor-origin-name">c2ln1</strong><small>15 秒采样</small></span>
           <button id="refresh-monitor" type="button">刷新</button>
@@ -310,7 +307,7 @@
 
     <section class="view" id="access-view">
       <header class="simple-header">
-        <div class="brand">访问凭据</div>
+        <div class="brand">数据访问</div>
         <div data-admin-only>
           <button id="refresh-access" class="icon-button" type="button" title="刷新访问配置" aria-label="刷新访问配置"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button>
         </div>
@@ -318,24 +315,25 @@
 
       <div id="access-error" class="form-error" data-admin-only></div>
       <section id="access-manager" data-admin-only>
-        <div class="access-summary">
-          <article><span>访问配置</span><strong id="access-account-count">0</strong></article>
-          <article><span>待绑定凭据</span><strong id="access-credential-count">0</strong></article>
-          <article><span>下载出口</span><strong id="access-egress-count">—</strong></article>
+        <div class="coverage-switch access-sections" role="group" aria-label="数据访问设置">
+          <button type="button" data-access-section="account" aria-pressed="true" class="active">访问配置</button>
+          <button type="button" data-access-section="credential" aria-pressed="false">凭据</button>
+          <button type="button" data-access-section="proxy" aria-pressed="false">代理</button>
+          <button type="button" data-access-section="egress" aria-pressed="false">下载出口</button>
         </div>
 
-        <div class="access-grid">
-          <section class="pool-card">
-            <div class="pool-head"><div><strong>访问配置</strong><small>Provider · 加密凭据 · 代理策略</small></div><button type="button" data-pool-new="account">新增</button></div>
+        <div class="access-panels">
+          <section class="pool-card" data-access-panel="account" aria-label="访问配置">
+            <div class="pool-head"><button type="button" data-pool-new="account">新增配置</button></div>
             <form id="account-form" class="pool-form hidden">
               <input type="hidden" id="account-id">
-              <label>别名<input id="account-alias" maxlength="64" required placeholder="例如 ERA5 主访问"></label>
-              <label>Provider<select id="account-source"><option value="goes">GOES</option><option value="himawari8">Himawari 8</option><option value="himawari9">Himawari 9</option><option value="modis">MODIS</option><option value="viirs">VIIRS</option><option value="mtg">MTG</option><option value="iasi">IASI / Metop</option><option value="iasi-ng">IASI-NG / Metop-SG</option><option value="earthcare">EarthCARE</option><option value="calipso">CALIPSO</option><option value="cloudsat">CloudSat</option><option value="era5">ERA5 / ERA5-Land</option></select></label>
-              <label id="account-credential-row">沿用已加密凭据<select id="account-credential"></select></label>
-              <aside id="credential-guide" class="credential-guide"></aside>
-              <div id="credential-secret-fields"></div>
-              <small id="credential-secret-note">填入新 Secret 会为当前配置创建独立凭据；留空沿用上方选择。</small>
-              <label>代理策略<select id="account-proxy-mode"><option value="direct">Direct · 直连</option><option value="auto">Auto · 代理池轮转</option><option value="fixed">Fixed · 固定代理</option></select></label>
+              <label>名称<input id="account-alias" maxlength="64" required></label>
+              <label>数据源<select id="account-source" required></select></label>
+              <div id="account-credential-row" class="pool-field-action">
+                <label>凭据<select id="account-credential"></select></label>
+                <button type="button" id="account-new-credential">新增凭据</button>
+              </div>
+              <label>代理方式<select id="account-proxy-mode"><option value="direct">直连</option><option value="auto">代理池</option><option value="fixed">固定代理</option></select></label>
               <label id="account-proxy-row" class="hidden">固定代理<select id="account-proxy"></select></label>
               <div class="form-line"><label>优先级<input id="account-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="account-enabled" type="checkbox" checked>启用</label></div>
               <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="account">取消</button></div>
@@ -344,38 +342,54 @@
             <div id="account-list" class="pool-list"></div>
           </section>
 
-          <section class="pool-card">
-            <div class="pool-head"><div><strong>手动代理</strong><small>HTTP / HTTPS / SOCKS5，可限制 Provider</small></div><button type="button" data-pool-new="proxy">新增</button></div>
+          <section class="pool-card hidden" data-access-panel="credential" aria-label="凭据">
+            <div class="pool-head"><button type="button" data-pool-new="credential">新增凭据</button></div>
+            <form id="credential-form" class="pool-form hidden">
+              <input type="hidden" id="credential-id">
+              <label>名称<input id="credential-alias" maxlength="64" required></label>
+              <div class="pool-field-action">
+                <label>类型<select id="credential-kind" required></select></label>
+                <a id="credential-link" target="_blank" rel="noopener noreferrer">获取凭据</a>
+              </div>
+              <div id="credential-secret-fields"></div>
+              <label class="check"><input id="credential-enabled" type="checkbox" checked>启用</label>
+              <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="credential">取消</button></div>
+              <div id="credential-error" class="form-error" role="status"></div>
+            </form>
+            <div id="credential-list" class="pool-list"></div>
+          </section>
+
+          <section class="pool-card hidden" data-access-panel="proxy" aria-label="代理">
+            <div class="pool-head"><button type="button" data-pool-new="proxy">新增代理</button></div>
             <form id="proxy-form" class="pool-form hidden">
               <input type="hidden" id="proxy-id">
-              <label>别名<input id="proxy-alias" maxlength="64" required placeholder="例如 US-West-01"></label>
+              <label>名称<input id="proxy-alias" maxlength="64" required></label>
               <label>代理 URL<input id="proxy-url" type="password" autocomplete="off" placeholder="socks5://user:pass@host:port"></label>
-              <div class="secret-grid"><label>用户名<input id="proxy-username" autocomplete="off" placeholder="编辑时留空保留原认证"></label><label>密码<input id="proxy-password" type="password" autocomplete="new-password" placeholder="编辑时留空保留原认证"></label></div>
-              <label>适用 Provider<input id="proxy-providers" placeholder="* 或 goes,modis,viirs"></label>
+              <div class="secret-grid"><label>用户名<input id="proxy-username" autocomplete="off"></label><label>密码<input id="proxy-password" type="password" autocomplete="new-password"></label></div>
+              <label>适用数据源<input id="proxy-providers" placeholder="* 或 goes,modis,viirs"></label>
               <div class="form-line"><label>优先级<input id="proxy-priority" type="number" min="-1000" max="1000" value="0"></label><label class="check"><input id="proxy-enabled" type="checkbox" checked>启用</label></div>
-              <small>编辑时 URL、用户名和密码均留空表示保留原认证。RN-SOCKS5-MODIS 可分别填写用户名和密码；保存时启用代理，再到 MODIS 访问配置中选择 Fixed。</small>
               <div class="form-actions"><button type="submit">保存</button><button type="button" data-form-cancel="proxy">取消</button></div>
               <div id="proxy-error" class="form-error"></div>
             </form>
             <div id="proxy-list" class="pool-list"></div>
           </section>
 
-          <section class="pool-card">
-            <div class="pool-head"><div><strong>下载出口</strong><small>自动分配 · 同一公网 IP 共享并发额度</small></div></div>
+          <section class="pool-card hidden" data-access-panel="egress" aria-label="下载出口">
+            <div class="pool-head"><span>同一公网 IP 共用并发额度</span></div>
             <div id="download-egress-list" class="pool-list"></div>
           </section>
         </div>
       </section>
       <section id="cli-panel" class="cli-key-manager" aria-label="CLI API Key">
-        <div class="pool-head"><strong>CLI</strong><a href="https://github.com/nuist-fy-lab/satellite-data-downloader" target="_blank" rel="noopener noreferrer">下载器 · GitHub</a><button id="refresh-cli-keys" class="icon-button" type="button" title="刷新 API Key" aria-label="刷新 API Key"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button></div>
-        <form id="cli-key-form" class="cli-key-form"><label>名称<input id="cli-key-name" maxlength="80" required autocomplete="off"></label><button id="cli-key-create" type="submit">创建 Key</button></form>
-        <div id="cli-key-new" class="cli-key-new hidden"><label>新 Key · 仅此次显示<input id="cli-key-value" type="password" readonly autocomplete="off"></label><button id="cli-key-copy" type="button">复制</button><button id="cli-key-dismiss" type="button">关闭</button></div>
+        <div class="pool-head"><strong>CLI 密钥</strong><a href="https://github.com/nuist-fy-lab/satellite-data" target="_blank" rel="noopener noreferrer">项目主页</a><button id="refresh-cli-keys" class="icon-button" type="button" title="刷新密钥" aria-label="刷新密钥"><svg class="icon" aria-hidden="true"><use href="/icons.svg#refresh"/></svg></button></div>
+        <form id="cli-key-form" class="cli-key-form"><label>名称<input id="cli-key-name" maxlength="80" required autocomplete="off"></label><button id="cli-key-create" type="submit">创建密钥</button></form>
+        <div id="cli-key-new" class="cli-key-new hidden"><label>新密钥 · 仅显示一次<input id="cli-key-value" type="password" readonly autocomplete="off"></label><button id="cli-key-copy" type="button">复制</button><button id="cli-key-dismiss" type="button">关闭</button></div>
         <div id="cli-key-error" class="form-error"></div><div id="cli-key-list" class="pool-list"></div>
       </section>
     </section>
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=44"></script>
+  <script type="module" src="/app.js?v=45"></script>
 </body>
 </html>

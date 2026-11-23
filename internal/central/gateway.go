@@ -17,40 +17,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nuist-fy-lab/satellite-data/internal/sourceaccess"
 	"golang.org/x/net/publicsuffix"
 )
 
-var sources = []string{"goes", "himawari8", "himawari9", "modis", "viirs", "mtg", "iasi", "iasi-ng", "earthcare", "calipso", "cloudsat", "era5"}
-
 const (
-	laadsArchiveHost   = "ladsweb.modaps.eosdis.nasa.gov"
-	laadsCloudHost     = "data.laadsdaac.earthdatacloud.nasa.gov"
+	laadsArchiveHost   = sourceaccess.LAADSArchiveHost
+	laadsCloudHost     = sourceaccess.LAADSCloudHost
 	earthdataLoginHost = "urs.earthdata.nasa.gov"
 )
 
 func allowedHost(source, host string) bool {
-	switch source {
-	case "goes":
-		return host == "storage.googleapis.com"
-	case "himawari8":
-		return host == "noaa-himawari8.s3.amazonaws.com"
-	case "himawari9":
-		return host == "noaa-himawari9.s3.amazonaws.com"
-	case "modis", "viirs":
-		return host == laadsArchiveHost || host == laadsCloudHost
-	case "mtg", "iasi", "iasi-ng":
-		return host == "api.eumetsat.int"
-	case "earthcare":
-		return host == "catalog.maap.eo.esa.int"
-	case "calipso":
-		return host == "data.asdc.earthdata.nasa.gov"
-	case "cloudsat":
-		return host == "dpc-thredds.cira.colostate.edu"
-	case "era5":
-		return host == "cds.climate.copernicus.eu"
-	default:
-		return false
-	}
+	return sourceaccess.AllowsHost(source, host)
 }
 
 func allowedEarthdataLogin(location *url.URL, assetHost string) bool {
@@ -113,6 +91,7 @@ func (s *Service) Gateway() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "routes": s.DownloadEgressStatus()})
 	})
 	mux.HandleFunc("GET /v1/access/status", func(w http.ResponseWriter, r *http.Request) {
+		sources := sourceaccess.IDs()
 		status := make(map[string]bool, len(sources))
 		for _, source := range sources {
 			route, err := s.probeRoute(r.Context(), source)
