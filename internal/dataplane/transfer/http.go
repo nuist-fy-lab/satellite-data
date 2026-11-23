@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nuist-fy-lab/satellite-data/internal/archivepublish"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/auth"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/spoolbudget"
@@ -72,6 +73,7 @@ type PromoteResult struct {
 	OfficialAlgorithm string
 	OfficialValue     string
 	OfficialStatus    string
+	Renamed           bool
 }
 
 type HTTP struct {
@@ -333,7 +335,11 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 	if _, err := httpsURL(task.URL); err != nil {
 		return DownloadResult{}, err
 	}
-	dir := filepath.Join(downloadRoot, "staging", task.SourceID, strconv.FormatInt(task.ID, 10))
+	relative := filepath.Join("staging", task.SourceID, strconv.FormatInt(task.ID, 10))
+	dir, err := archivepublish.StagingDir(downloadRoot, os.Getenv("SATDOWN_DATA1_DOWNLOAD_ROOT"), relative, name, ".part", ".downloaded")
+	if err != nil {
+		return DownloadResult{}, err
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return DownloadResult{}, err
 	}
@@ -588,13 +594,32 @@ func PromoteWithOfficial(task model.Task, archiveRoot string, official []Officia
 	if strings.TrimSpace(task.StagingPath) == "" {
 		return PromoteResult{}, &IntegrityError{Detail: "staging path is empty"}
 	}
-	info, err := os.Stat(task.StagingPath)
+	targetDir := filepath.Join(archiveRoot, relative)
+	shared := len(groupWritable) > 0 && groupWritable[0]
+	target := filepath.Join(targetDir, name)
+	source := task.StagingPath
+	info, err := os.Stat(source)
+	var receipt archivepublish.Receipt
+	if errors.Is(err, os.ErrNotExist) && archivepublish.HasReceipt(source) {
+		receipt, err = archivepublish.ReadReceipt(source, target)
+		if err != nil {
+			return PromoteResult{}, err
+		}
+		source = target
+		info, err = os.Lstat(source)
+	}
 	if err != nil {
 		return PromoteResult{}, err
 	}
-	digest, err := sha256AndVerifyOfficial(task.StagingPath, official)
+	if !info.Mode().IsRegular() {
+		return PromoteResult{}, errors.New("verified payload must be a regular file")
+	}
+	digest, err := sha256AndVerifyOfficial(source, official)
 	if err != nil {
 		return PromoteResult{}, err
+	}
+	if source == target && (digest != receipt.SHA256 || info.Size() != receipt.Size) {
+		return PromoteResult{}, &CollisionError{Path: target}
 	}
 	verification := PromoteResult{OfficialStatus: "local_only"}
 	if len(official) > 0 {
@@ -609,12 +634,30 @@ func PromoteWithOfficial(task model.Task, archiveRoot string, official []Officia
 		}
 	}
 
-	targetDir := filepath.Join(archiveRoot, relative)
-	shared := len(groupWritable) > 0 && groupWritable[0]
 	if err := ensureArchiveDirectory(archiveRoot, relative, shared); err != nil {
 		return PromoteResult{}, err
 	}
-	target := filepath.Join(targetDir, name)
+	unlock, err := archivepublish.Lock(target)
+	if err != nil {
+		return PromoteResult{}, err
+	}
+	defer unlock()
+	if source == target {
+		// Reconcile a rename whose database commit was interrupted.
+		current, err := os.Lstat(target)
+		if err != nil {
+			return PromoteResult{}, err
+		}
+		if !os.SameFile(info, current) || info.ModTime() != current.ModTime() || info.Size() != current.Size() {
+			return PromoteResult{}, &CollisionError{Path: target}
+		}
+		if err := archivepublish.SyncRenameDirectories(task.StagingPath, target); err != nil {
+			return PromoteResult{}, err
+		}
+		verification.Renamed = true
+		verification.Path, verification.Size, verification.SHA256 = target, info.Size(), digest
+		return verification, nil
+	}
 	if existing, err := os.Lstat(target); err == nil {
 		if !existing.Mode().IsRegular() {
 			return PromoteResult{}, &CollisionError{Path: target}
@@ -633,6 +676,22 @@ func PromoteWithOfficial(task model.Task, archiveRoot string, official []Officia
 		return PromoteResult{}, err
 	}
 
+	mode, exactMode := os.FileMode(0o640), os.FileMode(0)
+	if shared {
+		mode, exactMode = 0o666, 0o664
+	}
+	renamed, err := archivepublish.Rename(task.StagingPath, target, digest, info.Size(), mode, exactMode)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return PromoteResult{}, &CollisionError{Path: target}
+		}
+		return PromoteResult{}, err
+	}
+	if renamed {
+		verification.Renamed = true
+		verification.Path, verification.Size, verification.SHA256 = target, info.Size(), digest
+		return verification, nil
+	}
 	temp := filepath.Join(targetDir, fmt.Sprintf(".%s.task-%d.tmp", name, task.ID))
 	_ = os.Remove(temp)
 	if err := copyVerifiedFile(task.StagingPath, temp, digest, shared); err != nil {

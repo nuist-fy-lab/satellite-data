@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/archiveevent"
+	"github.com/nuist-fy-lab/satellite-data/internal/archivepublish"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/access"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/config"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
@@ -635,6 +636,10 @@ func (r *Runtime) verifyLoop(ctx context.Context, provider config.Provider, work
 		if err := r.store.CompleteWithOfficial(context.WithoutCancel(ctx), task.ID, result.Path, result.SHA256, result.Size, result.OfficialStatus, result.OfficialAlgorithm, result.OfficialValue); err != nil {
 			slog.Warn("checkpoint provider promotion", "provider", provider.SourceID, "task", task.ID, "error", err)
 		} else {
+			if result.Renamed {
+				archivepublish.Forget(task.StagingPath)
+				_ = transfer.RemoveStaging(task.ID, task.StagingPath)
+			}
 			r.events.Notify()
 		}
 		poll.Reset(10 * time.Millisecond)

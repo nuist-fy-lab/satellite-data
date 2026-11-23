@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -446,5 +447,34 @@ func TestDownloadRejectsShortPartialRange(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "staging", "goes", "3", "file.nc.downloaded")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("partial file unexpectedly ready: %v", err)
+	}
+}
+
+func TestPromoteRecoversRenamedArchiveBeforeDatabaseCommit(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("NFS archive rename is enabled on Linux")
+	}
+	root := t.TempDir()
+	t.Setenv("SATELLITE_ARCHIVE_RENAME_LOCK_DIR", root)
+	stage := filepath.Join(root, "stage.hdf")
+	if err := os.WriteFile(stage, []byte("verified payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.Stat(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: 1, TaskSpec: model.TaskSpec{Name: "scene.hdf", RelativeDir: "scenes"}, StagingPath: stage}
+	first, err := Promote(task, root)
+	if err != nil || !first.Renamed {
+		t.Fatalf("first promotion: %+v: %v", first, err)
+	}
+	second, err := Promote(task, root)
+	if err != nil || second != first {
+		t.Fatalf("checkpoint recovery: %+v, want %+v: %v", second, first, err)
+	}
+	published, err := os.Stat(first.Path)
+	if err != nil || !os.SameFile(original, published) {
+		t.Fatalf("archive did not retain the verified inode: %v", err)
 	}
 }
