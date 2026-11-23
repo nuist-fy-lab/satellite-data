@@ -21,6 +21,7 @@ import (
 
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/auth"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/spoolbudget"
 )
 
 var contentRangePattern = regexp.MustCompile(`(?i)^bytes\s+(\d+)-(\d+)/(\d+|\*)$`)
@@ -469,9 +470,13 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 	}
 	throughputWatchdog := newThroughputWatchdog(h.lowThroughput, cancel)
 	defer throughputWatchdog.Stop()
-	var destination io.Writer = handle
+	destination, err := spoolbudget.Wrap(requestCtx, handle)
+	if err != nil {
+		_ = handle.Close()
+		return DownloadResult{}, err
+	}
 	if watchdog != nil || throughputWatchdog != nil || len(onProgress) > 0 && onProgress[0] != nil {
-		destination = progressWriter{Writer: handle, report: func(n int64) {
+		destination = progressWriter{Writer: destination, report: func(n int64) {
 			watchdog.Pulse()
 			throughputWatchdog.Add(n)
 			if len(onProgress) > 0 && onProgress[0] != nil {
@@ -518,7 +523,7 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 	if err := os.Rename(readyMetaPath+".tmp", readyMetaPath); err != nil {
 		return DownloadResult{}, err
 	}
-	if err := os.Rename(partPath, readyPath); err != nil {
+	if err := spoolbudget.Rename(requestCtx, partPath, readyPath); err != nil {
 		return DownloadResult{}, err
 	}
 	_ = os.Remove(metaPath)

@@ -378,6 +378,16 @@ func (s *Store) RetryTransfer(ctx context.Context, id int64, cause error, delay 
 	return err
 }
 
+// DeferTransferForSpace releases a claim without consuming an upstream attempt.
+func (s *Store) DeferTransferForSpace(ctx context.Context, task model.Task, cause error) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE tasks SET state='retry_wait',attempts=attempts-1,next_attempt_ns=?,last_error=?,updated_at=?
+		WHERE id=? AND state='downloading' AND attempts=? AND attempts>0`,
+		now.Add(30*time.Second).UnixNano(), safeError(cause), stamp(now), task.ID, task.Attempts)
+	return err
+}
+
 // FinishTransferFailure commits the failure decision and its 404 evidence in
 // one update. The claim number prevents a stale worker from replacing a newer claim.
 func (s *Store) FinishTransferFailure(ctx context.Context, task model.Task, cause error, delay time.Duration, missing404, terminal bool, now time.Time) error {

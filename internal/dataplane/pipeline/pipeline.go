@@ -19,6 +19,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/access"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/config"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/spoolbudget"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 	"github.com/nuist-fy-lab/satellite-data/internal/sourceaccess"
@@ -312,7 +313,7 @@ func (r *Runtime) Run(ctx context.Context) {
 			continue
 		}
 		item := item
-		if item.TransferConcurrency > 1 {
+		if !r.cfg.TransfersPaused && item.TransferConcurrency > 1 {
 			r.wg.Add(1)
 			go func() {
 				defer r.wg.Done()
@@ -333,7 +334,7 @@ func (r *Runtime) Run(ctx context.Context) {
 				}
 			}()
 		}
-		for worker := 0; worker < item.TransferConcurrency; worker++ {
+		for worker := 0; !r.cfg.TransfersPaused && worker < item.TransferConcurrency; worker++ {
 			r.wg.Add(1)
 			go func(worker int) {
 				defer r.wg.Done()
@@ -487,6 +488,13 @@ func (r *Runtime) transferLoop(ctx context.Context, provider config.Provider, wo
 		})
 		if err != nil {
 			flow.finish(false, isCongestion(err), provider.TransferConcurrency)
+			if errors.Is(err, spoolbudget.ErrFull) {
+				if deferErr := r.store.DeferTransferForSpace(context.WithoutCancel(ctx), task, err); deferErr != nil {
+					slog.Warn("defer transfer for shared staging budget", "provider", provider.SourceID, "task", task.ID, "error", deferErr)
+				}
+				poll.Reset(time.Second)
+				continue
+			}
 			var lowThroughput *transfer.LowThroughputError
 			if errors.As(err, &lowThroughput) {
 				slog.Warn("recycle low-throughput transfer",

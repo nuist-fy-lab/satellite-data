@@ -38,6 +38,7 @@ type Config struct {
 	DBPath               string
 	CentralSocket        string
 	DownloadRoot         string
+	TransfersPaused      bool
 	ArchiveRoot          string
 	ArchiveGroupWritable bool
 	ArchiveEventSocket   string
@@ -70,6 +71,7 @@ func Load() Config {
 		DBPath:               expandHomeToken(env("SATDOWN_DB", filepath.Join(state, "downloader.sqlite3")), home),
 		CentralSocket:        expandHomeToken(env("SATDOWN_CENTRAL_SOCKET", filepath.Join(runtime, "satellite-data", "central.sock")), home),
 		DownloadRoot:         expandHomeToken(env("SATDOWN_DOWNLOAD_ROOT", filepath.Join(state, "delivery")), home),
+		TransfersPaused:      envBool("SATDOWN_TRANSFERS_PAUSED", false),
 		ArchiveRoot:          expandHomeToken(env("SATDOWN_ARCHIVE_ROOT", defaultArchiveRoot(home)), home),
 		ArchiveGroupWritable: envBool("SATDOWN_ARCHIVE_GROUP_WRITABLE", true),
 		ArchiveEventSocket:   expandHomeToken(env("SATDOWN_ARCHIVE_EVENT_SOCKET", filepath.Join(runtime, "satellite-data", "archive-events.sock")), home),

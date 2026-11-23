@@ -2,10 +2,15 @@ package pipeline
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/access"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/config"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/model"
+	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/store"
 	"github.com/nuist-fy-lab/satellite-data/internal/dataplane/transfer"
 )
 
@@ -334,5 +339,73 @@ func TestHighCeilingFastRecoveryViaCompletionsAndProgressProbe(t *testing.T) {
 	}
 	if probeFlow.limit < 36 || probeFlow.limit > 72 {
 		t.Fatalf("expected probeProgress fast recovery to >=36 in 8 intervals, got %d", probeFlow.limit)
+	}
+}
+
+func TestPausedTransfersStillPromoteStagedFiles(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "queue.db"))
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	defer db.Close()
+	defer cancel()
+	manager, err := access.NewManager(filepath.Join(root, "central.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		TransfersPaused: true,
+		ArchiveRoot:     filepath.Join(root, "archive"),
+		Providers:       []config.Provider{{SourceID: "modis", Enabled: true, TransferConcurrency: 2, VerifyConcurrency: 1}},
+	}
+	if err := os.Mkdir(cfg.ArchiveRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfg, db, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.official = nil
+	spec := model.TaskSpec{Key: "staged", SourceID: "modis", Name: "staged.hdf", RelativeDir: "fixtures", URL: "https://example.invalid/staged.hdf"}
+	ready, _, err := db.Enqueue(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(root, "staged.hdf")
+	if err := os.WriteFile(staged, []byte("staged content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkDownloaded(ctx, ready.ID, staged, 14); err != nil {
+		t.Fatal(err)
+	}
+	spec.Key, spec.Name = "queued", "queued.hdf"
+	queued, _, err := db.Enqueue(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.Run(ctx)
+	defer func() { cancel(); runtime.Wait() }()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		task, err := db.Task(ctx, ready.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.State == "done" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("staged file stayed in %s: %s", task.State, task.LastError)
+		case <-ticker.C:
+		}
+	}
+	task, err := db.Task(ctx, queued.ID)
+	if err != nil || task.State != "queued" || task.Attempts != 0 {
+		t.Fatalf("paused transfer was claimed: %+v, %v", task, err)
 	}
 }
