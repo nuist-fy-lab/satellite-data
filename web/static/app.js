@@ -2882,6 +2882,21 @@ function selectDownloadResults(selected) {
   renderDownloadSelection();
 }
 
+async function readDownloadPageJSON(url, field) {
+  const read = async () => {
+    const payload = await json(url);
+    if (!Array.isArray(payload?.[field])) throw new TypeError('响应不完整');
+    return payload;
+  };
+  try {
+    return await read();
+  } catch (error) {
+    if (error.name !== 'TypeError') throw error;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    return read();
+  }
+}
+
 async function loadDownloadCatalog() {
   syncDownloadTimezones();
   const ticket = ++state.downloads.loading;
@@ -2889,10 +2904,10 @@ async function loadDownloadCatalog() {
   $('#dl-submit-status').textContent = '';
   refreshDownloadFilters();
   try {
-    const catalog = await json('/api/v1/downloads/catalog');
+    const catalog = await readDownloadPageJSON('/api/v1/downloads/catalog', 'products');
     if (ticket !== state.downloads.loading) return;
     const allowed = new Set(state.sources.filter(source => source.capabilities?.includes('download')).map(source => source.id));
-    state.downloads.catalog = (catalog.products || []).filter(product => product.source_id !== 'era5' &&
+    state.downloads.catalog = catalog.products.filter(product => product.source_id !== 'era5' &&
       (!allowed.size || allowed.has(product.source_id))).map(normalizeCatalogProduct);
     state.downloads.catalogReady = true;
   } catch (error) {
@@ -3515,8 +3530,8 @@ async function loadDownloads(schedule = true, forceHistory = false) {
   const requestURL = '/api/v1/download-tasks?page=' + encodeURIComponent(state.downloads.page);
   const [requests, samples] = await Promise.allSettled([
     json(requestURL),
-    cacheFresh ? Promise.resolve(history.payload) : json('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window) +
-      (historySince ? '&since=' + encodeURIComponent(historySince) : '')),
+    cacheFresh ? Promise.resolve(history.payload) : readDownloadPageJSON('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window) +
+      (historySince ? '&since=' + encodeURIComponent(historySince) : ''), 'providers'),
   ]);
   if (ticket !== state.downloads.pollSeq) return;
   state.downloads.requestError = requests.status === 'rejected' ? requests.reason.message : '';
@@ -4130,7 +4145,10 @@ function bind() {
     document.querySelectorAll('[data-catalog-tab]').forEach(tab => { tab.classList.toggle('active', tab === node); tab.setAttribute('aria-selected', String(tab === node)); });
   }));
   $('#refresh-monitor').addEventListener('click', () => loadMonitor(true));
-  $('#refresh-downloads').addEventListener('click', () => loadDownloads(true, true));
+  $('#refresh-downloads').addEventListener('click', () => {
+    initializeDownloadSubmit();
+    loadDownloads(true, true);
+  });
   $('#download-page-prev').addEventListener('click', () => changeDownloadPage(-1));
   $('#download-page-next').addEventListener('click', () => changeDownloadPage(1));
   $('#download-timezone').addEventListener('change', event => setDownloadTimezone(event.target.value));

@@ -43,33 +43,38 @@ func NewManager(socket string) (*Manager, error) {
 }
 
 func (m *Manager) status(ctx context.Context, source string) (bool, error) {
+	providers, err := m.providerStatus(ctx)
+	return providers[source], err
+}
+
+func (m *Manager) providerStatus(ctx context.Context) (map[string]bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if time.Since(m.checked) < 5*time.Second {
-		return m.providers[source], nil
+		return m.providers, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://central/v1/access/status", nil)
 	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrCentralUnavailable, err)
+		return nil, fmt.Errorf("%w: %v", ErrCentralUnavailable, err)
 	}
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrCentralUnavailable, err)
+		return nil, fmt.Errorf("%w: %v", ErrCentralUnavailable, err)
 	}
 	defer resp.Body.Close()
 	var status struct {
 		Providers map[string]bool `json:"providers"`
 	}
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("%w: status %s", ErrCentralUnavailable, resp.Status)
+		return nil, fmt.Errorf("%w: status %s", ErrCentralUnavailable, resp.Status)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return false, fmt.Errorf("%w: invalid status response: %v", ErrCentralUnavailable, err)
+		return nil, fmt.Errorf("%w: invalid status response: %v", ErrCentralUnavailable, err)
 	}
 	m.providers, m.checked = status.Providers, time.Now()
-	return m.providers[source], nil
+	return m.providers, nil
 }
 
 func (m *Manager) Resolve(ctx context.Context, source, _ string, timeout time.Duration) (Route, error) {
@@ -88,8 +93,15 @@ func (m *Manager) HasUsableRoute(ctx context.Context, source, _ string, _ time.D
 	configured, _ := m.status(ctx, source)
 	return configured
 }
+
 func (m *Manager) Configured(ctx context.Context, source, _ string) bool {
 	configured, _ := m.status(ctx, source)
+	return configured
+}
+
+// ConfiguredProviders returns a read-only view of the latest route readiness.
+func (m *Manager) ConfiguredProviders(ctx context.Context) map[string]bool {
+	configured, _ := m.providerStatus(ctx)
 	return configured
 }
 func (m *Manager) MarkSuccess(context.Context, Route)              {}

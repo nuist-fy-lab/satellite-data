@@ -92,6 +92,29 @@ test('actual selection preserves prior scan mode until explicitly changed', asyn
   assert.equal(h.run('state.downloads.productOptions.g.granules.selected.length'),0);
 });
 
+test('catalog and history retry interrupted reads once', async () => {
+  const h = harness();
+  h.context.setTimeout = callback => callback();
+  for (const [url, field] of [['/api/v1/downloads/catalog', 'products'], ['/api/v1/monitor/downloads?window=1h', 'providers']]) {
+    let calls = 0;
+    h.context.fetch = async requestedURL => {
+      assert.equal(requestedURL, url);
+      if (++calls === 1) throw new TypeError('Failed to fetch');
+      return {ok: true, json: async () => ({[field]: []})};
+    };
+    assert.deepEqual((await h.context.readDownloadPageJSON(url, field))[field], []);
+    assert.equal(calls, 2);
+
+    calls = 0;
+    h.context.fetch = async () => {
+      calls++;
+      return {ok: false, status: 403, json: async () => ({error: 'Forbidden'})};
+    };
+    await assert.rejects(h.context.readDownloadPageJSON(url, field), {status: 403});
+    assert.equal(calls, 1);
+  }
+});
+
 function harness() {
   const nodes = new Map(), requests = [];
   const element = key => {

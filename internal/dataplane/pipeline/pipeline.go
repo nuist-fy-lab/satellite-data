@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -359,11 +360,16 @@ func (r *Runtime) Provider(sourceID string) (config.Provider, bool) {
 }
 
 func (r *Runtime) ProviderStatuses(ctx context.Context) ([]model.ProviderStatus, error) {
+	bySource, err := r.store.StateCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	configured := r.access.ConfiguredProviders(ctx)
 	out := make([]model.ProviderStatus, 0, len(r.cfg.Providers))
 	for _, item := range r.cfg.Providers {
-		counts, err := r.store.StateCounts(ctx, item.SourceID)
-		if err != nil {
-			return nil, err
+		counts := maps.Clone(bySource[item.SourceID])
+		if counts == nil {
+			counts = map[string]int{}
 		}
 		limit, _, rate := r.flows[item.SourceID].snapshot()
 		active := providerActiveTransfers(counts)
@@ -371,7 +377,7 @@ func (r *Runtime) ProviderStatuses(ctx context.Context) ([]model.ProviderStatus,
 			SourceID: item.SourceID, Enabled: item.Enabled,
 			TransferConcurrency: item.TransferConcurrency, VerifyConcurrency: item.VerifyConcurrency,
 			AdaptiveConcurrency: limit, ActiveTransfers: active, BytesPerSecond: rate,
-			AuthRef: item.AuthRef, AuthConfigured: r.access.Configured(ctx, item.SourceID, item.AuthRef), States: counts,
+			AuthRef: item.AuthRef, AuthConfigured: configured[item.SourceID], States: counts,
 		})
 	}
 	return out, nil

@@ -222,6 +222,39 @@ func TestProviderClaimsAreIsolated(t *testing.T) {
 	}
 }
 
+func TestStateCountsWhileWriterHasUncommittedChanges(t *testing.T) {
+	state, err := Open(filepath.Join(t.TempDir(), "queue status.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	for _, source := range []string{"goes", "modis"} {
+		_, _, err := state.Enqueue(t.Context(), model.TaskSpec{
+			Key: source, SourceID: source, Name: source + ".dat", URL: "https://example.invalid/" + source,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	writer, err := state.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	if _, err := writer.ExecContext(t.Context(), `UPDATE tasks SET state='downloading' WHERE source_id='modis'`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	counts, err := state.StateCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(counts) != 2 || counts["goes"]["queued"] != 1 || counts["modis"]["queued"] != 1 || counts["modis"]["downloading"] != 0 {
+		t.Fatalf("expected committed queue counts, got %v", counts)
+	}
+}
+
 func TestClaimTransferPrioritizesReadyRetry(t *testing.T) {
 	state, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
 	if err != nil {

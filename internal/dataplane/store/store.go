@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -64,6 +66,13 @@ CREATE TABLE IF NOT EXISTS archive_event_outbox (
 
 type Store struct {
 	db *sql.DB
+
+	// Provider status is sampled by the monitor and by every open dashboard.
+	// Its index scan must not occupy the queue's only writer connection.
+	statusDB     *sql.DB
+	statusGate   chan struct{}
+	statusCounts map[string]map[string]int
+	statusAt     time.Time
 }
 
 func Open(path string) (*Store, error) {
@@ -155,10 +164,22 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("secure downloader state: %w", err)
 	}
-	return &Store{db: db}, nil
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	statusDSN := url.URL{Scheme: "file", Path: absolute, RawQuery: "mode=ro&_pragma=busy_timeout%283000%29"}
+	statusDB, err := sql.Open("sqlite", statusDSN.String())
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	statusDB.SetMaxOpenConns(1)
+	return &Store{db: db, statusDB: statusDB, statusGate: make(chan struct{}, 1)}, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error { return errors.Join(s.statusDB.Close(), s.db.Close()) }
 
 func (s *Store) Recover(ctx context.Context) error {
 	now := stamp(time.Now())
@@ -637,23 +658,41 @@ func (s *Store) TasksByIDs(ctx context.Context, ids []int64) ([]model.Task, erro
 	return out, rows.Err()
 }
 
-func (s *Store) StateCounts(ctx context.Context, sourceID string) (map[string]int, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT state,count(*) FROM tasks WHERE source_id=? GROUP BY state`, sourceID)
+// StateCounts returns an immutable snapshot of queue counts for every source.
+func (s *Store) StateCounts(ctx context.Context) (map[string]map[string]int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	select {
+	case s.statusGate <- struct{}{}:
+		defer func() { <-s.statusGate }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if time.Since(s.statusAt) < 3*time.Second {
+		return s.statusCounts, nil
+	}
+	rows, err := s.statusDB.QueryContext(ctx, `SELECT source_id,state,count(*) FROM tasks GROUP BY source_id,state`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]int{}
+	out := make(map[string]map[string]int)
 	for rows.Next() {
-		var state string
+		var source, state string
 		var count int
-		if err := rows.Scan(&state, &count); err != nil {
+		if err := rows.Scan(&source, &state, &count); err != nil {
 			return nil, err
 		}
-		out[state] = count
+		if out[source] == nil {
+			out[source] = make(map[string]int)
+		}
+		out[source][state] = count
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	s.statusCounts, s.statusAt = out, time.Now()
+	return out, nil
 }
 
 const taskSelect = `
