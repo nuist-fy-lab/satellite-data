@@ -172,34 +172,36 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 	if err != nil {
 		return err
 	}
-	// Estimate the scan phase from the selected band, not other bands that
-	// can start seconds apart within the same nominal observation.
-	observed := make([]time.Time, 0, len(granules))
-	byScanMode := map[string][]time.Time{}
-	for _, granule := range granules {
-		for _, asset := range granule.Assets {
-			if request.Selection.MatchesAsset(request.SourceID, request.CollectionID, asset.Name) {
-				observed = append(observed, granule.Start)
-				mode := granule.Metadata["scan_mode"]
-				byScanMode[mode] = append(byScanMode[mode], granule.Start)
-				break
+	times := request.Selection.Times
+	if len(request.Selection.Scenes) > 0 {
+		times = sceneTimes
+	}
+	coverage := len(times) == 0 && len(request.Selection.Scenes) == 0
+	isGOES := strings.HasPrefix(request.SourceID, "goes")
+	scanMode := func(granule model.Granule) string {
+		if isGOES {
+			return granule.Metadata["scan_mode"]
+		}
+		return ""
+	}
+	observations := make(map[string][]time.Time)
+	if !coverage {
+		// Estimate the scan phase using only the selected bands in each mode.
+		for _, granule := range granules {
+			for _, asset := range granule.Assets {
+				if request.Selection.MatchesAsset(request.SourceID, request.CollectionID, asset.Name) {
+					mode := scanMode(granule)
+					observations[mode] = append(observations[mode], granule.Start)
+					break
+				}
 			}
 		}
 	}
-	refs := make([]state.DownloaderTaskRef, 0, len(granules))
+	tolerances := make(map[string]time.Duration, len(observations))
+	refs := make([]state.DownloaderTaskRef, 0, min(128, len(granules)))
 	selected := 0
 	for _, granule := range granules {
-		times := request.Selection.Times
-		if len(request.Selection.Scenes) > 0 {
-			times = sceneTimes
-		}
-		actualAxis := axis.WithGOESMode(request.SourceID, request.CollectionID, granule.Metadata["scan_mode"])
-		scanTimes := observed
-		if strings.HasPrefix(request.SourceID, "goes") {
-			scanTimes = byScanMode[granule.Metadata["scan_mode"]]
-		}
-		nominal, match := actualAxis.MatchWithin(granule.Start, times, scanTimes, actualAxis.Tolerance(scanTimes))
-		coverage := len(times) == 0 && len(request.Selection.Scenes) == 0
+		var match bool
 		if coverage {
 			match = producttime.OwnsCoverage(granule.Start, granule.End, request.Start, request.Cursor, chunkEnd)
 			if len(request.Selection.GranuleIDs) > 0 {
@@ -207,12 +209,22 @@ func (c *Coordinator) advanceDiscovery(ctx context.Context, request state.Downlo
 				match = match && index < len(request.Selection.GranuleIDs) && request.Selection.GranuleIDs[index] == granule.ID
 			}
 		} else {
+			mode := scanMode(granule)
+			actualAxis := axis.WithGOESMode(request.SourceID, request.CollectionID, mode)
+			scanTimes := observations[mode]
+			tolerance, ok := tolerances[mode]
+			if !ok {
+				tolerance = actualAxis.Tolerance(scanTimes)
+				tolerances[mode] = tolerance
+			}
+			var nominal time.Time
+			nominal, match = actualAxis.MatchWithin(granule.Start, times, scanTimes, tolerance)
 			match = match && !nominal.Before(request.Cursor) && nominal.Before(chunkEnd)
+			if len(request.Selection.Scenes) > 0 && nominal.Format(time.DateOnly) != request.Cursor.Format(time.DateOnly) {
+				continue
+			}
 		}
 		if !match {
-			continue
-		}
-		if len(request.Selection.Scenes) > 0 && nominal.Format(time.DateOnly) != request.Cursor.Format(time.DateOnly) {
 			continue
 		}
 		matched := false
@@ -313,21 +325,30 @@ func (c *Coordinator) monitorLoop(ctx context.Context) {
 	}
 }
 
-func (c *Coordinator) refreshRequest(ctx context.Context, request state.DownloadRequest) error {
-	ids, err := c.store.DownloadRequestTaskIDs(ctx, request.ID)
-	if err != nil {
-		return err
-	}
-	tasks := make([]downloader.Task, 0, len(ids))
-	for start := 0; start < len(ids); start += 500 {
-		end := min(start+500, len(ids))
-		items, err := c.downloader.TaskStatuses(ctx, ids[start:end])
+func (c *Coordinator) refreshRequest(ctx context.Context, request state.DownloadTransferRequest) error {
+	const pageSize = 500
+	ids := make([]int64, 0, pageSize)
+	var after int64
+	var summary state.DownloadTransferSummary
+	for {
+		page, err := c.store.DownloadRequestTaskIDs(ctx, request.ID, after, ids)
 		if err != nil {
 			return err
 		}
-		tasks = append(tasks, items...)
+		if len(page) == 0 {
+			break
+		}
+		items, err := c.downloader.TaskStatuses(ctx, page)
+		if err != nil {
+			return err
+		}
+		summary.Add(len(page), items)
+		if len(page) < pageSize {
+			break
+		}
+		after = page[len(page)-1]
 	}
-	return c.store.UpdateDownloadTransferState(ctx, request.ID, len(ids), tasks)
+	return c.store.UpdateDownloadTransferState(ctx, request, summary)
 }
 
 func discoveryChunk(providerID string) time.Duration {

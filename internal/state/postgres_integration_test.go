@@ -82,6 +82,9 @@ func TestPostgresCompactStateRoundTrip(t *testing.T) {
 		"postgres-local-scan-regression", nil); err != nil {
 		t.Fatalf("PostgreSQL local archive scan: %v", err)
 	}
+	t.Run("streamed archive scan", func(t *testing.T) {
+		checkLocalFileScan(t, s)
+	})
 	for _, asset := range assets {
 		var url string
 		var size int64

@@ -143,11 +143,10 @@ func (a Axis) Tolerance(observed []time.Time) time.Duration {
 		return base
 	}
 	mid := median(offsets)
-	deviation := make([]time.Duration, 0, len(offsets))
-	for _, offset := range offsets {
-		deviation = append(deviation, absDuration(offset-mid))
+	for index, offset := range offsets {
+		offsets[index] = absDuration(offset - mid)
 	}
-	return min(limit, max(base, mid+3*median(deviation)+15*time.Second))
+	return min(limit, max(base, mid+3*median(offsets)+15*time.Second))
 }
 
 func absDuration(value time.Duration) time.Duration {

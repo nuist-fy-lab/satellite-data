@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -404,107 +403,54 @@ func (i *Indexer) localLoop(ctx context.Context) {
 }
 
 func (i *Indexer) scanLocal(ctx context.Context) {
-	files := make([]state.LocalFile, 0, 1024)
+	observed := 0
 	var scanErr error
 	i.store.BeginArchiveScan()
-	defer func() { i.store.FinishArchiveScan(len(files), scanErr) }()
+	defer func() { i.store.FinishArchiveScan(observed, scanErr) }()
 	if err := os.MkdirAll(i.archiveRoot, 0o777); err != nil {
 		scanErr = err
 		slog.Warn("create local archive root", "root", i.archiveRoot, "error", err)
 		return
 	}
-	verified, err := i.store.VerifiedArchiveFiles(ctx)
-	if err != nil {
-		scanErr = err
-		slog.Warn("load verified archive", "error", err)
-		return
-	}
+	roots := i.roots()
 	warnings := make([]string, 0)
-	for _, root := range i.roots() {
-		if err := i.walkArchiveRoot(ctx, root, root != i.archiveRoot, verified, &files, &warnings); err != nil {
-			scanErr = err
-			slog.Warn("scan local archive", "root", root, "error", err)
-			return
+	goesDays := make(map[state.ArchiveProductDay]*goesArchiveDay)
+	earthCARE := make(map[state.ArchiveProductDay]struct{})
+	changed, err := i.store.ReplaceLocalFileScan(ctx, roots, func(add func(state.ScannedLocalFile) error) ([]string, error) {
+		for _, root := range roots {
+			err := i.walkArchiveRoot(ctx, root, root != i.archiveRoot, func(file state.ScannedLocalFile) error {
+				if err := add(file); err != nil {
+					return err
+				}
+				observed++
+				if observed%128 == 0 {
+					i.store.ArchiveScanProgress(observed)
+				}
+				return nil
+			}, &warnings)
+			if err != nil {
+				return nil, err
+			}
 		}
-	}
-	sort.Slice(files, func(a, b int) bool { return files[a].Path < files[b].Path })
-	hash := sha256.New()
-	for _, root := range i.roots() {
-		_, _ = hash.Write([]byte(root + "\x00"))
-	}
-	for _, file := range files {
-		_, _ = hash.Write([]byte(file.Path))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(time.Unix(0, file.MtimeNS).UTC().Format(time.RFC3339Nano)))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(strconv.FormatInt(file.Size, 10)))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(strings.TrimSpace(strings.ToLower(file.Filename))))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(file.State + "\x00" + file.Detail + "\x00" + file.SourceID + "\x00"))
-	}
-	for _, path := range warnings {
-		_, _ = hash.Write([]byte(path + "\x00"))
-	}
-	fingerprint := hex.EncodeToString(hash.Sum(nil))
-	changed, err := i.store.ReplaceLocalFilesWithWarnings(ctx, files, fingerprint, warnings)
+		return warnings, nil
+	}, func(file state.LocalFile) {
+		i.collectGOESArchiveDay(goesDays, file)
+		if day, ok := i.earthCAREArchiveDay(file); ok {
+			earthCARE[day] = struct{}{}
+		}
+	})
 	if err != nil {
 		scanErr = err
 		if !errors.Is(err, context.Canceled) {
-			slog.Warn("persist local archive index", "root", i.archiveRoot, "error", err)
+			slog.Warn("scan local archive", "root", i.archiveRoot, "error", err)
 		}
 		return
 	}
 	if changed {
-		slog.Info("local archive index refreshed", "files", len(files), "unreadable_directories", len(warnings))
+		slog.Info("local archive index refreshed", "files", observed, "unreadable_directories", len(warnings))
 	}
-	queued, recounted, err := i.reconcileGOESArchive(ctx, files)
-	if err != nil {
-		scanErr = err
-		slog.Warn("reconcile GOES archive dates", "error", err)
-	} else if queued > 0 || recounted > 0 {
-		slog.Info("GOES archive dates reconciled", "official_days_queued", queued, "days_recounted", recounted)
-	}
-	if i.sharedRoots[0] != "" {
-		queued, err := i.queueHistoricalEarthCARE(ctx, files)
-		if err != nil {
-			scanErr = err
-			slog.Warn("queue historical EarthCARE official catalog lookup", "error", err)
-		} else if queued > 0 {
-			slog.Info("queued official EarthCARE dates for historical archive", "days", queued)
-		}
-	}
-}
-
-func (i *Indexer) reconcileGOESArchive(ctx context.Context, files []state.LocalFile) (int, int, error) {
-	type archiveDay struct {
-		state.ArchiveDay
-		digest hash.Hash
-	}
-	byDay := make(map[string]*archiveDay)
-	for _, file := range files {
-		if file.State != "ok" {
-			continue
-		}
-		rel, err := filepath.Rel(i.archiveRoot, file.Path)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			continue
-		}
-		product, at, ok := goes.ArchiveIdentity(file.Filename)
-		if !ok {
-			continue
-		}
-		day := at.Format(time.DateOnly)
-		key := product + "|" + day
-		if byDay[key] == nil {
-			byDay[key] = &archiveDay{ArchiveDay: state.ArchiveDay{Product: product, Day: day}, digest: sha256.New()}
-		}
-		item := byDay[key]
-		item.Filenames = append(item.Filenames, file.Filename)
-		_, _ = fmt.Fprintf(item.digest, "%s\x00%d\x00%d\x00%s\x00%s\x00", file.Path, file.Size, file.MtimeNS, file.State, file.Detail)
-	}
-	days := make([]state.ArchiveDay, 0, len(byDay))
-	for _, day := range byDay {
+	days := make([]state.ArchiveDay, 0, len(goesDays))
+	for _, day := range goesDays {
 		day.Fingerprint = hex.EncodeToString(day.digest.Sum(nil))
 		days = append(days, day.ArchiveDay)
 	}
@@ -514,51 +460,89 @@ func (i *Indexer) reconcileGOESArchive(ctx context.Context, files []state.LocalF
 		}
 		return days[a].Product < days[b].Product
 	})
-	return i.store.ReconcileGOESArchiveDays(ctx, days)
+	queued, recounted, err := i.store.ReconcileGOESArchiveDays(ctx, days)
+	if err != nil {
+		scanErr = err
+		slog.Warn("reconcile GOES archive dates", "error", err)
+	} else if queued > 0 || recounted > 0 {
+		slog.Info("GOES archive dates reconciled", "official_days_queued", queued, "days_recounted", recounted)
+	}
+	if i.sharedRoots[0] != "" {
+		days := make([]state.ArchiveProductDay, 0, len(earthCARE))
+		for day := range earthCARE {
+			days = append(days, day)
+		}
+		sort.Slice(days, func(a, b int) bool {
+			if days[a].Day == days[b].Day {
+				return days[a].ProductType < days[b].ProductType
+			}
+			return days[a].Day < days[b].Day
+		})
+		queued, err := i.store.QueueEarthCAREOfficialDays(ctx, days)
+		if err != nil {
+			scanErr = err
+			slog.Warn("queue historical EarthCARE official catalog lookup", "error", err)
+		} else if queued > 0 {
+			slog.Info("queued official EarthCARE dates for historical archive", "days", queued)
+		}
+	}
 }
 
-func (i *Indexer) queueHistoricalEarthCARE(ctx context.Context, files []state.LocalFile) (int, error) {
+type goesArchiveDay struct {
+	state.ArchiveDay
+	digest hash.Hash
+}
+
+func (i *Indexer) collectGOESArchiveDay(days map[state.ArchiveProductDay]*goesArchiveDay, file state.LocalFile) {
+	if file.State != "ok" || !strings.HasPrefix(file.Filename, "OR_") {
+		return
+	}
+	rel, err := filepath.Rel(i.archiveRoot, file.Path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return
+	}
+	product, at, ok := goes.ArchiveIdentity(file.Filename)
+	if !ok {
+		return
+	}
+	key := state.ArchiveProductDay{ProductType: product, Day: at.Format(time.DateOnly)}
+	item := days[key]
+	if item == nil {
+		item = &goesArchiveDay{ArchiveDay: state.ArchiveDay{Product: key.ProductType, Day: key.Day}, digest: sha256.New()}
+		days[key] = item
+	}
+	item.Filenames = append(item.Filenames, file.Filename)
+	_, _ = fmt.Fprintf(item.digest, "%s\x00%d\x00%d\x00%s\x00%s\x00", file.Path, file.Size, file.MtimeNS, file.State, file.Detail)
+}
+
+func (i *Indexer) earthCAREArchiveDay(file state.LocalFile) (state.ArchiveProductDay, bool) {
 	root := i.sharedRoots[0]
-	unique := make(map[state.ArchiveProductDay]struct{})
-	for _, file := range files {
-		if file.State == "error" {
-			continue
-		}
-		rel, err := filepath.Rel(root, file.Path)
-		if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			continue
-		}
-		parts := strings.Split(rel, string(filepath.Separator))
-		if (len(parts) != 3 && len(parts) != 4) || parts[len(parts)-1] != file.Filename || strings.HasPrefix(parts[0], ".") || strings.HasPrefix(parts[0], "_") {
-			continue
-		}
-		match := earthCAREDate.FindStringSubmatch(file.Filename)
-		if match == nil {
-			continue
-		}
-		day, err := time.Parse("20060102", match[1])
-		if err != nil || day.Format("20060102") != match[1] {
-			continue
-		}
-		if len(parts) == 3 && parts[1] != match[1] {
-			continue
-		}
-		if len(parts) == 4 && (parts[1] != match[1][:4] || parts[2] != match[1][4:6]) {
-			continue
-		}
-		unique[state.ArchiveProductDay{ProductType: parts[0], Day: day.Format(time.DateOnly)}] = struct{}{}
+	if root == "" || file.State == "error" {
+		return state.ArchiveProductDay{}, false
 	}
-	days := make([]state.ArchiveProductDay, 0, len(unique))
-	for day := range unique {
-		days = append(days, day)
+	match := earthCAREDate.FindStringSubmatch(file.Filename)
+	if match == nil {
+		return state.ArchiveProductDay{}, false
 	}
-	sort.Slice(days, func(a, b int) bool {
-		if days[a].Day == days[b].Day {
-			return days[a].ProductType < days[b].ProductType
-		}
-		return days[a].Day < days[b].Day
-	})
-	return i.store.QueueEarthCAREOfficialDays(ctx, days)
+	rel, err := filepath.Rel(root, file.Path)
+	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return state.ArchiveProductDay{}, false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if (len(parts) != 3 && len(parts) != 4) || parts[len(parts)-1] != file.Filename || strings.HasPrefix(parts[0], ".") || strings.HasPrefix(parts[0], "_") {
+		return state.ArchiveProductDay{}, false
+	}
+	day, err := time.Parse("20060102", match[1])
+	if err != nil || day.Format("20060102") != match[1] {
+		return state.ArchiveProductDay{}, false
+	}
+	if len(parts) == 3 && parts[1] != match[1] {
+		return state.ArchiveProductDay{}, false
+	}
+	if len(parts) == 4 && (parts[1] != match[1][:4] || parts[2] != match[1][4:6]) {
+		return state.ArchiveProductDay{}, false
+	}
+	return state.ArchiveProductDay{ProductType: parts[0], Day: day.Format(time.DateOnly)}, true
 }
 
 func (i *Indexer) roots() []string {
@@ -571,7 +555,7 @@ func (i *Indexer) roots() []string {
 	return roots
 }
 
-func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool, verified map[string]state.VerifiedArchiveFile, files *[]state.LocalFile, warnings *[]string) error {
+func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool, add func(state.ScannedLocalFile) error, warnings *[]string) error {
 	if info, err := os.Lstat(root); err != nil {
 		return err
 	} else if !info.IsDir() {
@@ -591,18 +575,17 @@ func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool,
 				} else if !entry.IsDir() {
 					return walkErr
 				}
-				known, err := i.store.KnownLocalFilesBelow(ctx, path)
+				err := i.store.VisitKnownLocalFilesBelow(ctx, path, func(file state.LocalFile) error {
+					file.State = "unverified"
+					file.Detail = "directory inaccessible; previously indexed metadata only"
+					if root == i.sharedRoots[1] {
+						file.SourceID = "era5"
+					}
+					return add(state.ScannedLocalFile{LocalFile: file})
+				})
 				if err != nil {
 					return err
 				}
-				for index := range known {
-					known[index].State = "unverified"
-					known[index].Detail = "directory inaccessible; previously indexed metadata only"
-					if root == i.sharedRoots[1] {
-						known[index].SourceID = "era5"
-					}
-				}
-				*files = append(*files, known...)
 				*warnings = append(*warnings, path)
 				slog.Warn("unreadable shared archive directory", "path", path)
 				return filepath.SkipDir
@@ -641,15 +624,8 @@ func (i *Indexer) walkArchiveRoot(ctx context.Context, root string, shared bool,
 		}
 		if shared {
 			file.State, file.Detail = checkSharedFile(path, info.Size())
-			if record, ok := verified[path]; ok && file.State != "error" && record.Size == file.Size && record.MtimeNS == file.MtimeNS {
-				file.State, file.Detail = "ok", "sha256_verified:"+record.SHA256
-			}
 		}
-		*files = append(*files, file)
-		if len(*files)%128 == 0 {
-			i.store.ArchiveScanProgress(len(*files))
-		}
-		return nil
+		return add(state.ScannedLocalFile{LocalFile: file, CheckVerification: shared})
 	})
 }
 

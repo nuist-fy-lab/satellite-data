@@ -127,6 +127,15 @@ func (s *Server) taskStatuses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid task status JSON"))
 		return
 	}
+	if r.URL.Query().Get("fields") == "state" {
+		items, err := s.store.TaskStatuses(r.Context(), payload.IDs)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"tasks": items})
+		return
+	}
 	items, err := s.store.TasksByIDs(r.Context(), payload.IDs)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

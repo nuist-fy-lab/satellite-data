@@ -345,12 +345,6 @@ type LocalFile struct {
 	Detail   string
 }
 
-type VerifiedArchiveFile struct {
-	Size    int64
-	MtimeNS int64
-	SHA256  string
-}
-
 type ArchiveReuseCandidate struct {
 	Path   string
 	SHA256 string
@@ -1473,6 +1467,10 @@ func (s *Store) ReplaceLocalFilesWithWarnings(ctx context.Context, files []Local
 	if err := stageLocalFiles(ctx, conn, files, s.postgres); err != nil {
 		return false, err
 	}
+	return s.publishLocalFiles(ctx, conn, fingerprint, skipped)
+}
+
+func (s *Store) publishLocalFiles(ctx context.Context, conn *sql.Conn, fingerprint string, skipped []string) (bool, error) {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -1602,61 +1600,6 @@ func (s *Store) ReconcileStaleLocalErrors(ctx context.Context) (bool, error) {
 	return true, tx.Commit()
 }
 
-func stageLocalFiles(ctx context.Context, conn *sql.Conn, files []LocalFile, postgres bool) error {
-	// Only the connection-local TEMP database is written here. Do not reserve
-	// the main writer lock while inserting tens of thousands of scan results.
-	if _, err := conn.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS scanned_local_files (
-		path TEXT PRIMARY KEY, filename TEXT NOT NULL, size BIGINT NOT NULL, mtime_ns BIGINT NOT NULL,
-		state TEXT NOT NULL, detail TEXT NOT NULL, source_id TEXT NOT NULL
-	)`); err != nil {
-		return err
-	}
-	begin := "BEGIN DEFERRED"
-	if postgres {
-		begin = "BEGIN"
-	}
-	if _, err := conn.ExecContext(ctx, begin); err != nil {
-		return err
-	}
-	defer conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
-	if _, err := conn.ExecContext(ctx, "DELETE FROM scanned_local_files"); err != nil {
-		return err
-	}
-	stmt, err := conn.PrepareContext(ctx, `INSERT INTO scanned_local_files(path,filename,size,mtime_ns,state,detail,source_id) VALUES(?,?,?,?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for _, file := range files {
-		if file.State == "" {
-			file.State = "ok"
-		}
-		if _, err := stmt.ExecContext(ctx, file.Path, file.Filename, file.Size, file.MtimeNS, file.State, file.Detail, file.SourceID); err != nil {
-			return err
-		}
-	}
-	_, err = conn.ExecContext(ctx, "COMMIT")
-	return err
-}
-
-func (s *Store) VerifiedArchiveFiles(ctx context.Context) (map[string]VerifiedArchiveFile, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT path,size,mtime_ns,sha256 FROM verified_archive_files`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	files := make(map[string]VerifiedArchiveFile)
-	for rows.Next() {
-		var path string
-		var file VerifiedArchiveFile
-		if err := rows.Scan(&path, &file.Size, &file.MtimeNS, &file.SHA256); err != nil {
-			return nil, err
-		}
-		files[path] = file
-	}
-	return files, rows.Err()
-}
-
 func (s *Store) RecordVerifiedArchiveFile(ctx context.Context, path string, size, mtimeNS int64, sha256, sourceID, collection, item, asset string) error {
 	_, err := s.writer.ExecContext(ctx, `
 		INSERT INTO verified_archive_files(path,size,mtime_ns,sha256,source_id,official_collection,official_item,official_asset,verified_at)
@@ -1669,21 +1612,31 @@ func (s *Store) RecordVerifiedArchiveFile(ctx context.Context, path string, size
 }
 
 func (s *Store) KnownLocalFilesBelow(ctx context.Context, dir string) ([]LocalFile, error) {
+	var files []LocalFile
+	err := s.VisitKnownLocalFilesBelow(ctx, dir, func(file LocalFile) error {
+		files = append(files, file)
+		return nil
+	})
+	return files, err
+}
+
+func (s *Store) VisitKnownLocalFilesBelow(ctx context.Context, dir string, visit func(LocalFile) error) error {
 	lower, upper := dir+string(filepath.Separator), dir+"0"
 	rows, err := s.db.QueryContext(ctx, `SELECT path,filename,size,mtime_ns,state,detail FROM local_files WHERE path>=? AND path<?`, lower, upper)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	var files []LocalFile
 	for rows.Next() {
 		var file LocalFile
 		if err := rows.Scan(&file.Path, &file.Filename, &file.Size, &file.MtimeNS, &file.State, &file.Detail); err != nil {
-			return nil, err
+			return err
 		}
-		files = append(files, file)
+		if err := visit(file); err != nil {
+			return err
+		}
 	}
-	return files, rows.Err()
+	return rows.Err()
 }
 
 func (s *Store) ArchiveScanStatus(ctx context.Context) (ArchiveScanStatus, error) {

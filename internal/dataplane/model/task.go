@@ -39,6 +39,11 @@ type Task struct {
 	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
+type TaskStatus struct {
+	State     string `json:"state"`
+	LastError string `json:"last_error,omitempty"`
+}
+
 type ProviderStatus struct {
 	SourceID            string         `json:"source_id"`
 	Enabled             bool           `json:"enabled"`

@@ -640,19 +640,7 @@ func (s *Store) TasksByIDs(ctx context.Context, ids []int64) ([]model.Task, erro
 	if len(ids) == 0 {
 		return []model.Task{}, nil
 	}
-	if len(ids) > 500 {
-		return nil, errors.New("at most 500 task ids may be queried at once")
-	}
-	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for index, id := range ids {
-		if id <= 0 {
-			return nil, errors.New("task ids must be positive")
-		}
-		placeholders[index] = "?"
-		args[index] = id
-	}
-	rows, err := s.db.QueryContext(ctx, taskSelect+` WHERE id IN (`+strings.Join(placeholders, ",")+`) ORDER BY id`, args...)
+	rows, err := s.queryTasksByIDs(ctx, taskSelect, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -666,6 +654,42 @@ func (s *Store) TasksByIDs(ctx context.Context, ids []int64) ([]model.Task, erro
 		out = append(out, task)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) TaskStatuses(ctx context.Context, ids []int64) ([]model.TaskStatus, error) {
+	out := make([]model.TaskStatus, 0, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.queryTasksByIDs(ctx, "SELECT state,last_error FROM tasks", ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item model.TaskStatus
+		if err := rows.Scan(&item.State, &item.LastError); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) queryTasksByIDs(ctx context.Context, query string, ids []int64) (*sql.Rows, error) {
+	if len(ids) > 500 {
+		return nil, errors.New("at most 500 task ids may be queried at once")
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for index, id := range ids {
+		if id <= 0 {
+			return nil, errors.New("task ids must be positive")
+		}
+		placeholders[index] = "?"
+		args[index] = id
+	}
+	return s.db.QueryContext(ctx, query+` WHERE id IN (`+strings.Join(placeholders, ",")+`) ORDER BY id`, args...)
 }
 
 // StateCounts returns an immutable snapshot of queue counts for every source.

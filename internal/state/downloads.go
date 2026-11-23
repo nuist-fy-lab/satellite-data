@@ -406,21 +406,26 @@ func (s *Store) downloadRequests(ctx context.Context, limit int, ownerUserID str
 	return out, rows.Err()
 }
 
-func (s *Store) ActiveDownloadRequests(ctx context.Context, limit int) ([]DownloadRequest, error) {
+type DownloadTransferRequest struct {
+	ID           int64
+	AssetsQueued int
+}
+
+func (s *Store) ActiveDownloadRequests(ctx context.Context, limit int) ([]DownloadTransferRequest, error) {
 	if limit < 1 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, downloadRequestSelect+`
+	rows, err := s.db.QueryContext(ctx, `SELECT id,assets_queued FROM download_requests
 		WHERE state IN ('pending','discovering','retry_wait','transferring','waiting_auth')
 		ORDER BY CASE WHEN state IN ('transferring','waiting_auth') THEN 0 ELSE 1 END,updated_at,id LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]DownloadRequest, 0, limit)
+	out := make([]DownloadTransferRequest, 0, limit)
 	for rows.Next() {
-		item, err := scanDownloadRequest(rows)
-		if err != nil {
+		var item DownloadTransferRequest
+		if err := rows.Scan(&item.ID, &item.AssetsQueued); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -428,14 +433,15 @@ func (s *Store) ActiveDownloadRequests(ctx context.Context, limit int) ([]Downlo
 	return out, rows.Err()
 }
 
-func (s *Store) DownloadRequestTaskIDs(ctx context.Context, requestID int64) ([]int64, error) {
+func (s *Store) DownloadRequestTaskIDs(ctx context.Context, requestID, after int64, ids []int64) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT downloader_task_id FROM download_request_tasks WHERE request_id=? ORDER BY downloader_task_id`, requestID)
+		SELECT downloader_task_id FROM download_request_tasks
+		WHERE request_id=? AND downloader_task_id>? ORDER BY downloader_task_id LIMIT ?`, requestID, after, cap(ids))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var ids []int64
+	ids = ids[:0]
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
@@ -446,19 +452,31 @@ func (s *Store) DownloadRequestTaskIDs(ctx context.Context, requestID int64) ([]
 	return ids, rows.Err()
 }
 
-func (s *Store) UpdateDownloadTransferState(ctx context.Context, requestID int64, total int, tasks []downloader.Task) error {
-	counts := map[string]int{}
-	lastError := ""
+type DownloadTransferSummary struct {
+	Total, Known, Done, Failed, WaitingAuth int
+	LastError                               string
+}
+
+func (summary *DownloadTransferSummary) Add(requested int, tasks []downloader.TaskStatus) {
+	summary.Total += requested
+	summary.Known += len(tasks)
 	for _, task := range tasks {
-		counts[task.State]++
+		switch task.State {
+		case "done":
+			summary.Done++
+		case "failed":
+			summary.Failed++
+		case "waiting_auth":
+			summary.WaitingAuth++
+		}
 		if task.LastError != "" {
-			lastError = task.LastError
+			summary.LastError = task.LastError
 		}
 	}
-	done := counts["done"]
-	failed := counts["failed"]
-	waitingAuth := counts["waiting_auth"]
-	known := len(tasks)
+}
+
+func (s *Store) UpdateDownloadTransferState(ctx context.Context, request DownloadTransferRequest, summary DownloadTransferSummary) error {
+	total, known, done, failed, waitingAuth := summary.Total, summary.Known, summary.Done, summary.Failed, summary.WaitingAuth
 	state := "transferring"
 	completed := ""
 	if total == 0 {
@@ -481,8 +499,8 @@ func (s *Store) UpdateDownloadTransferState(ctx context.Context, requestID int64
 		    last_error=CASE WHEN state IN ('pending','discovering','retry_wait') THEN last_error ELSE ? END,
 		    completed_at=CASE WHEN state IN ('pending','discovering','retry_wait') THEN completed_at ELSE ? END,
 		    updated_at=?
-		WHERE id=? AND state IN ('pending','discovering','retry_wait','transferring','waiting_auth')`,
-		state, done, failed, waitingAuth, lastError, completed, now, requestID)
+		WHERE id=? AND assets_queued=? AND state IN ('pending','discovering','retry_wait','transferring','waiting_auth')`,
+		state, done, failed, waitingAuth, summary.LastError, completed, now, request.ID, request.AssetsQueued)
 	return err
 }
 

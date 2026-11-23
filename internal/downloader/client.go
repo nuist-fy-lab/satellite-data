@@ -21,6 +21,7 @@ type Client struct {
 }
 
 type TaskSpec = dataplanemodel.TaskSpec
+type TaskStatus = dataplanemodel.TaskStatus
 
 type Task struct {
 	ID           int64  `json:"id"`
@@ -134,11 +135,11 @@ func (c *Client) AdoptVerified(ctx context.Context, spec TaskSpec, path, digest 
 	return response.Task, response.Created, nil
 }
 
-func (c *Client) TaskStatuses(ctx context.Context, ids []int64) ([]Task, error) {
+func (c *Client) TaskStatuses(ctx context.Context, ids []int64) ([]TaskStatus, error) {
 	var payload struct {
-		Tasks []Task `json:"tasks"`
+		Tasks []TaskStatus `json:"tasks"`
 	}
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/tasks/status", map[string]any{"ids": ids}, &payload); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/tasks/status?fields=state", map[string]any{"ids": ids}, &payload); err != nil {
 		return nil, err
 	}
 	return payload.Tasks, nil

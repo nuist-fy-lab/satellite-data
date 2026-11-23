@@ -27,6 +27,8 @@ import (
 
 var contentRangePattern = regexp.MustCompile(`(?i)^bytes\s+(\d+)-(\d+)/(\d+|\*)$`)
 
+const transferBufferSize = 128 << 10
+
 type HTTPError struct {
 	Status     int
 	RetryAfter time.Duration
@@ -490,7 +492,7 @@ func (h *HTTP) Download(ctx context.Context, task model.Task, downloadRoot strin
 			}
 		}}
 	}
-	_, copyErr := io.CopyBuffer(destination, resp.Body, make([]byte, 1<<20))
+	_, copyErr := io.CopyBuffer(destination, resp.Body, make([]byte, transferBufferSize))
 	syncErr := handle.Sync()
 	closeErr := handle.Close()
 	if copyErr != nil {
@@ -823,7 +825,7 @@ func copyVerifiedFile(source, destination, expectedDigest string, shared bool) e
 	digest := sha256.New()
 	// Hash each chunk after the destination accepts it. Comparing with the
 	// verified source digest avoids reading the temporary archive back over NFS.
-	_, copyErr := io.CopyBuffer(io.MultiWriter(out, digest), in, make([]byte, 1<<20))
+	_, copyErr := io.CopyBuffer(io.MultiWriter(out, digest), in, make([]byte, transferBufferSize))
 	if copyErr != nil {
 		_ = out.Close()
 		return copyErr
@@ -843,7 +845,7 @@ func fileSHA256(path string) (string, error) {
 	}
 	defer handle.Close()
 	hash := sha256.New()
-	if _, err := io.CopyBuffer(hash, handle, make([]byte, 1<<20)); err != nil {
+	if _, err := io.CopyBuffer(hash, handle, make([]byte, transferBufferSize)); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil

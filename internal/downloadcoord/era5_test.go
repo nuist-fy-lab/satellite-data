@@ -164,7 +164,7 @@ func TestOneERA5OrderSchedulesAndArchivesMultiplePartsAfterRestart(t *testing.T)
 		}
 	}
 	mu.Unlock()
-	if err := c.refreshRequest(t.Context(), order); err != nil {
+	if err := c.refreshRequest(t.Context(), state.DownloadTransferRequest{ID: order.ID, AssetsQueued: order.AssetsQueued}); err != nil {
 		t.Fatal(err)
 	}
 	order, _ = s.DownloadRequest(t.Context(), order.ID)
