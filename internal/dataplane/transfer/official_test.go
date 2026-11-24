@@ -181,3 +181,14 @@ func TestCompositeChecksumsAndUnknownAlgorithmsNeverClaimSuccess(t *testing.T) {
 		t.Fatal("invalid checksum encoding accepted")
 	}
 }
+
+func TestOfficialResolverEnvironmentProxyOptIn(t *testing.T) {
+	t.Setenv("SATELLITE_USE_ENV_PROXY", "")
+	if NewOfficialResolver().client.Transport.(*http.Transport).Proxy != nil {
+		t.Fatal("checksum transport must connect directly by default")
+	}
+	t.Setenv("SATELLITE_USE_ENV_PROXY", "1")
+	if NewOfficialResolver().client.Transport.(*http.Transport).Proxy == nil {
+		t.Fatal("checksum transport must use the environment on proxy-only hosts")
+	}
+}

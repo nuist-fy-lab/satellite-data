@@ -42,3 +42,11 @@ compares recent per-connection file throughput. It prefers the primary
 unless the backup is at least 20% faster, and keeps sampling the primaries so
 new work returns when they recover. A rejected or failed backup enters the
 existing cooldown, while transfers already underway retain their route.
+
+### Nodes that require an outbound proxy
+
+Set `SATELLITE_USE_ENV_PROXY=1` and configure `HTTPS_PROXY`, `HTTP_PROXY` and
+`NO_PROXY` for the control plane and the downloader on hosts without direct
+internet access. This lets direct account routes and public checksum lookups
+use the environment's outbound proxy. Account-specific proxies and explicit
+download routes retain precedence.

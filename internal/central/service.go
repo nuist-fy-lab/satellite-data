@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -65,6 +66,16 @@ func NewService(store *Store, clients ...*http.Client) *Service {
 		s.clientFactory = func(*url.URL) *http.Client { copy := *clients[0]; return &copy }
 	}
 	return s
+}
+
+func newRouteTransport(proxyURL *url.URL) *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
+	} else if os.Getenv("SATELLITE_USE_ENV_PROXY") != "1" {
+		transport.Proxy = nil
+	}
+	return transport
 }
 
 type route struct {
@@ -241,11 +252,7 @@ func (s *Service) resolveRoute(ctx context.Context, source string, binding *Bind
 			release = returnToPool
 			keepIdleConnections = true
 		} else {
-			transport := http.DefaultTransport.(*http.Transport).Clone()
-			transport.Proxy = nil
-			if proxyURL != nil {
-				transport.Proxy = http.ProxyURL(proxyURL)
-			}
+			transport := newRouteTransport(proxyURL)
 			client = &http.Client{Transport: transport}
 		}
 		if source == "cloudsat" {
@@ -303,11 +310,7 @@ func (s *Service) leaseMODISTransport(ctx context.Context, key string, proxyURL 
 		}
 		pool = &modisPool{idle: make(chan *http.Transport, 8)}
 		for range cap(pool.idle) {
-			transport := http.DefaultTransport.(*http.Transport).Clone()
-			transport.Proxy = nil
-			if proxyURL != nil {
-				transport.Proxy = http.ProxyURL(proxyURL)
-			}
+			transport := newRouteTransport(proxyURL)
 			transport.ForceAttemptHTTP2 = true
 			transport.MaxConnsPerHost = 1
 			transport.MaxIdleConnsPerHost = 1

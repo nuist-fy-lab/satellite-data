@@ -53,3 +53,19 @@ func TestConfiguredDownloadEgressOverridesOnlyFetchRoute(t *testing.T) {
 		t.Fatalf("download route must not override control route: %v", seen)
 	}
 }
+
+func TestRouteTransportEnvironmentProxyOptIn(t *testing.T) {
+	t.Setenv("SATELLITE_USE_ENV_PROXY", "")
+	if newRouteTransport(nil).Proxy != nil {
+		t.Fatal("default direct route unexpectedly used an environment proxy")
+	}
+	t.Setenv("SATELLITE_USE_ENV_PROXY", "1")
+	if newRouteTransport(nil).Proxy == nil {
+		t.Fatal("proxy-only host must use the environment for direct routes")
+	}
+	explicit := &url.URL{Scheme: "socks5", Host: "127.0.0.1:14881"}
+	got, err := newRouteTransport(explicit).Proxy(nil)
+	if err != nil || got != explicit {
+		t.Fatalf("explicit route must take precedence, got %v, %v", got, err)
+	}
+}

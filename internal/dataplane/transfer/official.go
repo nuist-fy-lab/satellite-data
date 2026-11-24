@@ -42,8 +42,10 @@ type OfficialResolver struct {
 
 func NewOfficialResolver() *OfficialResolver {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// Public metadata lookups do not use the production data access proxy.
-	transport.Proxy = nil
+	// Public metadata lookups use the environment only on proxy-only hosts.
+	if os.Getenv("SATELLITE_USE_ENV_PROXY") != "1" {
+		transport.Proxy = nil
+	}
 	transport.MaxIdleConnsPerHost = 8
 	return &OfficialResolver{
 		client: &http.Client{Timeout: 8 * time.Second, Transport: transport},
