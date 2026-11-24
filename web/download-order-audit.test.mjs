@@ -526,3 +526,20 @@ test('rendering omits absent metadata and uses the chosen band resolution', () =
   assert.doesNotMatch(rendered,/版本：|区域：|未知|__not_applicable/);
   assert.match(rendered,/展开设置/);
 });
+
+test('download egress summarizes activity and both rates by source and route kind', () => {
+  const h = harness();
+  const routes = [
+    {id:'direct', active_transfers:3, active_by_source:{modis:2, viirs:1}, download_mbps:5, smoothed_mbps:4,
+      rates_by_source:{modis:{download_mbps:3, smoothed_mbps:2}}},
+    {id:'vwan1', active_transfers:3, active_by_source:{modis:3}, download_mbps:2, smoothed_mbps:3,
+      rates_by_source:{modis:{download_mbps:2, smoothed_mbps:3}}},
+    {id:'vwan2', active_transfers:0, active_by_source:{}, download_mbps:0, smoothed_mbps:1},
+    {id:'east-hpc', backup:true, active_transfers:2, active_by_source:{modis:1, viirs:1}, download_mbps:8, smoothed_mbps:7,
+      rates_by_source:{modis:{download_mbps:4, smoothed_mbps:3}}},
+  ];
+  const report = source => Array.from(h.context.egressSummary(routes, source), row => [row.active, row.live, row.smooth]);
+  assert.deepEqual(report(''), [[3,5,4],[3,2,4],[2,8,7]]);
+  assert.deepEqual(report('modis'), [[2,3,2],[3,2,3],[1,4,3]]);
+  assert.deepEqual(report('era5'), [[0,null,null],[0,null,null],[0,null,null]]);
+});

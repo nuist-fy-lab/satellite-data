@@ -3626,31 +3626,76 @@ async function loadAccess() {
 
 let accessEgressTimer;
 let accessEgressRequest;
+let accessEgressRoutes = [];
+
+function egressSummary(routes, source) {
+  const groups = [
+    {label: '直连', active: 0, live: null, smooth: null},
+    {label: 'VWAN 直连', active: 0, live: null, smooth: null},
+    {label: 'VWAN + 东方超算云代理', active: 0, live: null, smooth: null},
+  ];
+  for (const route of routes) {
+    const group = groups[route.backup ? 2 : route.id === 'direct' ? 0 : 1];
+    const rates = source ? route.rates_by_source?.[source] : route;
+    group.active += source ? route.active_by_source?.[source] || 0 : route.active_transfers || 0;
+    if (Number.isFinite(rates?.download_mbps)) group.live = (group.live ?? 0) + rates.download_mbps;
+    if (Number.isFinite(rates?.smoothed_mbps)) group.smooth = (group.smooth ?? 0) + rates.smoothed_mbps;
+  }
+  return groups;
+}
+
+function egressRate(value) {
+  return Number.isFinite(value) ? `${value.toFixed(2)} Mbps` : '—';
+}
+
+function renderAccessEgress() {
+  const routes = accessEgressRoutes;
+  const selector = $('#download-egress-source');
+  const summary = $('#download-egress-summary');
+  const list = $('#download-egress-list');
+  const sources = uniqueSorted(routes.flatMap(route => [...(route.sources || []), ...Object.keys(route.active_by_source || {})]));
+  const options = sources.map(source => '<option value="' + esc(source) + '">' + esc(accessSourceName(source)) + '</option>').join('');
+  if (selector.dataset.options !== options) {
+    const selected = selector.value;
+    selector.innerHTML = '<option value="">全部数据源</option>' + options;
+    selector.value = sources.includes(selected) ? selected : '';
+    selector.dataset.options = options;
+  }
+  const source = selector.value;
+  summary.innerHTML = routes.length ? egressSummary(routes, source).map(group =>
+    `<div class="egress-summary-item"><strong>${group.label}</strong><div class="egress-metrics">
+      <span>活动连接 <b>${group.active}</b></span>
+      <span>实时 <b>${egressRate(group.live)}</b></span>
+      <span>平滑 <b>${egressRate(group.smooth)}</b></span></div></div>`
+  ).join('') : '';
+  list.innerHTML = routes.length ? routes.map(route => {
+    const label = route.id === 'direct' ? '直连' : route.backup ? '东方超算云代理' : route.id;
+    const active = source ? route.active_by_source?.[source] || 0 : route.active_transfers;
+    const rates = source ? route.rates_by_source?.[source] : route;
+    const cooling = route.blocked || (source && route.blocked_by_source?.[source]);
+    const status = cooling ? ' · 冷却中' : !source && Object.keys(route.blocked_by_source || {}).length ? ' · 部分源冷却' : '';
+    return `<div class="pool-row">
+      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(label)}</strong><span>${esc(route.public_ip)}</span></div></div>
+      <div class="pool-meta"><span>${active} 条${status}</span><span>实时 ${egressRate(rates?.download_mbps)}</span><span>平滑 ${egressRate(rates?.smoothed_mbps)}</span></div>
+    </div>`;
+  }).join('') : '<div class="pool-empty">未配置独立下载出口</div>';
+}
 
 async function loadAccessEgress() {
   clearTimeout(accessEgressTimer);
   accessEgressRequest?.abort();
   const request = new AbortController();
   accessEgressRequest = request;
-  const node = $('#download-egress-list');
   try {
     const payload = await json('/api/v1/access/download-egress', {signal: request.signal});
     if (request.signal.aborted) return;
-    const routes = payload.routes || [];
-    node.innerHTML = routes.length ? routes.map(route => {
-      const label = route.id === 'direct' ? '直连' : route.id;
-      const rate = Number.isFinite(route.download_mbps)
-        ? `${route.download_mbps.toFixed(1)} Mbps`
-        : '速率采集中';
-      const cooldown = route.blocked ? ' · 冷却中' : '';
-      return `<div class="pool-row">
-        <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(label)}</strong><span>${esc(route.public_ip)}</span></div></div>
-        <div class="pool-meta"><span>${route.active_transfers} 个文件${cooldown}</span><span>${rate}</span></div>
-      </div>`;
-    }).join('') : '<div class="pool-empty">未配置独立下载出口</div>';
+    accessEgressRoutes = payload.routes || [];
+    renderAccessEgress();
   } catch (error) {
     if (!request.signal.aborted) {
-      node.innerHTML = '<div class="pool-empty">下载出口数据暂不可用</div>';
+      accessEgressRoutes = [];
+      $('#download-egress-summary').innerHTML = '';
+      $('#download-egress-list').innerHTML = '<div class="pool-empty">下载出口数据暂不可用</div>';
     }
   } finally {
     if (accessEgressRequest === request && !request.signal.aborted) {
@@ -4299,6 +4344,7 @@ function bind() {
   $('#cli-key-copy').addEventListener('click', copyCLIKey);
   $('#cli-key-dismiss').addEventListener('click', clearCLIKey);
   $('#refresh-access').addEventListener('click', loadAccess);
+  $('#download-egress-source').addEventListener('change', renderAccessEgress);
   document.querySelectorAll('[data-access-section]').forEach(node => node.addEventListener('click', () => showAccessSection(node.dataset.accessSection)));
   document.querySelectorAll('[data-pool-new]').forEach(node => node.addEventListener('click', () => openPoolForm(node.dataset.poolNew)));
   document.querySelectorAll('[data-form-cancel]').forEach(node => node.addEventListener('click', () => closePoolForm(node.dataset.formCancel)));

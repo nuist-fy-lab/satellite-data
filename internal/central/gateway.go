@@ -268,7 +268,7 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	if backupEgress {
 		switch response.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			s.egress.MarkNetworkFailure(transferEgressID)
+			s.egress.MarkSourceFailure(request.SourceID, transferEgressID)
 			http.Error(w, "backup download egress rejected by upstream", http.StatusBadGateway)
 			return
 		}
@@ -368,6 +368,9 @@ func RunGateway(ctx context.Context, filename string, service *Service) error {
 	if err := os.Chmod(filename, 0600); err != nil {
 		return err
 	}
+	monitorCtx, cancelMonitor := context.WithCancel(ctx)
+	defer cancelMonitor()
+	go service.egress.MonitorTraffic(monitorCtx)
 	server := &http.Server{Handler: service.Gateway(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second}
 	go func() {
 		<-ctx.Done()

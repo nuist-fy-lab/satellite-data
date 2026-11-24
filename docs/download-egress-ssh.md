@@ -34,14 +34,18 @@ binaries should remain available for rollback. Removing the environment
 variable from both services restores the prior account-controlled download
 routing and the original worker concurrency.
 
-An optional route with `"backup": true, "sources": ["modis"]` is eligible
-only for MODIS and does not increase the worker ceiling. Configure its observed
-exit IP so it shares the MODIS concurrency budget when the IP matches a
-primary route. The pool occasionally tries one transfer on the backup and
-compares recent per-connection file throughput. It prefers the primary
-unless the backup is at least 20% faster, and keeps sampling the primaries so
-new work returns when they recover. A rejected or failed backup enters the
-existing cooldown, while transfers already underway retain their route.
+An optional route with `"backup": true, "sources": ["modis", "viirs"]`
+can serve each listed download provider. It uses the existing worker budget.
+Configure its observed exit IP so routes sharing that address share each
+provider's per-IP quota. The pool periodically measures per-connection file
+throughput. A backup that is at least 20% faster can take new transfers, and
+the primary is retried as conditions change. Provider rejections cool down
+that provider on the backup route. Connection failures cool down the route.
+
+The download egress page shows connections and both rates by route group
+and provider. Live rates use recent byte counts sampled every five seconds.
+The smoothed rate is an exponential moving average with a 30-second time
+constant. Each transfer counts once even if multiple routes share an IP.
 
 ### Nodes that require an outbound proxy
 

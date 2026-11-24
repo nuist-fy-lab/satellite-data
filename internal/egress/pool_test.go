@@ -351,3 +351,70 @@ func TestFailedBackupProbeDoesNotCaptureFollowingTransfers(t *testing.T) {
 	}
 	done()
 }
+
+func TestSnapshotUsesActualRouteCountsAndSourceRates(t *testing.T) {
+	p, now := newTimedPool(&Config{Routes: []Route{
+		{ID: "direct", PublicIP: "198.51.100.1"},
+		{ID: "vwan1", PublicIP: "198.51.100.1"},
+	}}, time.Date(2026, 11, 24, 1, 0, 0, 0, time.UTC))
+	first, done, err := p.Acquire(t.Context(), "modis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	second, doneSecond, err := p.Acquire(t.Context(), "modis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer doneSecond()
+	if first.ID == second.ID {
+		t.Fatal("expected two measured route identities")
+	}
+	p.Snapshot()
+	*now = now.Add(5 * time.Second)
+	p.RecordSourceBytes("modis", first.ID, 625000)
+	p.RecordSourceBytes("modis", second.ID, 1250000)
+	got := p.Snapshot()
+	for i, want := range []float64{1, 2} {
+		row := got[i]
+		rate := row.RatesBySource["modis"]
+		if row.ActiveBySrc["modis"] != 1 || row.ActiveTransfers != 1 {
+			t.Fatalf("shared IP duplicated active counts on %s: %+v", row.ID, row)
+		}
+		if rate.DownloadMbps == nil || rate.SmoothedMbps == nil || *rate.DownloadMbps != want || *rate.SmoothedMbps != want {
+			t.Fatalf("unexpected rate on %s: %+v", row.ID, rate)
+		}
+	}
+}
+
+func TestBackupProviderFailureIsIsolated(t *testing.T) {
+	p, now := newTimedPool(&Config{Routes: []Route{
+		{ID: "direct", PublicIP: "198.51.100.1"},
+		{ID: "backup", PublicIP: "198.51.100.2", Backup: true, Sources: []string{"modis", "viirs"}},
+	}}, time.Date(2026, 11, 24, 1, 0, 0, 0, time.UTC))
+	take := func(source, want string) func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		route, release, err := p.Acquire(ctx, source)
+		if err != nil || route.ID != want {
+			t.Fatalf("acquire %s: got %s, want %s, err=%v", source, route.ID, want, err)
+		}
+		return release
+	}
+	for _, source := range []string{"modis", "viirs"} {
+		release := take(source, "direct")
+		*now = now.Add(2 * time.Second)
+		p.RecordSourceBytes(source, "direct", 100000)
+		release()
+	}
+	failed := take("modis", "backup")
+	p.MarkSourceFailure("modis", "backup")
+	failed()
+	take("modis", "direct")()
+	take("viirs", "backup")()
+	s := p.Snapshot()[1]
+	if s.Blocked || !s.BlockedBySource["modis"] || s.BlockedBySource["viirs"] {
+		t.Fatalf("incorrect backup cooldown: %+v", s)
+	}
+}

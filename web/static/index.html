@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
-  <link rel="stylesheet" href="/styles.css?v=33">
+  <link rel="stylesheet" href="/styles.css?v=34">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -375,7 +375,8 @@
           </section>
 
           <section class="pool-card hidden" data-access-panel="egress" aria-label="下载出口">
-            <div class="pool-head"><span>同一公网 IP 共用并发额度</span></div>
+            <div class="pool-head"><strong>出口汇总</strong><select id="download-egress-source" aria-label="下载出口数据源"><option value="">全部数据源</option></select></div>
+            <div id="download-egress-summary" class="egress-summary"></div>
             <div id="download-egress-list" class="pool-list"></div>
           </section>
         </div>
@@ -390,6 +391,6 @@
   </main>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=46"></script>
+  <script type="module" src="/app.js?v=47"></script>
 </body>
 </html>

@@ -133,12 +133,40 @@ type Pool struct {
 }
 
 type routeTransfers struct {
-	active    int
-	bytes     uint64
+	active int
+	bytes  uint64
+	rate   trafficRate
+}
+
+type trafficRate struct {
 	lastAt    time.Time
 	lastBytes uint64
 	rate      *float64
 	smoothed  float64
+}
+
+func (r *trafficRate) sample(now time.Time, bytes uint64) {
+	interval := now.Sub(r.lastAt)
+	switch {
+	case r.lastAt.IsZero() || interval > sourceRateMaxInterval:
+		r.lastAt, r.lastBytes, r.rate = now, bytes, nil
+	case interval >= 4*time.Second:
+		rate := float64(bytes-r.lastBytes) * 8 / interval.Seconds() / 1e6
+		if r.rate == nil {
+			r.smoothed = rate
+		} else {
+			r.smoothed += (1 - math.Exp(-interval.Seconds()/30)) * (rate - r.smoothed)
+		}
+		r.lastAt, r.lastBytes, r.rate = now, bytes, &rate
+	}
+}
+
+func (r *trafficRate) status() Rate {
+	if r.rate == nil {
+		return Rate{}
+	}
+	smoothed := r.smoothed
+	return Rate{DownloadMbps: r.rate, SmoothedMbps: &smoothed}
 }
 
 type sourceRouteMetric struct {
@@ -150,6 +178,8 @@ type sourceRouteMetric struct {
 	hasSample    bool
 	lastObserved time.Time
 	lastTrial    time.Time
+	blockedUntil time.Time
+	traffic      trafficRate
 }
 
 const (
@@ -252,7 +282,7 @@ func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (int, 
 			continue
 		}
 		if route.Backup {
-			if slices.Contains(route.Sources, source) {
+			if slices.Contains(route.Sources, source) && !now.Before(p.metricLocked(source, route.ID).blockedUntil) {
 				backups = append(backups, idx)
 			}
 			continue
@@ -426,6 +456,21 @@ func (p *Pool) Acquire(ctx context.Context, source string) (Route, func(), error
 	}
 }
 
+// MarkSourceFailure keeps a provider-specific upstream response from cooling
+// an otherwise healthy shared backup for all providers.
+func (p *Pool) MarkSourceFailure(source, routeID string) {
+	if p == nil || routeID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.clock()
+	m := p.metricLocked(source, routeID)
+	m.blockedUntil = now.Add(sourceRouteProbeInterval)
+	m.hasSample = false
+	m.lastTrial = now
+}
+
 func (p *Pool) MarkNetworkFailure(routeID string) {
 	if p == nil || routeID == "" {
 		return
@@ -473,14 +518,52 @@ func (p *Pool) RecordSourceBytes(source, routeID string, n int) {
 	}
 }
 
+type Rate struct {
+	DownloadMbps *float64 `json:"download_mbps,omitempty"`
+	SmoothedMbps *float64 `json:"smoothed_mbps,omitempty"`
+}
+
 type Status struct {
-	ID              string         `json:"id"`
-	PublicIP        string         `json:"public_ip"`
-	Blocked         bool           `json:"blocked"`
-	ActiveBySrc     map[string]int `json:"active_by_source"`
-	ActiveTransfers int            `json:"active_transfers"`
-	DownloadMbps    *float64       `json:"download_mbps,omitempty"`
-	SmoothedMbps    *float64       `json:"smoothed_mbps,omitempty"`
+	ID              string          `json:"id"`
+	PublicIP        string          `json:"public_ip"`
+	Backup          bool            `json:"backup,omitempty"`
+	Sources         []string        `json:"sources,omitempty"`
+	Blocked         bool            `json:"blocked"`
+	BlockedBySource map[string]bool `json:"blocked_by_source,omitempty"`
+	ActiveBySrc     map[string]int  `json:"active_by_source"`
+	RatesBySource   map[string]Rate `json:"rates_by_source,omitempty"`
+	ActiveTransfers int             `json:"active_transfers"`
+	Rate
+}
+
+func (p *Pool) sampleTrafficLocked(now time.Time) {
+	for _, route := range p.transfers {
+		route.rate.sample(now, route.bytes)
+	}
+	for _, metrics := range p.sourceStats {
+		for _, m := range metrics {
+			m.traffic.sample(now, m.bytes)
+		}
+	}
+}
+
+// MonitorTraffic samples the dashboard rates even when no viewer is connected.
+func (p *Pool) MonitorTraffic(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		p.mu.Lock()
+		p.sampleTrafficLocked(p.clock())
+		p.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (p *Pool) Snapshot() []Status {
@@ -490,32 +573,24 @@ func (p *Pool) Snapshot() []Status {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.clock()
+	p.sampleTrafficLocked(now)
 	out := make([]Status, 0, len(p.cfg.Routes))
 	for _, r := range p.cfg.Routes {
 		route := p.transfers[r.ID]
 		entry := Status{
-			ID: r.ID, PublicIP: r.PublicIP, Blocked: now.Before(p.blocked[r.ID]),
-			ActiveBySrc: make(map[string]int), ActiveTransfers: route.active,
+			ID: r.ID, PublicIP: r.PublicIP, Backup: r.Backup, Sources: slices.Clone(r.Sources),
+			Blocked: now.Before(p.blocked[r.ID]), ActiveTransfers: route.active,
+			ActiveBySrc: make(map[string]int), RatesBySource: make(map[string]Rate),
+			BlockedBySource: make(map[string]bool), Rate: route.rate.status(),
 		}
-		interval := now.Sub(route.lastAt)
-		switch {
-		case route.lastAt.IsZero() || interval > 2*time.Minute:
-			route.lastAt, route.lastBytes, route.rate = now, route.bytes, nil
-		case interval >= 4*time.Second:
-			rate := float64(route.bytes-route.lastBytes) * 8 / interval.Seconds() / 1e6
-			if route.rate == nil {
-				route.smoothed = rate
-			} else {
-				route.smoothed += (1 - math.Exp(-interval.Seconds()/30)) * (rate - route.smoothed)
+		for source, metrics := range p.sourceStats {
+			if m := metrics[r.ID]; m != nil {
+				entry.ActiveBySrc[source] = m.active
+				entry.RatesBySource[source] = m.traffic.status()
+				if now.Before(m.blockedUntil) {
+					entry.BlockedBySource[source] = true
+				}
 			}
-			route.lastAt, route.lastBytes, route.rate = now, route.bytes, &rate
-		}
-		if route.rate != nil {
-			smoothed := route.smoothed
-			entry.DownloadMbps, entry.SmoothedMbps = route.rate, &smoothed
-		}
-		for src, counts := range p.active {
-			entry.ActiveBySrc[src] = counts[r.PublicIP]
 		}
 		out = append(out, entry)
 	}
