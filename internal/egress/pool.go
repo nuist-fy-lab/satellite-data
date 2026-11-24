@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,9 @@ type Route struct {
 	ID       string `json:"id"`
 	Proxy    string `json:"proxy"`
 	PublicIP string `json:"public_ip"`
+	// Backup routes are probed using actual transfers and do not add worker slots.
+	Backup  bool     `json:"backup,omitempty"`
+	Sources []string `json:"sources,omitempty"`
 }
 
 type Config struct {
@@ -70,7 +74,18 @@ func Load(filename string) (*Config, error) {
 		if addr == nil || !addr.IsLoopback() || portErr != nil || port == 0 {
 			return nil, errors.New("satellite download SOCKS5 endpoints must bind to loopback")
 		}
+		if !r.Backup && len(r.Sources) != 0 || r.Backup && len(r.Sources) == 0 {
+			return nil, errors.New("satellite backup routes require an explicit list of sources")
+		}
+		for _, source := range r.Sources {
+			if _, known := DefaultPerIPLimits[source]; !known {
+				return nil, errors.New("unknown satellite backup route source")
+			}
+		}
 		ids[r.ID], proxies[r.Proxy] = true, true
+	}
+	if cfg.UniquePublicIPs() == 0 {
+		return nil, errors.New("satellite download egress requires at least one primary route")
 	}
 	for source, limit := range cfg.PerIPLimits {
 		if _, known := DefaultPerIPLimits[source]; !known || limit < 1 || limit > 128 {
@@ -86,7 +101,9 @@ func (c *Config) UniquePublicIPs() int {
 	}
 	seen := make(map[string]bool)
 	for _, r := range c.Routes {
-		seen[r.PublicIP] = true
+		if !r.Backup {
+			seen[r.PublicIP] = true
+		}
 	}
 	return len(seen)
 }
@@ -103,15 +120,16 @@ func (c *Config) Limit(source string) int {
 }
 
 type Pool struct {
-	mu          sync.Mutex
-	cfg         *Config
-	next        map[string]int
-	active      map[string]map[string]int
-	blocked     map[string]time.Time
-	transfers   map[string]*routeTransfers
-	sourceStats map[string]map[string]*sourceRouteMetric
-	lastProbe   map[string]time.Time
-	now         func() time.Time
+	mu              sync.Mutex
+	cfg             *Config
+	next            map[string]int
+	active          map[string]map[string]int
+	blocked         map[string]time.Time
+	transfers       map[string]*routeTransfers
+	sourceStats     map[string]map[string]*sourceRouteMetric
+	lastProbe       map[string]time.Time
+	lastBackupProbe map[string]time.Time
+	now             func() time.Time
 }
 
 type routeTransfers struct {
@@ -131,6 +149,7 @@ type sourceRouteMetric struct {
 	emaBps       float64
 	hasSample    bool
 	lastObserved time.Time
+	lastTrial    time.Time
 }
 
 const (
@@ -140,6 +159,7 @@ const (
 	sourceRateHalfLifeSeconds    = 20.0
 	sourceRouteProbeInterval     = 2 * time.Minute
 	sourceProbeCooldown          = 15 * time.Second
+	backupMinSpeedRatio          = 1.20
 	loadPenaltyFactor            = 0.5
 )
 
@@ -152,14 +172,15 @@ func NewPool(cfg *Config) *Pool {
 		transfers[route.ID] = &routeTransfers{}
 	}
 	return &Pool{
-		cfg:         cfg,
-		next:        make(map[string]int),
-		active:      make(map[string]map[string]int),
-		blocked:     make(map[string]time.Time),
-		transfers:   transfers,
-		sourceStats: make(map[string]map[string]*sourceRouteMetric),
-		lastProbe:   make(map[string]time.Time),
-		now:         time.Now,
+		cfg:             cfg,
+		next:            make(map[string]int),
+		active:          make(map[string]map[string]int),
+		blocked:         make(map[string]time.Time),
+		transfers:       transfers,
+		sourceStats:     make(map[string]map[string]*sourceRouteMetric),
+		lastProbe:       make(map[string]time.Time),
+		lastBackupProbe: make(map[string]time.Time),
+		now:             time.Now,
 	}
 }
 
@@ -202,7 +223,7 @@ func (p *Pool) sampleSourceLocked(m *sourceRouteMetric, now time.Time, onRelease
 		return
 	}
 	perConnBps := float64(m.bytes-m.sampleBytes) / elapsed.Seconds() / float64(m.active)
-	if !m.hasSample {
+	if !m.hasSample || now.Sub(m.lastObserved) >= sourceRateMaxInterval {
 		m.emaBps = perConnBps
 		m.hasSample = true
 	} else {
@@ -222,6 +243,7 @@ func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (int, 
 	}
 	n := len(p.cfg.Routes)
 	eligible := make([]int, 0, n)
+	var backups []int
 	start := p.next[source]
 	for offset := 0; offset < n; offset++ {
 		idx := (start + offset) % n
@@ -229,11 +251,28 @@ func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (int, 
 		if now.Before(p.blocked[route.ID]) || p.active[source][route.PublicIP] >= limit {
 			continue
 		}
+		if route.Backup {
+			if slices.Contains(route.Sources, source) {
+				backups = append(backups, idx)
+			}
+			continue
+		}
 		eligible = append(eligible, idx)
 	}
 	if len(eligible) == 0 {
-		return 0, false
+		return p.selectBackupLocked(source, backups, now, 0)
 	}
+	primary, forcedProbe := p.selectPrimaryLocked(source, eligible, now)
+	m := p.metricLocked(source, p.cfg.Routes[primary].ID)
+	if !forcedProbe && m.hasSample {
+		if backup, ok := p.selectBackupLocked(source, backups, now, m.emaBps); ok {
+			return backup, true
+		}
+	}
+	return primary, true
+}
+
+func (p *Pool) selectPrimaryLocked(source string, eligible []int, now time.Time) (int, bool) {
 
 	// Priority 1: explore unmeasured idle routes first, spreading across IPs.
 	bestUnmeasuredIdx := -1
@@ -307,7 +346,35 @@ func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (int, 
 			bestActiveOnIP = activeOnIP
 		}
 	}
-	return bestIdx, true
+	return bestIdx, false
+}
+
+// A backup must clearly beat the selected primary on recent file traffic.
+// A single occasional trial measures an idle backup again when network conditions change.
+func (p *Pool) selectBackupLocked(source string, eligible []int, now time.Time, primaryBps float64) (int, bool) {
+	best, trial := -1, -1
+	var bestBps float64
+	var oldestTrial time.Time
+	for _, idx := range eligible {
+		m := p.metricLocked(source, p.cfg.Routes[idx].ID)
+		if m.hasSample && now.Sub(m.lastObserved) < sourceRouteProbeInterval && m.emaBps > primaryBps*backupMinSpeedRatio {
+			if m.emaBps > bestBps {
+				best, bestBps = idx, m.emaBps
+			}
+			continue
+		}
+		if m.active == 0 && (m.lastTrial.IsZero() || now.Sub(m.lastTrial) >= sourceRouteProbeInterval) &&
+			(!m.hasSample || now.Sub(m.lastObserved) >= sourceRouteProbeInterval) &&
+			(trial == -1 || m.lastTrial.Before(oldestTrial)) {
+			trial, oldestTrial = idx, m.lastTrial
+		}
+	}
+	if trial >= 0 && (p.lastBackupProbe[source].IsZero() || now.Sub(p.lastBackupProbe[source]) >= sourceRouteProbeInterval) {
+		p.lastBackupProbe[source] = now
+		p.metricLocked(source, p.cfg.Routes[trial].ID).lastTrial = now
+		return trial, true
+	}
+	return best, best >= 0
 }
 
 // Acquire keeps one file transfer pinned to one public IP. Two tunnels with
@@ -364,7 +431,21 @@ func (p *Pool) MarkNetworkFailure(routeID string) {
 		return
 	}
 	p.mu.Lock()
-	p.blocked[routeID] = p.clock().Add(30 * time.Second)
+	now := p.clock()
+	cooldown := 30 * time.Second
+	for _, route := range p.cfg.Routes {
+		if route.ID != routeID || !route.Backup {
+			continue
+		}
+		cooldown = sourceRouteProbeInterval
+		for _, source := range route.Sources {
+			m := p.metricLocked(source, routeID)
+			m.hasSample = false
+			m.lastTrial = now
+		}
+		break
+	}
+	p.blocked[routeID] = now.Add(cooldown)
 	p.mu.Unlock()
 }
 

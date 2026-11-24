@@ -280,3 +280,74 @@ func TestAcquireDecaysStalledActiveRoute(t *testing.T) {
 	nextRel()
 	stalledRel()
 }
+
+func TestMODISBackupProbesAndSwitchesUsingActualThroughput(t *testing.T) {
+	p, now := newTimedPool(&Config{
+		Routes: []Route{
+			{ID: "direct", PublicIP: "198.51.100.1"},
+			{ID: "backup", PublicIP: "198.51.100.2", Backup: true, Sources: []string{"modis"}},
+		},
+		PerIPLimits: map[string]int{"modis": 3},
+	}, time.Date(2026, 11, 24, 1, 0, 0, 0, time.UTC))
+	take := func(source, want string) func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		route, release, err := p.Acquire(ctx, source)
+		if err != nil || route.ID != want {
+			t.Fatalf("acquire %s: got %s, want %s, err=%v", source, route.ID, want, err)
+		}
+		return release
+	}
+	sample := func(route string, release func(), n int) {
+		*now = now.Add(2 * time.Second)
+		p.RecordSourceBytes("modis", route, n)
+		release()
+	}
+	if got := p.cfg.UniquePublicIPs(); got != 1 {
+		t.Fatalf("backup increased the worker ceiling: %d", got)
+	}
+	take("viirs", "direct")()
+	sample("direct", take("modis", "direct"), 4<<20)
+	sample("backup", take("modis", "backup"), 1<<20)
+	take("modis", "direct")()
+
+	// Slow primary samples and an occasional fresh trial make the faster backup eligible.
+	*now = now.Add(3 * time.Minute)
+	sample("direct", take("modis", "direct"), 32<<10)
+	sample("backup", take("modis", "backup"), 16<<20)
+	sample("backup", take("modis", "backup"), 16<<20)
+	take("viirs", "direct")()
+
+	// The primary is still re-probed and wins again when it recovers.
+	*now = now.Add(3 * time.Minute)
+	sample("direct", take("modis", "direct"), 256<<20)
+	sample("backup", take("modis", "backup"), 1<<20)
+	take("modis", "direct")()
+}
+
+func TestFailedBackupProbeDoesNotCaptureFollowingTransfers(t *testing.T) {
+	p, now := newTimedPool(&Config{Routes: []Route{
+		{ID: "direct", PublicIP: "198.51.100.1"},
+		{ID: "backup", PublicIP: "198.51.100.2", Backup: true, Sources: []string{"modis"}},
+	}}, time.Date(2026, 11, 24, 1, 0, 0, 0, time.UTC))
+	r, release, err := p.Acquire(t.Context(), "modis")
+	if err != nil || r.ID != "direct" {
+		t.Fatalf("first route: %s %v", r.ID, err)
+	}
+	*now = now.Add(time.Second)
+	p.RecordSourceBytes("modis", r.ID, 1024)
+	release()
+	probe, done, err := p.Acquire(t.Context(), "modis")
+	if err != nil || probe.ID != "backup" {
+		t.Fatalf("probe route: %s %v", probe.ID, err)
+	}
+	p.MarkNetworkFailure(probe.ID)
+	done()
+	*now = now.Add(time.Minute)
+	after, done, err := p.Acquire(t.Context(), "modis")
+	if err != nil || after.ID != "direct" {
+		t.Fatalf("route after failed probe: %s %v", after.ID, err)
+	}
+	done()
+}

@@ -33,3 +33,12 @@ both services so per-IP allocation stays correct. Old route configurations and
 binaries should remain available for rollback. Removing the environment
 variable from both services restores the prior account-controlled download
 routing and the original worker concurrency.
+
+An optional route with `"backup": true, "sources": ["modis"]` is eligible
+only for MODIS and does not increase the worker ceiling. Configure its observed
+exit IP so it shares the MODIS concurrency budget when the IP matches a
+primary route. The pool occasionally tries one transfer on the backup and
+compares recent per-connection file throughput. It prefers the primary
+unless the backup is at least 20% faster, and keeps sampling the primaries so
+new work returns when they recover. A rejected or failed backup enters the
+existing cooldown, while transfers already underway retain their route.

@@ -148,6 +148,7 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		binding = &original
 	}
 	var transferEgressID string
+	var backupEgress bool
 	var override *url.URL
 	if s.egress != nil {
 		selected, release, acquireErr := s.egress.Acquire(r.Context(), request.SourceID)
@@ -157,6 +158,7 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		}
 		defer release()
 		transferEgressID = selected.ID
+		backupEgress = selected.Backup
 		override, err = url.Parse(selected.Proxy)
 		if err != nil {
 			http.Error(w, "invalid satellite download egress", http.StatusServiceUnavailable)
@@ -253,7 +255,9 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	response, err := route.client.Do(upstream)
 	if err != nil {
 		if s.egress != nil {
-			s.egress.MarkNetworkFailure(transferEgressID)
+			if r.Context().Err() == nil {
+				s.egress.MarkNetworkFailure(transferEgressID)
+			}
 		} else {
 			s.Store.markProxyFailure(r.Context(), route)
 		}
@@ -261,6 +265,14 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer response.Body.Close()
+	if backupEgress {
+		switch response.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			s.egress.MarkNetworkFailure(transferEgressID)
+			http.Error(w, "backup download egress rejected by upstream", http.StatusBadGateway)
+			return
+		}
+	}
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		if recordAuthFailure {
 			s.Store.markResult(context.WithoutCancel(r.Context()), route, false)
