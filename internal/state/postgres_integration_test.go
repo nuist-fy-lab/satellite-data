@@ -83,7 +83,26 @@ func TestPostgresCompactStateRoundTrip(t *testing.T) {
 		t.Fatalf("PostgreSQL local archive scan: %v", err)
 	}
 	t.Run("streamed archive scan", func(t *testing.T) {
+		s.db.SetMaxOpenConns(1)
+		defer s.db.SetMaxOpenConns(12)
+		defer func() { s.archiveScanTempSpace = "" }()
+		s.archiveScanTempSpace = "satellite_fixture_missing_tablespace"
+		if changed, err := s.ReplaceLocalFileScan(ctx, nil,
+			func(func(ScannedLocalFile) error) ([]string, error) {
+				t.Fatal("scan started without the configured tablespace")
+				return nil, nil
+			}, func(LocalFile) {}); err == nil || changed {
+			t.Fatalf("missing tablespace: changed=%t err=%v", changed, err)
+		}
+		var before, after string
+		if err := s.db.QueryRowContext(ctx, "SHOW temp_tablespaces").Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		s.archiveScanTempSpace = "pg_default"
 		checkLocalFileScan(t, s)
+		if err := s.db.QueryRowContext(ctx, "SHOW temp_tablespaces").Scan(&after); err != nil || after != before {
+			t.Fatalf("archive scan changed the shared pool setting: before=%q after=%q err=%v", before, after, err)
+		}
 	})
 	for _, asset := range assets {
 		var url string

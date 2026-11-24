@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"strconv"
@@ -25,6 +26,17 @@ func (s *Store) ReplaceLocalFileScan(ctx context.Context, roots []string,
 		return false, err
 	}
 	defer conn.Close()
+	if s.archiveScanTempSpace != "" {
+		// Discard the PostgreSQL session after the scan, including on cancellation,
+		// so a session-local setting cannot be reused by another query.
+		defer func() {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}()
+		if _, err := conn.ExecContext(ctx,
+			`SELECT set_config('temp_tablespaces', quote_ident(?), false)`, s.archiveScanTempSpace); err != nil {
+			return false, err
+		}
+	}
 	tempSchema := "pg_temp"
 	if !s.postgres {
 		tempSchema = "temp"
@@ -56,6 +68,9 @@ func (s *Store) ReplaceLocalFileScan(ctx context.Context, roots []string,
 		return false, err
 	}
 	if prior == fingerprint {
+		if s.archiveScanTempSpace != "" {
+			return s.reconcileStaleLocalErrors(ctx, conn)
+		}
 		return s.ReconcileStaleLocalErrors(ctx)
 	}
 	return s.publishLocalFiles(ctx, conn, fingerprint, skipped)

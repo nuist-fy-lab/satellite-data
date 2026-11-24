@@ -83,6 +83,14 @@ or restart production services.
 
 ## Operations / 操作
 
+For a PostgreSQL-backed control plane, set
+`SATELLITED_ARCHIVE_SCAN_TEMP_TABLESPACE` to a dedicated tablespace on a
+reliably mounted filesystem to place the archive scan's temporary table,
+indexes and query spill there. Create the tablespace first and grant the
+control plane's database role `CREATE` on it. The setting applies to the
+scan session and its inventory reconciliation. The control plane closes that
+session after the scan. Unset the setting before retiring the tablespace.
+
 Run **CI → Run workflow → full: true** for a complete rebuild. Run
 **Release verification** to verify the published rolling bundle; optionally
 provide its expected SHA. An empty expected SHA accepts the published target,
