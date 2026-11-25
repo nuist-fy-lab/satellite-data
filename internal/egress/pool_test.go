@@ -1,8 +1,10 @@
 package egress
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,7 +86,7 @@ func TestNetworkFailureCoolsOnlyOneRoute(t *testing.T) {
 		{ID: "one", Proxy: "socks5://127.0.0.1:13881", PublicIP: "58.212.61.218"},
 		{ID: "two", Proxy: "socks5://127.0.0.1:13882", PublicIP: "58.212.60.213"},
 	}})
-	p.MarkNetworkFailure("one")
+	p.MarkNetworkFailure("goes", "one")
 	r, release, err := p.Acquire(context.Background(), "goes")
 	if err != nil || r.ID != "two" {
 		t.Fatalf("route=%+v err=%v", r, err)
@@ -282,6 +284,7 @@ func TestAcquireDecaysStalledActiveRoute(t *testing.T) {
 }
 
 func TestMODISBackupProbesAndSwitchesUsingActualThroughput(t *testing.T) {
+	logs := captureEgressLogs(t)
 	p, now := newTimedPool(&Config{
 		Routes: []Route{
 			{ID: "direct", PublicIP: "198.51.100.1"},
@@ -312,12 +315,26 @@ func TestMODISBackupProbesAndSwitchesUsingActualThroughput(t *testing.T) {
 	sample("backup", take("modis", "backup"), 1<<20)
 	take("modis", "direct")()
 
+	if entry := logs.find(t, "download egress selected", "backup_probe"); entry["event_at"] != "2026-11-24T01:00:02Z" ||
+		entry["source"] != "modis" || entry["route"] != "backup" || entry["primary_route"] != "direct" || entry["backup"] != true {
+		t.Fatalf("incorrect backup probe event: %v", entry)
+	}
+
 	// Slow primary samples and an occasional fresh trial make the faster backup eligible.
 	*now = now.Add(3 * time.Minute)
 	sample("direct", take("modis", "direct"), 32<<10)
 	sample("backup", take("modis", "backup"), 16<<20)
 	sample("backup", take("modis", "backup"), 16<<20)
 	take("viirs", "direct")()
+	entry := logs.find(t, "download egress selected", "backup_faster")
+	backupSpeed, backupMeasured := entry["estimated_mbps_per_connection"].(float64)
+	primarySpeed, primaryMeasured := entry["primary_estimated_mbps_per_connection"].(float64)
+	if !backupMeasured || !primaryMeasured || backupSpeed <= primarySpeed*backupMinSpeedRatio || entry["ip_concurrency_limit"] != float64(3) {
+		t.Fatalf("incorrect speed comparison: %v", entry)
+	}
+	if bytes.Contains(logs.Bytes(), []byte("198.51.100.")) {
+		t.Fatal("route logs exposed a public IP")
+	}
 
 	// The primary is still re-probed and wins again when it recovers.
 	*now = now.Add(3 * time.Minute)
@@ -327,6 +344,7 @@ func TestMODISBackupProbesAndSwitchesUsingActualThroughput(t *testing.T) {
 }
 
 func TestFailedBackupProbeDoesNotCaptureFollowingTransfers(t *testing.T) {
+	logs := captureEgressLogs(t)
 	p, now := newTimedPool(&Config{Routes: []Route{
 		{ID: "direct", PublicIP: "198.51.100.1"},
 		{ID: "backup", PublicIP: "198.51.100.2", Backup: true, Sources: []string{"modis"}},
@@ -342,7 +360,12 @@ func TestFailedBackupProbeDoesNotCaptureFollowingTransfers(t *testing.T) {
 	if err != nil || probe.ID != "backup" {
 		t.Fatalf("probe route: %s %v", probe.ID, err)
 	}
-	p.MarkNetworkFailure(probe.ID)
+	p.MarkNetworkFailure("modis", probe.ID)
+	entry := logs.find(t, "download egress cooldown", "upstream_request_failed")
+	if entry["scope"] != "route" || entry["source"] != "modis" || entry["route"] != "backup" ||
+		entry["blocked_until"] != now.Add(2*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("incorrect route cooldown event: %v", entry)
+	}
 	done()
 	*now = now.Add(time.Minute)
 	after, done, err := p.Acquire(t.Context(), "modis")
@@ -388,6 +411,7 @@ func TestSnapshotUsesActualRouteCountsAndSourceRates(t *testing.T) {
 }
 
 func TestBackupProviderFailureIsIsolated(t *testing.T) {
+	logs := captureEgressLogs(t)
 	p, now := newTimedPool(&Config{Routes: []Route{
 		{ID: "direct", PublicIP: "198.51.100.1"},
 		{ID: "backup", PublicIP: "198.51.100.2", Backup: true, Sources: []string{"modis", "viirs"}},
@@ -409,7 +433,12 @@ func TestBackupProviderFailureIsIsolated(t *testing.T) {
 		release()
 	}
 	failed := take("modis", "backup")
-	p.MarkSourceFailure("modis", "backup")
+	p.MarkSourceFailure("modis", "backup", 429)
+	entry := logs.find(t, "download egress cooldown", "upstream_http_status")
+	if entry["scope"] != "source" || entry["source"] != "modis" || entry["route"] != "backup" ||
+		entry["http_status"] != float64(429) || entry["blocked_until"] != now.Add(2*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("incorrect source cooldown event: %v", entry)
+	}
 	failed()
 	take("modis", "direct")()
 	take("viirs", "backup")()
@@ -417,4 +446,30 @@ func TestBackupProviderFailureIsIsolated(t *testing.T) {
 	if s.Blocked || !s.BlockedBySource["modis"] || s.BlockedBySource["viirs"] {
 		t.Fatalf("incorrect backup cooldown: %+v", s)
 	}
+}
+
+type egressLogBuffer struct{ bytes.Buffer }
+
+func captureEgressLogs(t *testing.T) *egressLogBuffer {
+	t.Helper()
+	buffer := &egressLogBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buffer, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return buffer
+}
+
+func (b *egressLogBuffer) find(t *testing.T, message, reason string) map[string]any {
+	t.Helper()
+	for line := range bytes.Lines(b.Bytes()) {
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry["msg"] == message && entry["reason"] == reason {
+			return entry
+		}
+	}
+	t.Fatalf("missing %q (reason %q)", message, reason)
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"net/url"
@@ -265,7 +266,16 @@ func (p *Pool) sampleSourceLocked(m *sourceRouteMetric, now time.Time, onRelease
 	m.lastObserved = now
 }
 
-func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (int, bool) {
+type routeSelection struct {
+	index      int
+	reason     string
+	primaryID  string
+	primaryBps float64
+}
+
+const primaryThroughput = "primary_throughput"
+
+func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (routeSelection, bool) {
 	for _, m := range p.sourceStats[source] {
 		if m.active > 0 {
 			p.sampleSourceLocked(m, now, false)
@@ -290,19 +300,21 @@ func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (int, 
 		eligible = append(eligible, idx)
 	}
 	if len(eligible) == 0 {
-		return p.selectBackupLocked(source, backups, now, 0)
+		index, _ := p.selectBackupLocked(source, backups, now, 0)
+		return routeSelection{index: index, reason: "backup_no_primary_available"}, index >= 0
 	}
-	primary, forcedProbe := p.selectPrimaryLocked(source, eligible, now)
-	m := p.metricLocked(source, p.cfg.Routes[primary].ID)
-	if !forcedProbe && m.hasSample {
-		if backup, ok := p.selectBackupLocked(source, backups, now, m.emaBps); ok {
-			return backup, true
+	primary, reason := p.selectPrimaryLocked(source, eligible, now)
+	primaryID := p.cfg.Routes[primary].ID
+	m := p.metricLocked(source, primaryID)
+	if reason == primaryThroughput && m.hasSample {
+		if backup, backupReason := p.selectBackupLocked(source, backups, now, m.emaBps); backup >= 0 {
+			return routeSelection{index: backup, reason: backupReason, primaryID: primaryID, primaryBps: m.emaBps}, true
 		}
 	}
-	return primary, true
+	return routeSelection{index: primary, reason: reason}, true
 }
 
-func (p *Pool) selectPrimaryLocked(source string, eligible []int, now time.Time) (int, bool) {
+func (p *Pool) selectPrimaryLocked(source string, eligible []int, now time.Time) (int, string) {
 
 	// Priority 1: explore unmeasured idle routes first, spreading across IPs.
 	bestUnmeasuredIdx := -1
@@ -320,7 +332,7 @@ func (p *Pool) selectPrimaryLocked(source string, eligible []int, now time.Time)
 		}
 	}
 	if bestUnmeasuredIdx != -1 {
-		return bestUnmeasuredIdx, true
+		return bestUnmeasuredIdx, "primary_initial_probe"
 	}
 
 	// Priority 2: periodically probe one stale idle route (rate-limited by cooldown).
@@ -339,7 +351,7 @@ func (p *Pool) selectPrimaryLocked(source string, eligible []int, now time.Time)
 		}
 		if bestProbeIdx != -1 {
 			p.lastProbe[source] = now
-			return bestProbeIdx, true
+			return bestProbeIdx, "primary_reprobe"
 		}
 	}
 
@@ -376,12 +388,12 @@ func (p *Pool) selectPrimaryLocked(source string, eligible []int, now time.Time)
 			bestActiveOnIP = activeOnIP
 		}
 	}
-	return bestIdx, false
+	return bestIdx, primaryThroughput
 }
 
 // A backup must clearly beat the selected primary on recent file traffic.
 // A single occasional trial measures an idle backup again when network conditions change.
-func (p *Pool) selectBackupLocked(source string, eligible []int, now time.Time, primaryBps float64) (int, bool) {
+func (p *Pool) selectBackupLocked(source string, eligible []int, now time.Time, primaryBps float64) (int, string) {
 	best, trial := -1, -1
 	var bestBps float64
 	var oldestTrial time.Time
@@ -402,9 +414,9 @@ func (p *Pool) selectBackupLocked(source string, eligible []int, now time.Time, 
 	if trial >= 0 && (p.lastBackupProbe[source].IsZero() || now.Sub(p.lastBackupProbe[source]) >= sourceRouteProbeInterval) {
 		p.lastBackupProbe[source] = now
 		p.metricLocked(source, p.cfg.Routes[trial].ID).lastTrial = now
-		return trial, true
+		return trial, "backup_probe"
 	}
-	return best, best >= 0
+	return best, "backup_faster"
 }
 
 // Acquire keeps one file transfer pinned to one public IP. Two tunnels with
@@ -423,18 +435,33 @@ func (p *Pool) Acquire(ctx context.Context, source string) (Route, func(), error
 			p.active[source] = make(map[string]int)
 		}
 		now := p.clock()
-		if idx, ok := p.selectRouteLocked(source, limit, now); ok {
-			route := p.cfg.Routes[idx]
+		if choice, ok := p.selectRouteLocked(source, limit, now); ok {
+			route := p.cfg.Routes[choice.index]
 			m := p.metricLocked(source, route.ID)
 			p.active[source][route.PublicIP]++
+			activeOnIP := p.active[source][route.PublicIP]
+			measured, measuredBps := m.hasSample, m.emaBps
 			p.transfers[route.ID].active++
 			if m.active == 0 {
 				m.sampleAt = now
 				m.sampleBytes = m.bytes
 			}
 			m.active++
-			p.next[source] = (idx + 1) % len(p.cfg.Routes)
+			p.next[source] = (choice.index + 1) % len(p.cfg.Routes)
 			p.mu.Unlock()
+			attrs := []slog.Attr{
+				slog.Time("event_at", now.UTC()), slog.String("source", source), slog.String("route", route.ID),
+				slog.Bool("backup", route.Backup), slog.String("reason", choice.reason),
+				slog.Int("ip_active_transfers", activeOnIP), slog.Int("ip_concurrency_limit", limit),
+			}
+			if measured {
+				attrs = append(attrs, slog.Float64("estimated_mbps_per_connection", measuredBps*8/1e6))
+			}
+			if choice.primaryID != "" {
+				attrs = append(attrs, slog.String("primary_route", choice.primaryID),
+					slog.Float64("primary_estimated_mbps_per_connection", choice.primaryBps*8/1e6))
+			}
+			slog.LogAttrs(ctx, slog.LevelInfo, "download egress selected", attrs...)
 			var once sync.Once
 			return route, func() {
 				once.Do(func() {
@@ -458,20 +485,23 @@ func (p *Pool) Acquire(ctx context.Context, source string) (Route, func(), error
 
 // MarkSourceFailure keeps a provider-specific upstream response from cooling
 // an otherwise healthy shared backup for all providers.
-func (p *Pool) MarkSourceFailure(source, routeID string) {
+func (p *Pool) MarkSourceFailure(source, routeID string, status int) {
 	if p == nil || routeID == "" {
 		return
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	now := p.clock()
+	until := now.Add(sourceRouteProbeInterval)
 	m := p.metricLocked(source, routeID)
-	m.blockedUntil = now.Add(sourceRouteProbeInterval)
+	m.blockedUntil = until
 	m.hasSample = false
 	m.lastTrial = now
+	p.mu.Unlock()
+	slog.Warn("download egress cooldown", "event_at", now.UTC(), "source", source, "route", routeID,
+		"scope", "source", "reason", "upstream_http_status", "http_status", status, "blocked_until", until.UTC())
 }
 
-func (p *Pool) MarkNetworkFailure(routeID string) {
+func (p *Pool) MarkNetworkFailure(source, routeID string) {
 	if p == nil || routeID == "" {
 		return
 	}
@@ -490,8 +520,11 @@ func (p *Pool) MarkNetworkFailure(routeID string) {
 		}
 		break
 	}
-	p.blocked[routeID] = now.Add(cooldown)
+	until := now.Add(cooldown)
+	p.blocked[routeID] = until
 	p.mu.Unlock()
+	slog.Warn("download egress cooldown", "event_at", now.UTC(), "source", source, "route", routeID,
+		"scope", "route", "reason", "upstream_request_failed", "blocked_until", until.UTC())
 }
 
 // RecordBytes counts downloaded file data for the specific route, even when

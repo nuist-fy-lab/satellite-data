@@ -47,6 +47,15 @@ and provider. Live rates use recent byte counts sampled every five seconds.
 The smoothed rate is an exponential moving average with a 30-second time
 constant. Each transfer counts once even if multiple routes share an IP.
 
+The `satellited` log records `download egress selected` once per acquired
+transfer. Search by `source` and `route`. `event_at` is UTC. `reason`
+distinguishes primary sampling, throughput-based selection, backup trials,
+faster backups, and lack of available primary routes. The log includes the
+per-connection speed estimates when samples exist, and the primary comparison
+when a backup is selected over a measured primary. `download egress cooldown`
+records its `scope`, `blocked_until` in UTC, and the HTTP status when an upstream
+response triggered a source cooldown.
+
 ### Nodes that require an outbound proxy
 
 Set `SATELLITE_USE_ENV_PROXY=1` and configure `HTTPS_PROXY`, `HTTP_PROXY` and

@@ -256,7 +256,7 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if s.egress != nil {
 			if r.Context().Err() == nil {
-				s.egress.MarkNetworkFailure(transferEgressID)
+				s.egress.MarkNetworkFailure(request.SourceID, transferEgressID)
 			}
 		} else {
 			s.Store.markProxyFailure(r.Context(), route)
@@ -268,7 +268,7 @@ func (s *Service) fetch(w http.ResponseWriter, r *http.Request) {
 	if backupEgress {
 		switch response.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			s.egress.MarkSourceFailure(request.SourceID, transferEgressID)
+			s.egress.MarkSourceFailure(request.SourceID, transferEgressID, response.StatusCode)
 			http.Error(w, "backup download egress rejected by upstream", http.StatusBadGateway)
 			return
 		}
