@@ -559,4 +559,8 @@ test('download egress separates proxy protocols from per-source throughput and r
   const rows = h.context.egressProxyRows({nodes});
   assert.deepEqual(Array.from(rows, row => [row.label, row.active, row.live]), [['VLESS',2,15],['Hysteria2',1,22]]);
   assert.match(h.context.egressDetailsTable('协议', rows), /22\.00 Mbps/);
+  const paths = [{wan:'vwan7', protocol:'hysteria2', active_connections:2, download_mbps:15,
+    smoothed_mbps:12, healthy:true, slots:3}];
+  assert.deepEqual(Array.from(h.context.egressProxyPaths({paths}), row => [row.label, row.active, row.status]),
+    [['vwan7 · Hysteria2', 2, '轮询份额 3/6']]);
 });

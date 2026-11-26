@@ -15,12 +15,25 @@ import (
 type ProxyEgressStatus struct {
 	SampledAt time.Time     `json:"sampled_at"`
 	Nodes     []ProxyEgress `json:"nodes"`
+	Paths     []ProxyWAN    `json:"paths,omitempty"`
 }
 
 type ProxyEgress struct {
 	Protocol string `json:"protocol"`
 	Active   int    `json:"active_connections"`
 	egress.Rate
+}
+
+type ProxyWAN struct {
+	ProxyEgress
+	WAN     string `json:"wan"`
+	Healthy bool   `json:"healthy"`
+	Slots   int    `json:"slots"`
+}
+
+func (p ProxyEgress) valid() bool {
+	return p.Active >= 0 && (p.DownloadMbps == nil || *p.DownloadMbps >= 0) &&
+		(p.SmoothedMbps == nil || *p.SmoothedMbps >= 0)
 }
 
 // ConfigureProxyEgressMetrics accepts the read-only collector's private socket.
@@ -55,7 +68,7 @@ func (s *Service) DownloadProxyEgressStatus(ctx context.Context) *ProxyEgressSta
 	}
 	defer resp.Body.Close()
 	var snapshot ProxyEgressStatus
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&snapshot) != nil {
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 16384)).Decode(&snapshot) != nil {
 		return nil
 	}
 	age := time.Since(snapshot.SampledAt)
@@ -69,11 +82,26 @@ func (s *Service) DownloadProxyEgressStatus(ctx context.Context) *ProxyEgressSta
 		default:
 			return nil
 		}
-		if seen[node.Protocol] || node.Active < 0 ||
-			(node.DownloadMbps != nil && *node.DownloadMbps < 0) || (node.SmoothedMbps != nil && *node.SmoothedMbps < 0) {
+		if seen[node.Protocol] || !node.valid() {
 			return nil
 		}
 		seen[node.Protocol] = true
+	}
+	seenPaths := make(map[string]bool)
+	totalSlots := 0
+	for _, path := range snapshot.Paths {
+		key := path.WAN + "/" + path.Protocol
+		if len(path.WAN) != 5 || path.WAN[:4] != "vwan" || path.WAN[4] < '1' || path.WAN[4] > '9' ||
+			(path.Protocol != "vless" && path.Protocol != "hysteria2") || !path.valid() || seenPaths[key] ||
+			path.Slots < 0 || path.Slots > 6 {
+			snapshot.Paths = nil
+			break
+		}
+		totalSlots += path.Slots
+		seenPaths[key] = true
+	}
+	if totalSlots > 6 {
+		snapshot.Paths = nil
 	}
 	return &snapshot
 }

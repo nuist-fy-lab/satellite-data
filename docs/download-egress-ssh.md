@@ -76,6 +76,22 @@ sources. Sampling can miss connections that close between snapshots, and
 proxy connections may be reused, so those figures use a different counting
 scope from the gateway's file transfer totals.
 
+To test adaptive WAN routing for the dedicated proxy, place
+`mihomo_wan_routing.py` beside the collector. Use it to generate a candidate
+config beside the proxy's cached `provider.yaml`, passing the approved VWAN
+indices on the command line. The generated config uses a separate node variant
+on each WAN and keeps the original proxy group as the default. Validate and
+install the candidate before running the collector with `--adaptive`.
+The collector adjusts six round-robin shares from recent per-connection
+throughput and health results. It reserves at most one share for slow or
+unmeasured paths and normally changes at most one share per decision. Failed
+paths are dropped promptly, with the original group used when all paths fail
+health checks. Mihomo also checks the adaptive group itself and can skip it
+in favor of the original group. A share is a proportion of new connections. The satellite
+source concurrency and public-IP limits still apply on the control plane.
+During a controlled rollback, remove `--adaptive`, restore the backed-up
+Mihomo config, and reload the dedicated instance.
+
 The `satellited` log records `download egress selected` once per acquired
 transfer. Search by `source` and `route`. `event_at` is UTC. `reason`
 distinguishes primary sampling, throughput-based selection, backup trials,

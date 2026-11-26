@@ -36,10 +36,17 @@ func TestDownloadProxyEgressStatusUsesPrivateCollectorSnapshot(t *testing.T) {
 		t.Fatal("unconfigured collector should have no data")
 	}
 	svc.ConfigureProxyEgressMetrics(path)
-	recent := ProxyEgressStatus{SampledAt: time.Now(), Nodes: []ProxyEgress{{Protocol: "vless", Active: 3}, {Protocol: "hysteria2", Active: 1}}}
+	recent := ProxyEgressStatus{SampledAt: time.Now(), Nodes: []ProxyEgress{{Protocol: "vless", Active: 3}, {Protocol: "hysteria2", Active: 1}},
+		Paths: []ProxyWAN{{ProxyEgress: ProxyEgress{Protocol: "hysteria2", Active: 1}, WAN: "vwan7", Healthy: true, Slots: 2}}}
 	snapshot <- recent
-	if got := svc.DownloadProxyEgressStatus(t.Context()); got == nil || len(got.Nodes) != 2 || got.Nodes[0].Active != 3 {
+	if got := svc.DownloadProxyEgressStatus(t.Context()); got == nil || len(got.Nodes) != 2 || got.Nodes[0].Active != 3 ||
+		len(got.Paths) != 1 || got.Paths[0].WAN != "vwan7" || got.Paths[0].Slots != 2 {
 		t.Fatalf("unexpected collector response: %+v", got)
+	}
+	recent.Paths[0].Slots = 7
+	snapshot <- recent
+	if got := svc.DownloadProxyEgressStatus(t.Context()); got == nil || len(got.Paths) != 0 {
+		t.Fatal("invalid WAN metrics should be dropped without losing protocol totals")
 	}
 	recent.SampledAt = recent.SampledAt.Add(-time.Minute)
 	snapshot <- recent

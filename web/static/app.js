@@ -3687,6 +3687,15 @@ function egressProxyRows(proxy) {
   }));
 }
 
+function egressProxyPaths(proxy) {
+  const labels = {vless:'VLESS', hysteria2:'Hysteria2'};
+  return (proxy?.paths || []).filter(row => Object.hasOwn(labels, row.protocol)).map(row => ({
+    label: `${row.wan} · ${labels[row.protocol]}`, active: row.active_connections,
+    live: row.download_mbps, smooth: row.smoothed_mbps,
+    status: row.healthy ? `轮询份额 ${row.slots}/6` : '健康检查未通过',
+  }));
+}
+
 function renderAccessEgress() {
   const routes = accessEgressRoutes;
   const selector = $('#download-egress-source');
@@ -3710,6 +3719,7 @@ function renderAccessEgress() {
   const readOpen = kind => list.querySelector(`[data-egress-detail="${kind}"]`)?.open ?? true;
   const proxyOpen = readOpen('proxy');
   const directOpen = readOpen('direct');
+  const pathsOpen = list.querySelector('[data-egress-detail="paths"]')?.open;
   const backup = routes.filter(route => route.backup);
   const primary = routes.filter(route => !route.backup);
   const proxySources = source ? [source] : sources.filter(id => backup.some(route => {
@@ -3720,12 +3730,15 @@ function renderAccessEgress() {
     ...egressRouteRow(route, id), label: backup.length > 1 ? `${route.id} · ${accessSourceName(id)}` : accessSourceName(id),
   })));
   const protocols = egressProxyRows(accessEgressProxy);
+  const proxyPaths = egressProxyPaths(accessEgressProxy);
   list.innerHTML = [
     backup.length ? `<details class="egress-detail" data-egress-detail="proxy" ${proxyOpen ? 'open' : ''}>
       <summary>东方超算云代理</summary>
       ${backupRows.length ? egressDetailsTable('数据源', backupRows) : '<div class="pool-empty">暂无代理下载</div>'}
       <h3>代理节点 <span>全部流量</span></h3>
       ${protocols.length ? egressDetailsTable('协议', protocols) : '<div class="pool-empty">暂无节点监测数据</div>'}
+      ${proxyPaths.length ? `<details class="egress-detail" data-egress-detail="paths" ${pathsOpen ? 'open' : ''}>
+        <summary>VWAN → 代理路径</summary>${egressDetailsTable('路径', proxyPaths)}</details>` : ''}
     </details>` : '',
     primary.length ? `<details class="egress-detail" data-egress-detail="direct" ${directOpen ? 'open' : ''}>
       <summary>直连线路</summary>${egressDetailsTable('出口', primary.map(route => egressRouteRow(route, source)))}

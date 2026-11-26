@@ -1,9 +1,11 @@
 import importlib.util
 from pathlib import Path
+import sys
 import unittest
 
 
 path = Path(__file__).parents[1] / 'mihomo-egress-metrics.py'
+sys.path.insert(0, str(path.parent))
 spec = importlib.util.spec_from_file_location('mihomo_egress_metrics', path)
 metrics = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(metrics)
@@ -32,6 +34,20 @@ class SamplerTest(unittest.TestCase):
         self.assertEqual(third[1]['active_connections'], 0)
         self.assertGreater(third[1]['smoothed_mbps'], 0)
         self.assertIsNone(sampler.sample([], types, 30)[0]['download_mbps'])
+
+    def test_wan_stats_only_credit_the_dialed_node(self):
+        sampler = metrics.Sampler(17890)
+        types = {'one': 'vless', 'two': 'hysteria2'}
+        paths = {'one': ('vwan1', 'vless', 200), 'two': ('vwan7', 'hysteria2', 300)}
+        connections = [self.connection('a', 'one', 100), self.connection('b', 'one', 200),
+                       self.connection('c', 'two', 300), self.connection('d', 'two', 400, '9090')]
+        sampler.sample(connections, types, 5, paths)
+        connections[0]['download'] += 500_000
+        connections[2]['download'] += 1_000_000
+        sampler.sample(connections, types, 7, paths)
+        self.assertEqual(sampler.speeds, {'one': 250_000, 'two': 500_000})
+        self.assertEqual([(r['wan'], r['active_connections'], r['download_mbps']) for r in sampler.paths],
+                         [('vwan1', 2, 2), ('vwan7', 1, 4)])
 
     @staticmethod
     def connection(conn_id, node, downloaded, port='17890'):
