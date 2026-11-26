@@ -312,7 +312,7 @@ func (m *sourceRouteMetric) slowAgainst(best float64) bool {
 }
 
 func (p *Pool) extraCapacityLocked(route Route, m *sourceRouteMetric, bestBps float64, now time.Time) bool {
-	if !p.cfg.ExploreFastRouteCapacity || m == nil || p.uniqueRouteIPs[route.PublicIP] != 1 {
+	if !p.cfg.ExploreFastRouteCapacity || route.Backup || m == nil || p.uniqueRouteIPs[route.PublicIP] != 1 {
 		return false
 	}
 	if !m.capacity.trialUntil.IsZero() {

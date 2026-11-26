@@ -53,13 +53,15 @@ transfer for the source. A faster route at its concurrency limit still counts
 in the comparison. In-progress transfers keep their routes, and an idle slow
 route can be measured again. Failed or stale routes do not set the benchmark.
 
-`"explore_fast_route_capacity": true` lets a healthy route within 80% of the
-best recent single-connection rate test one extra transfer above its per-IP
+`"explore_fast_route_capacity": true` lets a healthy primary route with at
+least 80% of the best recent single-connection rate test an extra transfer
+above its per-IP
 limit. The test compares aggregate throughput in 30-second windows at each
 limit. A gain of at least 10% keeps the extra slot temporarily. Insufficient
 gain, a failed route, or a trial that cannot collect a full window returns
 the original limit for new allocations. Routes sharing an IP keep their
-normal shared limit. The downloader's worker caps remain in force.
+normal shared limit. Backup proxies retain their original limits. The
+downloader's worker caps remain in force.
 
 The optional proxy protocol breakdown uses the dedicated Mihomo instance's
 connection counters. Configure its controller with `external-controller-unix`
