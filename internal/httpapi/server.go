@@ -429,7 +429,10 @@ func (s *Server) accessDownloadEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"routes": s.central.DownloadEgressStatus()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"routes": s.central.DownloadEgressStatus(),
+		"proxy":  s.central.DownloadProxyEgressStatus(r.Context()),
+	})
 }
 
 func (s *Server) accessCredential(w http.ResponseWriter, r *http.Request) {

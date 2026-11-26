@@ -543,3 +543,20 @@ test('download egress summarizes activity and both rates by source and route kin
   assert.deepEqual(report('modis'), [[2,3,2],[3,2,3],[1,4,3]]);
   assert.deepEqual(report('era5'), [[0,null,null],[0,null,null],[0,null,null]]);
 });
+
+test('download egress separates proxy protocols from per-source throughput and reports slow routes', () => {
+  const h = harness();
+  const route = {id:'vwan2', active_by_source:{modis:1}, slow_by_source:{modis:true},
+    rates_by_source:{modis:{download_mbps:0.1, smoothed_mbps:0.2}}};
+  const modis = h.context.egressRouteRow(route, 'modis');
+  assert.equal(modis.active, 1);
+  assert.equal(modis.live, 0.1);
+  assert.equal(modis.status, '低速限并发');
+  assert.equal(h.context.egressRouteRow(route, 'viirs').status, '');
+  assert.equal(h.context.egressRouteRow(route, '').status, '部分源限并发');
+  const nodes = [{protocol:'vless', active_connections:2, download_mbps:15, smoothed_mbps:12},
+    {protocol:'hysteria2', active_connections:1, download_mbps:22, smoothed_mbps:18}];
+  const rows = h.context.egressProxyRows({nodes});
+  assert.deepEqual(Array.from(rows, row => [row.label, row.active, row.live]), [['VLESS',2,15],['Hysteria2',1,22]]);
+  assert.match(h.context.egressDetailsTable('协议', rows), /22\.00 Mbps/);
+});

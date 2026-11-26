@@ -11,6 +11,49 @@ import (
 	"time"
 )
 
+func TestSlowRouteDoesNotFillWhenFasterRouteIsFull(t *testing.T) {
+	p, now := newTimedPool(&Config{Routes: []Route{
+		{ID: "fast", PublicIP: "192.0.2.1"},
+		{ID: "slow", PublicIP: "192.0.2.2"},
+	}, PerIPLimits: map[string]int{"modis": 2}}, time.Date(2026, 11, 26, 8, 0, 0, 0, time.UTC))
+	for id, speed := range map[string]float64{"fast": 500000, "slow": 40000} {
+		m := p.metricLocked("modis", id)
+		m.hasSample, m.emaBps, m.lastObserved = true, speed, *now
+	}
+	take := func(want string) func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		route, release, err := p.Acquire(ctx, "modis")
+		if err != nil || route.ID != want {
+			t.Fatalf("got %q, want %q, err=%v", route.ID, want, err)
+		}
+		return release
+	}
+	first, second := take("fast"), take("fast")
+	defer second()
+	slow := take("slow")
+	defer slow()
+	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+	defer cancel()
+	if route, release, err := p.Acquire(ctx, "modis"); err == nil {
+		release()
+		t.Fatalf("assigned another route while fast is full and slow has its one slot: %s", route.ID)
+	}
+	if !p.Snapshot()[1].SlowBySource["modis"] {
+		t.Fatal("expected slow-route status for MODIS")
+	}
+	first()
+	take("fast")()
+	// A cooled fast route is excluded from the comparison, so the remaining
+	// working route can temporarily run at its configured limit.
+	p.MarkNetworkFailure("modis", "fast")
+	take("slow")()
+	if p.Snapshot()[1].SlowBySource["modis"] {
+		t.Fatal("slow-route limit persisted after the fast route cooled down")
+	}
+}
+
 func writeFixture(t *testing.T, cfg Config) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "egress.json")

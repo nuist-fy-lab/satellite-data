@@ -47,6 +47,25 @@ and provider. Live rates use recent byte counts sampled every five seconds.
 The smoothed rate is an exponential moving average with a 30-second time
 constant. Each transfer counts once even if multiple routes share an IP.
 
+When a route's measured speed for a source is below 20% of the fastest
+recently measured healthy route, the gateway limits that route to one active
+transfer for the source. A faster route at its concurrency limit still counts
+in the comparison. In-progress transfers keep their routes, and an idle slow
+route can be measured again. Failed or stale routes do not set the benchmark.
+
+The optional proxy protocol breakdown uses the dedicated Mihomo instance's
+connection counters. Configure its controller with `external-controller-unix`
+in a root-only directory on the router. Run `deploy/mihomo-egress-metrics.py`
+with `--controller` pointing to that socket, `--listen` pointing to a different
+socket in a private directory, and `--inbound-port` set to the proxy's mixed
+port. Forward the collector socket over SSH to a private local socket, then set
+`SATELLITE_PROXY_EGRESS_METRICS_SOCKET` on `satellited` to the local socket path.
+The collector serves only `GET /snapshot` with aggregate counts and rates.
+Protocol metrics cover the dedicated proxy's inbound connections across all
+sources. Sampling can miss connections that close between snapshots, and
+proxy connections may be reused, so those figures use a different counting
+scope from the gateway's file transfer totals.
+
 The `satellited` log records `download egress selected` once per acquired
 transfer. Search by `source` and `route`. `event_at` is UTC. `reason`
 distinguishes primary sampling, throughput-based selection, backup trials,

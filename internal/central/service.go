@@ -29,6 +29,7 @@ type Service struct {
 	Store         *Store
 	clientFactory func(*url.URL) *http.Client
 	egress        *egress.Pool
+	proxyEgress   *http.Client
 	mu            sync.Mutex
 	authorizers   map[string]Authorizer
 	// Each pool belongs to one MODIS account, credential revision and network

@@ -3627,6 +3627,16 @@ async function loadAccess() {
 let accessEgressTimer;
 let accessEgressRequest;
 let accessEgressRoutes = [];
+let accessEgressProxy;
+
+function egressRouteMetrics(route, source) {
+  const rates = source ? route.rates_by_source?.[source] : route;
+  return {
+    active: (source ? route.active_by_source?.[source] : route.active_transfers) || 0,
+    live: rates?.download_mbps,
+    smooth: rates?.smoothed_mbps,
+  };
+}
 
 function egressSummary(routes, source) {
   const groups = [
@@ -3636,16 +3646,42 @@ function egressSummary(routes, source) {
   ];
   for (const route of routes) {
     const group = groups[route.backup ? 2 : route.id === 'direct' ? 0 : 1];
-    const rates = source ? route.rates_by_source?.[source] : route;
-    group.active += source ? route.active_by_source?.[source] || 0 : route.active_transfers || 0;
-    if (Number.isFinite(rates?.download_mbps)) group.live = (group.live ?? 0) + rates.download_mbps;
-    if (Number.isFinite(rates?.smoothed_mbps)) group.smooth = (group.smooth ?? 0) + rates.smoothed_mbps;
+    const row = egressRouteMetrics(route, source);
+    group.active += row.active;
+    if (Number.isFinite(row.live)) group.live = (group.live ?? 0) + row.live;
+    if (Number.isFinite(row.smooth)) group.smooth = (group.smooth ?? 0) + row.smooth;
   }
   return groups;
 }
 
 function egressRate(value) {
   return Number.isFinite(value) ? `${value.toFixed(2)} Mbps` : '—';
+}
+
+function egressRouteStatus(route, source) {
+  if (route.blocked || (source && route.blocked_by_source?.[source])) return '冷却中';
+  if (!source && Object.keys(route.blocked_by_source || {}).length) return '部分源冷却';
+  if (source && route.slow_by_source?.[source]) return '低速限并发';
+  if (!source && Object.keys(route.slow_by_source || {}).length) return '部分源限并发';
+  return '';
+}
+
+function egressDetailsTable(label, rows) {
+  return `<table class="egress-detail-table" aria-label="${esc(label)}"><thead><tr><th scope="col">${esc(label)}</th>
+    <th scope="col">连接</th><th scope="col">实时</th><th scope="col">平滑</th></tr></thead><tbody>
+    ${rows.map(row => `<tr><th scope="row">${esc(row.label)}${row.status ? `<small>${esc(row.status)}</small>` : ''}</th>
+      <td>${row.active}</td><td>${egressRate(row.live)}</td><td>${egressRate(row.smooth)}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function egressRouteRow(route, source) {
+  return {label: route.id === 'direct' ? '节点直连' : route.id, ...egressRouteMetrics(route, source), status: egressRouteStatus(route, source)};
+}
+
+function egressProxyRows(proxy) {
+  const labels = {vless:'VLESS', hysteria2:'Hysteria2', other:'其他节点'};
+  return (proxy?.nodes || []).filter(node => Object.hasOwn(labels, node.protocol)).map(node => ({
+    label: labels[node.protocol], active: node.active_connections, live: node.download_mbps, smooth: node.smoothed_mbps,
+  }));
 }
 
 function renderAccessEgress() {
@@ -3668,17 +3704,30 @@ function renderAccessEgress() {
       <span>实时 <b>${egressRate(group.live)}</b></span>
       <span>平滑 <b>${egressRate(group.smooth)}</b></span></div></div>`
   ).join('') : '';
-  list.innerHTML = routes.length ? routes.map(route => {
-    const label = route.id === 'direct' ? '直连' : route.backup ? '东方超算云代理' : route.id;
-    const active = source ? route.active_by_source?.[source] || 0 : route.active_transfers;
-    const rates = source ? route.rates_by_source?.[source] : route;
-    const cooling = route.blocked || (source && route.blocked_by_source?.[source]);
-    const status = cooling ? ' · 冷却中' : !source && Object.keys(route.blocked_by_source || {}).length ? ' · 部分源冷却' : '';
-    return `<div class="pool-row">
-      <div class="pool-row-main"><div class="pool-row-title"><strong>${esc(label)}</strong><span>${esc(route.public_ip)}</span></div></div>
-      <div class="pool-meta"><span>${active} 条${status}</span><span>实时 ${egressRate(rates?.download_mbps)}</span><span>平滑 ${egressRate(rates?.smoothed_mbps)}</span></div>
-    </div>`;
-  }).join('') : '<div class="pool-empty">未配置独立下载出口</div>';
+  const readOpen = kind => list.querySelector(`[data-egress-detail="${kind}"]`)?.open ?? true;
+  const proxyOpen = readOpen('proxy');
+  const directOpen = readOpen('direct');
+  const backup = routes.filter(route => route.backup);
+  const primary = routes.filter(route => !route.backup);
+  const proxySources = source ? [source] : sources.filter(id => backup.some(route => {
+    const row = egressRouteMetrics(route, id);
+    return row.active || row.live > 0 || row.smooth >= 0.01 || route.blocked_by_source?.[id];
+  }));
+  const backupRows = backup.flatMap(route => proxySources.map(id => ({
+    ...egressRouteRow(route, id), label: backup.length > 1 ? `${route.id} · ${accessSourceName(id)}` : accessSourceName(id),
+  })));
+  const protocols = egressProxyRows(accessEgressProxy);
+  list.innerHTML = [
+    backup.length ? `<details class="egress-detail" data-egress-detail="proxy" ${proxyOpen ? 'open' : ''}>
+      <summary>东方超算云代理</summary>
+      ${backupRows.length ? egressDetailsTable('数据源', backupRows) : '<div class="pool-empty">暂无代理下载</div>'}
+      <h3>代理节点 <span>全部流量</span></h3>
+      ${protocols.length ? egressDetailsTable('协议', protocols) : '<div class="pool-empty">暂无节点监测数据</div>'}
+    </details>` : '',
+    primary.length ? `<details class="egress-detail" data-egress-detail="direct" ${directOpen ? 'open' : ''}>
+      <summary>直连线路</summary>${egressDetailsTable('出口', primary.map(route => egressRouteRow(route, source)))}
+    </details>` : '',
+  ].join('') || '<div class="pool-empty">未配置独立下载出口</div>';
 }
 
 async function loadAccessEgress() {
@@ -3690,10 +3739,12 @@ async function loadAccessEgress() {
     const payload = await json('/api/v1/access/download-egress', {signal: request.signal});
     if (request.signal.aborted) return;
     accessEgressRoutes = payload.routes || [];
+    accessEgressProxy = payload.proxy;
     renderAccessEgress();
   } catch (error) {
     if (!request.signal.aborted) {
       accessEgressRoutes = [];
+      accessEgressProxy = null;
       $('#download-egress-summary').innerHTML = '';
       $('#download-egress-list').innerHTML = '<div class="pool-empty">下载出口数据暂不可用</div>';
     }

@@ -191,6 +191,7 @@ const (
 	sourceRouteProbeInterval     = 2 * time.Minute
 	sourceProbeCooldown          = 15 * time.Second
 	backupMinSpeedRatio          = 1.20
+	slowRouteRatio               = 0.20
 	loadPenaltyFactor            = 0.5
 )
 
@@ -275,12 +276,44 @@ type routeSelection struct {
 
 const primaryThroughput = "primary_throughput"
 
+func (p *Pool) routeAvailableLocked(source string, route Route, now time.Time) bool {
+	if now.Before(p.blocked[route.ID]) {
+		return false
+	}
+	if !route.Backup {
+		return true
+	}
+	if !slices.Contains(route.Sources, source) {
+		return false
+	}
+	m := p.sourceStats[source][route.ID]
+	return m == nil || !now.Before(m.blockedUntil)
+}
+
+func (p *Pool) referenceSpeedLocked(source string, now time.Time) float64 {
+	var best float64
+	for _, route := range p.cfg.Routes {
+		m := p.sourceStats[source][route.ID]
+		if m != nil && m.hasSample && now.Sub(m.lastObserved) < sourceRouteProbeInterval && p.routeAvailableLocked(source, route, now) {
+			best = max(best, m.emaBps)
+		}
+	}
+	return best
+}
+
+func (m *sourceRouteMetric) slowAgainst(best float64) bool {
+	return m != nil && m.hasSample && m.emaBps < best*slowRouteRatio
+}
+
 func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (routeSelection, bool) {
 	for _, m := range p.sourceStats[source] {
 		if m.active > 0 {
 			p.sampleSourceLocked(m, now, false)
 		}
 	}
+	// Include healthy routes at their per-IP limit in the comparison. Their
+	// temporary lack of slots should not raise the concurrency on slower lines.
+	bestBps := p.referenceSpeedLocked(source, now)
 	n := len(p.cfg.Routes)
 	eligible := make([]int, 0, n)
 	var backups []int
@@ -288,13 +321,15 @@ func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (route
 	for offset := 0; offset < n; offset++ {
 		idx := (start + offset) % n
 		route := p.cfg.Routes[idx]
-		if now.Before(p.blocked[route.ID]) || p.active[source][route.PublicIP] >= limit {
+		if p.active[source][route.PublicIP] >= limit || !p.routeAvailableLocked(source, route, now) {
+			continue
+		}
+		m := p.sourceStats[source][route.ID]
+		if m != nil && m.active >= 1 && m.slowAgainst(bestBps) {
 			continue
 		}
 		if route.Backup {
-			if slices.Contains(route.Sources, source) && !now.Before(p.metricLocked(source, route.ID).blockedUntil) {
-				backups = append(backups, idx)
-			}
+			backups = append(backups, idx)
 			continue
 		}
 		eligible = append(eligible, idx)
@@ -563,6 +598,7 @@ type Status struct {
 	Sources         []string        `json:"sources,omitempty"`
 	Blocked         bool            `json:"blocked"`
 	BlockedBySource map[string]bool `json:"blocked_by_source,omitempty"`
+	SlowBySource    map[string]bool `json:"slow_by_source,omitempty"`
 	ActiveBySrc     map[string]int  `json:"active_by_source"`
 	RatesBySource   map[string]Rate `json:"rates_by_source,omitempty"`
 	ActiveTransfers int             `json:"active_transfers"`
@@ -607,6 +643,10 @@ func (p *Pool) Snapshot() []Status {
 	defer p.mu.Unlock()
 	now := p.clock()
 	p.sampleTrafficLocked(now)
+	referenceSpeeds := make(map[string]float64, len(p.sourceStats))
+	for source := range p.sourceStats {
+		referenceSpeeds[source] = p.referenceSpeedLocked(source, now)
+	}
 	out := make([]Status, 0, len(p.cfg.Routes))
 	for _, r := range p.cfg.Routes {
 		route := p.transfers[r.ID]
@@ -614,7 +654,7 @@ func (p *Pool) Snapshot() []Status {
 			ID: r.ID, PublicIP: r.PublicIP, Backup: r.Backup, Sources: slices.Clone(r.Sources),
 			Blocked: now.Before(p.blocked[r.ID]), ActiveTransfers: route.active,
 			ActiveBySrc: make(map[string]int), RatesBySource: make(map[string]Rate),
-			BlockedBySource: make(map[string]bool), Rate: route.rate.status(),
+			BlockedBySource: make(map[string]bool), SlowBySource: make(map[string]bool), Rate: route.rate.status(),
 		}
 		for source, metrics := range p.sourceStats {
 			if m := metrics[r.ID]; m != nil {
@@ -622,6 +662,9 @@ func (p *Pool) Snapshot() []Status {
 				entry.RatesBySource[source] = m.traffic.status()
 				if now.Before(m.blockedUntil) {
 					entry.BlockedBySource[source] = true
+				}
+				if m.slowAgainst(referenceSpeeds[source]) && p.routeAvailableLocked(source, r, now) {
+					entry.SlowBySource[source] = true
 				}
 			}
 		}

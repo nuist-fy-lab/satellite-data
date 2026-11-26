@@ -148,6 +148,7 @@ func main() {
 		slog.Error("configure satellite download SSH egress", "error", err)
 		os.Exit(1)
 	}
+	centralService.ConfigureProxyEgressMetrics(os.Getenv("SATELLITE_PROXY_EGRESS_METRICS_SOCKET"))
 	go func() {
 		if err := central.RunGateway(ctx, runtimeConfig.CentralSocket, centralService); err != nil && ctx.Err() == nil {
 			slog.Error("central access gateway stopped", "error", err)
