@@ -3663,6 +3663,9 @@ function egressRouteStatus(route, source) {
   if (!source && Object.keys(route.blocked_by_source || {}).length) return '部分源冷却';
   if (source && route.slow_by_source?.[source]) return '低速限并发';
   if (!source && Object.keys(route.slow_by_source || {}).length) return '部分源限并发';
+  const extra = source ? [route.extra_by_source?.[source]] : Object.values(route.extra_by_source || {});
+  if (extra.includes('trial')) return '加并发测试';
+  if (extra.includes('confirmed')) return '并发 +1';
   return '';
 }
 

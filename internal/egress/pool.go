@@ -29,8 +29,9 @@ type Route struct {
 }
 
 type Config struct {
-	Routes      []Route        `json:"routes"`
-	PerIPLimits map[string]int `json:"per_ip_limits"`
+	Routes                   []Route        `json:"routes"`
+	PerIPLimits              map[string]int `json:"per_ip_limits"`
+	ExploreFastRouteCapacity bool           `json:"explore_fast_route_capacity,omitempty"`
 }
 
 // Safe source-specific defaults. Operators may lower the per-IP ceiling in
@@ -130,6 +131,7 @@ type Pool struct {
 	sourceStats     map[string]map[string]*sourceRouteMetric
 	lastProbe       map[string]time.Time
 	lastBackupProbe map[string]time.Time
+	uniqueRouteIPs  map[string]int
 	now             func() time.Time
 }
 
@@ -181,6 +183,7 @@ type sourceRouteMetric struct {
 	lastTrial    time.Time
 	blockedUntil time.Time
 	traffic      trafficRate
+	capacity     capacityTrial
 }
 
 const (
@@ -200,8 +203,10 @@ func NewPool(cfg *Config) *Pool {
 		return nil
 	}
 	transfers := make(map[string]*routeTransfers, len(cfg.Routes))
+	uniqueRouteIPs := make(map[string]int)
 	for _, route := range cfg.Routes {
 		transfers[route.ID] = &routeTransfers{}
+		uniqueRouteIPs[route.PublicIP]++
 	}
 	return &Pool{
 		cfg:             cfg,
@@ -212,6 +217,7 @@ func NewPool(cfg *Config) *Pool {
 		sourceStats:     make(map[string]map[string]*sourceRouteMetric),
 		lastProbe:       make(map[string]time.Time),
 		lastBackupProbe: make(map[string]time.Time),
+		uniqueRouteIPs:  uniqueRouteIPs,
 		now:             time.Now,
 	}
 }
@@ -305,10 +311,23 @@ func (m *sourceRouteMetric) slowAgainst(best float64) bool {
 	return m != nil && m.hasSample && m.emaBps < best*slowRouteRatio
 }
 
+func (p *Pool) extraCapacityLocked(route Route, m *sourceRouteMetric, bestBps float64, now time.Time) bool {
+	if !p.cfg.ExploreFastRouteCapacity || m == nil || p.uniqueRouteIPs[route.PublicIP] != 1 {
+		return false
+	}
+	if !m.capacity.trialUntil.IsZero() {
+		return true
+	}
+	return bestBps > 0 && m.hasSample && m.emaBps >= bestBps*capacityFastRatio && m.capacity.canStart(now, m.bytes)
+}
+
 func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (routeSelection, bool) {
 	for _, m := range p.sourceStats[source] {
 		if m.active > 0 {
 			p.sampleSourceLocked(m, now, false)
+		}
+		if p.cfg.ExploreFastRouteCapacity {
+			m.capacity.observe(now, m.active, limit, m.bytes)
 		}
 	}
 	// Include healthy routes at their per-IP limit in the comparison. Their
@@ -321,10 +340,14 @@ func (p *Pool) selectRouteLocked(source string, limit int, now time.Time) (route
 	for offset := 0; offset < n; offset++ {
 		idx := (start + offset) % n
 		route := p.cfg.Routes[idx]
-		if p.active[source][route.PublicIP] >= limit || !p.routeAvailableLocked(source, route, now) {
+		if !p.routeAvailableLocked(source, route, now) {
 			continue
 		}
 		m := p.sourceStats[source][route.ID]
+		activeOnIP := p.active[source][route.PublicIP]
+		if activeOnIP > limit || (activeOnIP == limit && !p.extraCapacityLocked(route, m, bestBps, now)) {
+			continue
+		}
 		if m != nil && m.active >= 1 && m.slowAgainst(bestBps) {
 			continue
 		}
@@ -482,12 +505,21 @@ func (p *Pool) Acquire(ctx context.Context, source string) (Route, func(), error
 				m.sampleBytes = m.bytes
 			}
 			m.active++
+			if p.cfg.ExploreFastRouteCapacity && activeOnIP > limit && m.capacity.trialUntil.IsZero() {
+				m.capacity.start(now, m.bytes)
+			}
+			if p.cfg.ExploreFastRouteCapacity {
+				m.capacity.observe(now, m.active, limit, m.bytes)
+			}
 			p.next[source] = (choice.index + 1) % len(p.cfg.Routes)
 			p.mu.Unlock()
 			attrs := []slog.Attr{
 				slog.Time("event_at", now.UTC()), slog.String("source", source), slog.String("route", route.ID),
 				slog.Bool("backup", route.Backup), slog.String("reason", choice.reason),
 				slog.Int("ip_active_transfers", activeOnIP), slog.Int("ip_concurrency_limit", limit),
+			}
+			if activeOnIP > limit {
+				attrs = append(attrs, slog.Bool("extra_capacity", true))
 			}
 			if measured {
 				attrs = append(attrs, slog.Float64("estimated_mbps_per_connection", measuredBps*8/1e6))
@@ -501,8 +533,15 @@ func (p *Pool) Acquire(ctx context.Context, source string) (Route, func(), error
 			return route, func() {
 				once.Do(func() {
 					p.mu.Lock()
-					p.sampleSourceLocked(m, p.clock(), true)
+					releasedAt := p.clock()
+					p.sampleSourceLocked(m, releasedAt, true)
+					if p.cfg.ExploreFastRouteCapacity {
+						m.capacity.observe(releasedAt, m.active, limit, m.bytes)
+					}
 					m.active--
+					if p.cfg.ExploreFastRouteCapacity {
+						m.capacity.observe(releasedAt, m.active, limit, m.bytes)
+					}
 					p.active[source][route.PublicIP]--
 					p.transfers[route.ID].active--
 					p.mu.Unlock()
@@ -531,6 +570,9 @@ func (p *Pool) MarkSourceFailure(source, routeID string, status int) {
 	m.blockedUntil = until
 	m.hasSample = false
 	m.lastTrial = now
+	if !m.capacity.trialUntil.IsZero() {
+		m.capacity.finish(now)
+	}
 	p.mu.Unlock()
 	slog.Warn("download egress cooldown", "event_at", now.UTC(), "source", source, "route", routeID,
 		"scope", "source", "reason", "upstream_http_status", "http_status", status, "blocked_until", until.UTC())
@@ -557,6 +599,11 @@ func (p *Pool) MarkNetworkFailure(source, routeID string) {
 	}
 	until := now.Add(cooldown)
 	p.blocked[routeID] = until
+	for _, routes := range p.sourceStats {
+		if m := routes[routeID]; m != nil && !m.capacity.trialUntil.IsZero() {
+			m.capacity.finish(now)
+		}
+	}
 	p.mu.Unlock()
 	slog.Warn("download egress cooldown", "event_at", now.UTC(), "source", source, "route", routeID,
 		"scope", "route", "reason", "upstream_request_failed", "blocked_until", until.UTC())
@@ -592,16 +639,17 @@ type Rate struct {
 }
 
 type Status struct {
-	ID              string          `json:"id"`
-	PublicIP        string          `json:"public_ip"`
-	Backup          bool            `json:"backup,omitempty"`
-	Sources         []string        `json:"sources,omitempty"`
-	Blocked         bool            `json:"blocked"`
-	BlockedBySource map[string]bool `json:"blocked_by_source,omitempty"`
-	SlowBySource    map[string]bool `json:"slow_by_source,omitempty"`
-	ActiveBySrc     map[string]int  `json:"active_by_source"`
-	RatesBySource   map[string]Rate `json:"rates_by_source,omitempty"`
-	ActiveTransfers int             `json:"active_transfers"`
+	ID              string            `json:"id"`
+	PublicIP        string            `json:"public_ip"`
+	Backup          bool              `json:"backup,omitempty"`
+	Sources         []string          `json:"sources,omitempty"`
+	Blocked         bool              `json:"blocked"`
+	BlockedBySource map[string]bool   `json:"blocked_by_source,omitempty"`
+	SlowBySource    map[string]bool   `json:"slow_by_source,omitempty"`
+	ExtraBySource   map[string]string `json:"extra_by_source,omitempty"`
+	ActiveBySrc     map[string]int    `json:"active_by_source"`
+	RatesBySource   map[string]Rate   `json:"rates_by_source,omitempty"`
+	ActiveTransfers int               `json:"active_transfers"`
 	Rate
 }
 
@@ -609,9 +657,12 @@ func (p *Pool) sampleTrafficLocked(now time.Time) {
 	for _, route := range p.transfers {
 		route.rate.sample(now, route.bytes)
 	}
-	for _, metrics := range p.sourceStats {
+	for source, metrics := range p.sourceStats {
 		for _, m := range metrics {
 			m.traffic.sample(now, m.bytes)
+			if p.cfg.ExploreFastRouteCapacity {
+				m.capacity.observe(now, m.active, p.cfg.Limit(source), m.bytes)
+			}
 		}
 	}
 }
@@ -665,6 +716,15 @@ func (p *Pool) Snapshot() []Status {
 				}
 				if m.slowAgainst(referenceSpeeds[source]) && p.routeAvailableLocked(source, r, now) {
 					entry.SlowBySource[source] = true
+				}
+				if !m.capacity.trialUntil.IsZero() {
+					if entry.ExtraBySource == nil {
+						entry.ExtraBySource = make(map[string]string)
+					}
+					entry.ExtraBySource[source] = "trial"
+					if m.capacity.confirmed {
+						entry.ExtraBySource[source] = "confirmed"
+					}
 				}
 			}
 		}
