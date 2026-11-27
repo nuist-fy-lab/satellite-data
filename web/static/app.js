@@ -28,6 +28,7 @@ const state = {
   indexStreamKey: '',
   satelliteYears: new Map(),
   calendarSeq: 0,
+  calendarHydrated: false,
   archiveIndex: null,
   indexConnection: 'connecting',
   yearPoll: 0,
@@ -39,20 +40,24 @@ const state = {
     selected: localStorage.getItem('satellite-data-monitor-source') || 'earthcare',
     payload: null,
     poll: 0,
+    stream: null,
+    cursor: '',
+    connection: 'connecting',
   },
   downloads: {
     displayZone: storedDisplayZone('satellite-data-download-zone', 'UTC'),
     poll: 0, pollSeq: 0, catalog: [], catalogReady: false, loading: 0,
     selectedProducts: new Set(), productOptions: {}, filters: {}, confirmation: null, submitting: false,
-    tasks: [], page: 1, total: 0, pages: 1, providers: [], stream: null,
+    tasks: [], page: 1, total: 0, pages: 1, taskLimit: 30, nextCursor: '', hasMore: false, syncCursor: '',
+    providers: [], stream: null, tasksStream: null, historyStream: null,
     history: {
       displayZone: storedDisplayZone('satellite-data-download-monitor-zone', 'BJT'),
       window: localStorage.getItem('satellite-data-download-window') || '1h',
       selected: localStorage.getItem('satellite-data-download-provider') || 'all',
-      payload: null, loadedAt: 0, chartKey: '',
+      payload: null, loadedAt: 0, chartKey: '', cursor: '',
     },
   },
-  access: {user: null, credentials: [], proxies: [], accounts: [], section: 'account', credentialForAccount: false},
+  access: {user: null, credentials: [], proxies: [], accounts: [], section: 'account', credentialForAccount: false, egressStream: null, egressCursor: ''},
   displayZone: localStorage.getItem('satellite-data-zone') === 'BJT' ? 'BJT' : 'UTC',
 };
 
@@ -98,6 +103,110 @@ async function json(url, options = {}) {
   return payload;
 }
 
+function yieldToMain() {
+  if (typeof globalThis.scheduler?.yield === 'function') return globalThis.scheduler.yield();
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+async function streamNDJSON(url, onChunk, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {'Accept': 'application/x-ndjson, application/json', ...(options.headers || {})},
+  });
+  if (!response.ok) {
+    let payload = {};
+    try { payload = await response.json(); } catch {}
+    if (response.status === 401 && typeof window !== 'undefined') {
+      clearCLIKey();
+      window.location.replace('/login');
+    }
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  const type = String(response.headers?.get?.('content-type') || '').toLowerCase();
+  if (!type.includes('ndjson') || !response.body?.getReader) {
+    const payload = await response.json();
+    const list = Array.isArray(payload) ? payload : (payload?.products || []);
+    if (list.length) await onChunk(list, true);
+    return list;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const all = [];
+  let buffer = '';
+  let pending = [];
+  const flushChunk = async (done = false) => {
+    if (!pending.length) return;
+    const chunk = pending;
+    pending = [];
+    await onChunk(chunk, done);
+    if (!done) await yieldToMain();
+  };
+  while (true) {
+    const {value, done} = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, {stream: true});
+    let nl;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line) continue;
+      const item = JSON.parse(line);
+      all.push(item);
+      pending.push(item);
+      if (pending.length >= 24) await flushChunk(false);
+    }
+  }
+  const tail = (buffer + decoder.decode()).trim();
+  if (tail) {
+    const item = JSON.parse(tail);
+    all.push(item);
+    pending.push(item);
+  }
+  await flushChunk(true);
+  return all;
+}
+
+function setLiveBadge(pillID, textID, status, label) {
+  const pill = $('#' + pillID);
+  if (pill) {
+    pill.classList.toggle('reconnecting', status === 'reconnecting');
+    pill.classList.toggle('paused', status === 'paused');
+  }
+  const text = $('#' + textID);
+  if (text && label) text.textContent = label;
+}
+
+function closeTopLayerDialog(dialog) {
+  if (!dialog || !dialog.open) return;
+  const reducedMotion = typeof window !== 'undefined' && typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const supportsAllowDiscrete = typeof CSS !== 'undefined' && typeof CSS.supports === 'function' &&
+    CSS.supports('transition-behavior', 'allow-discrete') && CSS.supports('selector(:popover-open)');
+  if (!supportsAllowDiscrete && !reducedMotion && typeof dialog.getAnimations === 'function') {
+    const running = dialog.getAnimations({subtree: false});
+    if (running.length) {
+      dialog.dataset.closing = '1';
+      Promise.allSettled(running.map(a => a.finished)).finally(() => {
+        delete dialog.dataset.closing;
+        if (dialog.open) dialog.close();
+      });
+      return;
+    }
+  }
+  dialog.close();
+}
+
+function maxDayUpdatedAt(days) {
+  let max = '';
+  for (const row of days?.values?.() || []) {
+    const u = String(row?.updated_at || '');
+    if (u && u > max) max = u;
+  }
+  return max;
+}
+
 function esc(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -116,17 +225,22 @@ function setSidebar(expanded, persist = false) {
 }
 
 function setView(id) {
+  if (document.documentElement?.dataset) document.documentElement.dataset.view = id;
   $('main').classList.toggle('calendar-wide', id === 'calendar-view');
   if (id !== 'access-view') {
     clearCLIKey();
     clearTimeout(accessEgressTimer);
     accessEgressRequest?.abort();
+    stopAccessEgressStream();
   }
-  if (id !== 'monitor-view') clearTimeout(state.monitor.poll);
+  if (id !== 'monitor-view') {
+    clearTimeout(state.monitor.poll);
+    stopMonitorStream();
+  }
   if (id !== 'calendar-view') stopIndexStream();
   if (id !== 'downloads-view') {
     clearTimeout(state.downloads.poll);
-    if (state.downloads.stream) { state.downloads.stream.close(); state.downloads.stream = null; }
+    stopDownloadsStreams();
   }
   document.querySelectorAll('.view').forEach(node => node.classList.toggle('active', node.id === id));
   document.querySelectorAll('.nav-item').forEach(node => node.classList.toggle('active', node.dataset.view === id));
@@ -153,7 +267,13 @@ function viewFromPath(pathname = location.pathname) {
 }
 
 function loadViewContent(id) {
-  if (id === 'calendar-view' && state.selected) loadYear(true);
+  if (id === 'calendar-view') {
+    if (!state.calendarHydrated && state.sources.length) {
+      loadCatalog();
+    } else if (state.selected) {
+      loadYear(true);
+    }
+  }
   if (id === 'access-view') { if (state.access.user?.role === 'admin') loadAccess(); loadCLIKeys().catch(error => { $('#cli-key-error').textContent = error.message; }); }
   if (id === 'monitor-view') loadMonitor(true);
   if (id === 'downloads-view') { initializeDownloadSubmit(); loadDownloads(true); }
@@ -706,7 +826,7 @@ async function loadERA5Inventory() {
   const ticket = ++state.era5.inventorySeq;
   $('#era5-inventory-status').textContent = '读取库存…';
   try {
-    const [payload, module] = await Promise.all([json('/api/v1/era5/inventory'), import('/era5-inventory.js')]);
+    const [payload, module] = await Promise.all([json('/api/v1/era5/inventory'), import('/era5-inventory.js?v=2')]);
     if (ticket !== state.era5.inventorySeq) return;
     state.era5.inventory = payload;
     module.initialize(payload);
@@ -725,7 +845,11 @@ async function loadEncyclopedia() {
   const ticket = ++state.encyclopedia.loading;
   $('#catalog-status').textContent = '读取目录…';
   try {
-    const [products, module] = await Promise.all([json('/api/products'), state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js?v=43'))]);
+    const modulePromise = state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js?v=44'));
+    const [products, module] = await Promise.all([
+      streamNDJSON('/api/products?stream=1', () => {}),
+      modulePromise,
+    ]);
     if (ticket !== state.encyclopedia.loading) return;
     state.encyclopedia.catalog = (products || []).filter(product => product.source_id !== 'era5').map(normalizeCatalogProduct);
     module.initialize(state.encyclopedia.catalog);
@@ -798,6 +922,7 @@ function renderCalendar() {
     calendars.append(section);
   }
   fitYearCalendar();
+  renderProductCoverageViz();
 }
 
 function calendarBaseStatus(item) {
@@ -893,6 +1018,65 @@ function coverageStatus(row, officialState, cadence, hourly = false, mode = 'gri
   return complete || row[hourly ? 6 : 5] || dayHasLocal ? 'partial' : 'missing';
 }
 
+function renderProductCoverageViz() {
+  const node = $('#product-coverage-viz');
+  if (!node) return;
+  const onDemand = state.selected?.metadata?.availability_mode === 'on-demand';
+  if (onDemand || !state.selected) {
+    node.classList.add('hidden');
+    node.replaceChildren();
+    return;
+  }
+  const counts = {complete: 0, hourly_complete: 0, partial: 0, processing: 0, error: 0, missing: 0, official_missing: 0};
+  const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
+  if (state.coverage.supported) {
+    const hourly = state.coverage.time === 'hourly';
+    const band = state.coverage.band;
+    for (const row of state.coverage.yearDays.values()) {
+      const officialState = row?.[13] || 0;
+      let status;
+      if (band) {
+        const entry = row?.[12]?.find(item => item[0] === band);
+        status = coverageStatus(entry, officialState, cadence, hourly, row?.[14], coverageTotalsHaveLocal(row?.[12]));
+      } else {
+        status = row?.[1] || 'unknown';
+      }
+      if (status === 'complete' || status === 'complete_official_gap') counts.complete++;
+      else if (status === 'hourly_complete' || status === 'hourly_complete_official_gap') counts.hourly_complete++;
+      else if (Object.hasOwn(counts, status)) counts[status]++;
+    }
+  } else {
+    for (const item of state.dayState.values()) {
+      const status = calendarBaseStatus(item);
+      if (status === 'complete' || status === 'complete_official_gap') counts.complete++;
+      else if (status === 'hourly_complete' || status === 'hourly_complete_official_gap') counts.hourly_complete++;
+      else if (Object.hasOwn(counts, status)) counts[status]++;
+    }
+  }
+  const known = counts.complete + counts.hourly_complete + counts.partial + counts.processing + counts.error + counts.missing + counts.official_missing;
+  if (!known) {
+    node.classList.add('hidden');
+    node.replaceChildren();
+    return;
+  }
+  const available = Math.max(0, known - counts.official_missing);
+  const pct = available ? Math.round(((counts.complete + counts.hourly_complete) / available) * 100) : 0;
+  const order = [
+    ['complete', '完整'],
+    ['hourly_complete', '整点'],
+    ['partial', '部分'],
+    ['processing', '处理中'],
+    ['missing', '无数据'],
+    ['error', '错误'],
+    ['official_missing', '官方缺'],
+  ];
+  const segs = order.filter(([key]) => counts[key] > 0).map(([key, label]) =>
+    `<span class="viz-seg ${key}" style="flex-grow:${counts[key]}" title="${label}: ${counts[key]} 天"></span>`
+  ).join('');
+  node.classList.remove('hidden');
+  node.innerHTML = `<div class="viz-head"><div class="viz-metrics"><span>完整度 <b>${pct}%</b></span><span>完整 <b>${counts.complete}</b></span><span>整点 <b>${counts.hourly_complete}</b></span><span>部分 <b>${counts.partial}</b></span><span>缺测 <b>${counts.missing}</b></span></div><span class="badge">已统计 ${known} 天</span></div><div class="viz-bar" aria-hidden="true">${segs}</div>`;
+}
+
 function renderCoverageShell() {
   const coverage = state.coverage;
   const visible = coverage.supported;
@@ -920,10 +1104,10 @@ function renderCoverageShell() {
   $('#year-layout').classList.toggle('hidden', onDemand || (visible && coverage.view !== 'year'));
   $('#month-coverage').classList.toggle('hidden', !visible || coverage.view !== 'month');
   $('#day-coverage').classList.toggle('hidden', !visible || coverage.view !== 'day');
-  $('#calendar-help').textContent = visible
-    ? '绿色 完整 · 蓝色 整点完整 · 橙色 部分覆盖（包括当天其他波段有数据时的缺失波段）· 白色 整日无本地数据 · 黄色斜纹 处理中 · 红色 错误 · 灰色斜纹 官方无数据 · 灰色 待索引；呼吸表示索引中'
-    : '年历依据本地持久化索引：绿色 全部完整 · 蓝色 整点完整 · 橙色 部分覆盖 · 白色 整日无本地数据；斜杠表示官方缺次，呼吸表示索引中。';
-  $('#calendar-help').classList.toggle('hidden', onDemand);
+  const help = $('#calendar-help');
+  help.hidden = true;
+  help.classList.add('hidden');
+  help.textContent = '';
   document.querySelectorAll('[data-coverage-view]').forEach(button => {
     const active = button.dataset.coverageView === coverage.view;
     button.classList.toggle('active', active);
@@ -965,12 +1149,19 @@ function ensureIndexStream(product, year) {
   const key = product + '|' + year;
   if (state.indexStream && state.indexStreamKey === key) return;
   stopIndexStream();
-  const stream = new EventSource('/api/v1/index/stream?product=' + encodeURIComponent(product) + '&year=' + year + '&watch=1');
+  const cursor = maxDayUpdatedAt(state.dayState);
+  const cursorParam = cursor ? '&cursor=' + encodeURIComponent(cursor) : '';
+  const stream = new EventSource('/api/v1/index/stream?product=' + encodeURIComponent(product) + '&year=' + year + cursorParam + '&watch=1');
   state.indexStream = stream;
   state.indexStreamKey = key;
   state.indexConnection = 'connecting';
   renderArchiveIndex();
   stream.addEventListener('open', () => {
+    if (state.indexStream !== stream) return;
+    state.indexConnection = 'connected';
+    renderArchiveIndex();
+  });
+  stream.addEventListener('sync', () => {
     if (state.indexStream !== stream) return;
     state.indexConnection = 'connected';
     renderArchiveIndex();
@@ -1026,6 +1217,7 @@ function ensureIndexStream(product, year) {
     }
     if (changed.length) {
       for (const day of changed) updateCell(day);
+      renderProductCoverageViz();
       if (state.coverage.supported && state.coverage.view === 'month') {
         const monthPrefix = year + '-' + String(Number(monthEl.value) + 1).padStart(2, '0') + '-';
         if (changed.some(day => day.startsWith(monthPrefix))) loadCoverageMonth();
@@ -1111,6 +1303,7 @@ function renderCoverageYear() {
   }
   gridEl.replaceChildren(fragment);
   fitYearCalendar();
+  renderProductCoverageViz();
 }
 
 function paintCoverageCell(cell, day) {
@@ -1233,20 +1426,38 @@ async function loadSatelliteYears(products, watch) {
       const entry = state.satelliteYears.get(item.id);
       const days = entry ? entry.days : state.dayState;
       for (const row of payload.days || []) days.set(row.day, row);
-      if (entry) entry.loading = false;
+      if (entry) {
+        entry.loading = false;
+        if (entry.heading && entry.grid) {
+          entry.heading.textContent = calendarProductLabel(entry.product);
+          renderYearGrid(entry.grid, entry.days, year, day => queryCalendarDay(entry.product, day));
+        } else {
+          renderCalendar();
+        }
+      } else {
+        renderYearGrid(gridEl, state.dayState, year, day => queryCalendarDay(state.selected, day));
+        fitYearCalendar();
+        renderProductCoverageViz();
+      }
     } catch (error) {
       if (seq !== state.calendarSeq) return;
       const entry = state.satelliteYears.get(item.id);
-      if (entry) { entry.loading = false; entry.error = `索引读取失败 · ${error.message}`; }
-      else $('#product-meta').textContent = `年历索引读取失败 · ${error.message}`;
+      if (entry) {
+        entry.loading = false;
+        entry.error = `索引读取失败 · ${error.message}`;
+        if (entry.heading) entry.heading.textContent = `${calendarProductLabel(entry.product)} · ${entry.error}`;
+      } else {
+        $('#product-meta').textContent = `年历索引读取失败 · ${error.message}`;
+      }
     }
   }));
   if (seq !== state.calendarSeq || state.selected?.id !== product || Number(yearEl.value) !== year) return;
-  renderCalendar();
   if (!watch || !$('#calendar-view').classList.contains('active')) return;
   ensureIndexStream(product, year);
   for (const [id, entry] of state.satelliteYears) {
-    const stream = new EventSource('/api/v1/index/stream?product=' + encodeURIComponent(id) + '&year=' + year + '&watch=1');
+    const satCursor = maxDayUpdatedAt(entry.days);
+    const satCursorParam = satCursor ? '&cursor=' + encodeURIComponent(satCursor) : '';
+    const stream = new EventSource('/api/v1/index/stream?product=' + encodeURIComponent(id) + '&year=' + year + satCursorParam + '&watch=1');
     entry.stream = stream;
     stream.addEventListener('index', event => {
       if (seq !== state.calendarSeq || entry.stream !== stream || Number(yearEl.value) !== year) return;
@@ -1886,8 +2097,12 @@ function renderSources() {
   $('#sources').innerHTML = rows.join('') || '<tr><td colspan="3">暂无数据源</td></tr>';
 }
 
+const familyCatalogCache = new Map();
+
 function applyCatalog(payload, family, saved = readFamilyFilters(family)) {
   state.catalogFamily = family;
+  state.calendarHydrated = true;
+  if (Array.isArray(payload)) familyCatalogCache.set(family, payload);
   state.collections = (payload || []).map(normalizeCatalogProduct).map(product => ({
     id: product.product_key,
     source_id: product.source_id,
@@ -1932,12 +2147,12 @@ function applyCatalog(payload, family, saved = readFamilyFilters(family)) {
   updateSelectedProduct();
 }
 
-async function loadSources() {
+async function loadSources(hydrateCalendar = ($('#calendar-view')?.classList?.contains('active') ?? true)) {
   const saved = readFilters();
   const preferredFamily = savedFamily(saved) === 'era5' ? 'goes' : savedFamily(saved) || 'goes';
   const hintedSources = hintedFamilySourceIDs(preferredFamily);
-  const catalogPromise = preferredFamily
-    ? json(familyProductsURL(hintedSources)).catch(() => null)
+  const catalogPromise = hydrateCalendar && preferredFamily
+    ? streamNDJSON(familyProductsURL(hintedSources) + '&stream=1', () => {}).catch(() => null)
     : Promise.resolve(null);
   const [payload, prefetchedCatalog] = await Promise.all([json('/api/v1/sources'), catalogPromise]);
   state.sources = payload.sources || [];
@@ -1950,11 +2165,15 @@ async function loadSources() {
   if (families.some(item => item.id === preferredFamily)) sourceEl.value = preferredFamily;
   else if (families.some(item => item.id === 'goes')) sourceEl.value = 'goes';
   else if (families.length) sourceEl.value = families[0].id;
-  const actualSources = familySources(sourceEl.value).map(item => item.id);
-  if (sourceEl.value === preferredFamily && prefetchedCatalog && sameSourceSet(actualSources, hintedSources)) {
-    applyCatalog(prefetchedCatalog, sourceEl.value, saved);
+  if (hydrateCalendar) {
+    const actualSources = familySources(sourceEl.value).map(item => item.id);
+    if (sourceEl.value === preferredFamily && prefetchedCatalog && sameSourceSet(actualSources, hintedSources)) {
+      applyCatalog(prefetchedCatalog, sourceEl.value, saved);
+    } else {
+      await loadCatalog();
+    }
   } else {
-    await loadCatalog();
+    state.calendarHydrated = false;
   }
   if ($('#downloads-view').classList.contains('active')) initializeDownloadSubmit();
 }
@@ -1962,6 +2181,11 @@ async function loadSources() {
 async function loadCatalog() {
   const family = sourceEl.value;
   const saved = readFamilyFilters(family);
+  const cached = familyCatalogCache.get(family);
+  if (cached) {
+    applyCatalog(cached, family, saved);
+    return;
+  }
   const ticket = ++state.catalogSeq;
   stopIndexStream();
   state.calendarSeq++;
@@ -1984,7 +2208,7 @@ async function loadCatalog() {
   const sourceIDs = familySources(family).map(item => item.id);
   if (!sourceIDs.length) { setCatalogLoading(false); return; }
   try {
-    const payload = await json(familyProductsURL(sourceIDs));
+    const payload = await streamNDJSON(familyProductsURL(sourceIDs) + '&stream=1', () => {});
     if (ticket !== state.catalogSeq || family !== sourceEl.value) return;
     applyCatalog(payload, family, saved);
   } catch (error) {
@@ -2232,10 +2456,47 @@ function monitorChart(points, key, fixedMax = null) {
   return '<div class="monitor-chart-plot">' +
     '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' +
     grids +
+    '<line class="chart-cursor" x1="0" y1="' + top + '" x2="0" y2="' + (top + plotHeight) + '" visibility="hidden" stroke="#57606a" stroke-width="1" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>' +
     '<path class="chart-line" d="' + path.trim() + '"/>' + dot + '</svg>' +
     '<span class="monitor-chart-max">' + esc(topLabel) + '</span>' +
+    '<span class="monitor-chart-tip hidden" style="position:absolute;right:6px;top:2px;background:#fff;border:1px solid #d0d7de;border-radius:4px;padding:1px 6px;font-size:11px;color:#24292f;pointer-events:none;font-variant-numeric:tabular-nums"></span>' +
     '</div>' +
     '<div class="monitor-chart-time"><span>' + esc(startLabel) + '</span><span>' + esc(endLabel) + '</span></div>';
+}
+
+function bindMonitorChartHover(container, points, key, fixedMax = null) {
+  const svg = container?.querySelector?.('svg');
+  const cursor = container?.querySelector?.('.chart-cursor');
+  const tip = container?.querySelector?.('.monitor-chart-tip');
+  if (!svg || !cursor || !tip || typeof svg.addEventListener !== 'function') return;
+  const entries = (points || []).map(point => ({
+    time: new Date(point.sampled_at).getTime(),
+    value: monitorNumber(point, key),
+  })).filter(item => Number.isFinite(item.time) && Number.isFinite(item.value));
+  if (!entries.length) return;
+  const width = 600, left = 32, right = 8, plotWidth = width - left - right;
+  const t0 = entries[0].time;
+  const t1 = Math.max(t0 + 1, entries[entries.length - 1].time);
+  const unit = fixedMax === 100 ? '%' : ' ms';
+  const digits = fixedMax === 100 ? 0 : 1;
+  svg.addEventListener('pointermove', event => {
+    const bounds = svg.getBoundingClientRect();
+    if (!(bounds.width > 0)) return;
+    const ratio = Math.max(0, Math.min(1, ((event.clientX - bounds.left) / bounds.width * width - left) / plotWidth));
+    const target = t0 + ratio * (t1 - t0);
+    let nearest = entries[0];
+    for (const item of entries) if (Math.abs(item.time - target) < Math.abs(nearest.time - target)) nearest = item;
+    const xx = left + ((nearest.time - t0) / (t1 - t0)) * plotWidth;
+    cursor.setAttribute('x1', xx.toFixed(1));
+    cursor.setAttribute('x2', xx.toFixed(1));
+    cursor.setAttribute('visibility', 'visible');
+    tip.textContent = `${monitorClock(new Date(nearest.time).toISOString())} · ${monitorValue(nearest.value, unit, digits)}`;
+    tip.classList.remove('hidden');
+  });
+  svg.addEventListener('pointerleave', () => {
+    cursor.setAttribute('visibility', 'hidden');
+    tip.classList.add('hidden');
+  });
 }
 
 function renderMonitorDetail(link) {
@@ -2267,6 +2528,9 @@ function renderMonitorDetail(link) {
   latency.innerHTML = monitorChart(link.points, 'latency_ms');
   jitter.innerHTML = monitorChart(link.points, 'jitter_ms');
   loss.innerHTML = monitorChart(link.points, 'loss_pct', 100);
+  bindMonitorChartHover(latency, link.points, 'latency_ms');
+  bindMonitorChartHover(jitter, link.points, 'jitter_ms');
+  bindMonitorChartHover(loss, link.points, 'loss_pct', 100);
 }
 
 function renderMonitor() {
@@ -2487,14 +2751,30 @@ function downloadProductRow(product, selected = false) {
     (state.downloads.selectedProducts.has(product.product_key) ? ' checked' : '') + '>' + description + '</label>';
 }
 
+let dlRenderSeq = 0;
 function renderDownloadSelection() {
+  const seq = ++dlRenderSeq;
   const filtered = filteredDownloadProducts();
   const selected = selectedDownloadProducts();
   $('#dl-filtered-count').textContent = String(filtered.length);
   $('#dl-selected-count').textContent = '已选 ' + selected.length + ' 个';
   $('#dl-basket-count').textContent = String(selected.length);
-  $('#dl-product-results').innerHTML = filtered.map(product => downloadProductRow(product)).join('') ||
-    '<div class="download-picker-empty">' + (state.downloads.catalogLoading ? '正在读取产品目录…' : '没有匹配的产品') + '</div>';
+  const resultsEl = $('#dl-product-results');
+  const chunkSize = 60;
+  if (!filtered.length) {
+    resultsEl.innerHTML = '<div class="download-picker-empty">' + (state.downloads.catalogLoading ? '正在读取产品目录…' : '没有匹配的产品') + '</div>';
+  } else {
+    resultsEl.innerHTML = filtered.slice(0, chunkSize).map(product => downloadProductRow(product)).join('');
+    if (filtered.length > chunkSize && typeof resultsEl.insertAdjacentHTML === 'function') {
+      (async () => {
+        for (let offset = chunkSize; offset < filtered.length; offset += chunkSize) {
+          await yieldToMain();
+          if (seq !== dlRenderSeq) return;
+          resultsEl.insertAdjacentHTML('beforeend', filtered.slice(offset, offset + chunkSize).map(product => downloadProductRow(product)).join(''));
+        }
+      })();
+    }
+  }
   const opened = new Set([...($('#dl-selected-products').querySelectorAll?.('details[open]') || [])].map(node => node.dataset.downloadOptions));
   $('#dl-selected-products').innerHTML = selected.map(product => downloadProductRow(product, true)).join('') ||
     '<div class="download-picker-empty">尚未选择产品</div>';
@@ -2904,11 +3184,23 @@ async function loadDownloadCatalog() {
   $('#dl-submit-status').textContent = '';
   refreshDownloadFilters();
   try {
-    const catalog = await readDownloadPageJSON('/api/v1/downloads/catalog', 'products');
-    if (ticket !== state.downloads.loading) return;
     const allowed = new Set(state.sources.filter(source => source.capabilities?.includes('download')).map(source => source.id));
-    state.downloads.catalog = catalog.products.filter(product => product.source_id !== 'era5' &&
-      (!allowed.size || allowed.has(product.source_id))).map(normalizeCatalogProduct);
+    let started = false;
+    await streamNDJSON('/api/v1/downloads/catalog?stream=1', chunk => {
+      if (ticket !== state.downloads.loading) return;
+      if (!started) {
+        state.downloads.catalog = [];
+        started = true;
+      }
+      const next = chunk.filter(product => product.source_id !== 'era5' && (!allowed.size || allowed.has(product.source_id)))
+        .map(normalizeCatalogProduct);
+      if (next.length) {
+        state.downloads.catalog.push(...next);
+        refreshDownloadFilters();
+      }
+    });
+    if (ticket !== state.downloads.loading) return;
+    if (!started) state.downloads.catalog = [];
     state.downloads.catalogReady = true;
   } catch (error) {
     if (ticket === state.downloads.loading) $('#dl-submit-status').textContent = '产品目录读取失败：' + error.message;
@@ -3101,7 +3393,7 @@ function downloadSubmissionSummary(snapshot) {
 
 function closeDownloadConfirmation() {
   if (state.downloads.submitting) return;
-  $('#download-confirm').close();
+  closeTopLayerDialog($('#download-confirm'));
   state.downloads.confirmation = null;
 }
 
@@ -3217,9 +3509,15 @@ function downloadTaskPeriod(task) {
 }
 
 function downloadTaskDetails(task) {
+  const doneCount = Number(task.files_done || 0);
+  const totalCount = doneCount + Number(task.files_failed || 0) + Number(task.assets_queued || 0) + Number(task.files_waiting_auth || 0);
+  const pct = totalCount > 0 ? Math.min(100, Math.round((doneCount / totalCount) * 100)) : 0;
+  const progressBar = totalCount > 0
+    ? '<div class="download-task-progress" role="progressbar" aria-valuenow="' + pct + '" aria-valuemin="0" aria-valuemax="100"><i style="width:' + pct + '%"></i></div>'
+    : '';
   return '<dl class="download-task-summary"><div><dt>时间范围</dt><dd>' + esc(downloadTaskPeriod(task)) + '</dd></div>' +
     '<div><dt>提交时间</dt><dd>' + esc(downloadTimestamp(task.created_at, state.downloads.displayZone)) + '</dd></div>' +
-    '<div><dt>文件</dt><dd>' + esc(downloadQueueCounts(task)) + '</dd></div></dl>' +
+    '<div><dt>文件</dt><dd>' + esc(downloadQueueCounts(task)) + progressBar + '</dd></div></dl>' +
     '<div class="download-queue-children">' + (task.downloads || []).map(item => {
       const stage = downloadQueueStage(item.state);
       const name = [item.satellite, item.product_code, item.version ? '版本 ' + item.version : ''].filter(Boolean).join(' · ') || downloadProductName(item);
@@ -3433,7 +3731,8 @@ function renderDownloadProviders(statuses, liveAvailable = true) {
 
 function renderDownloadTasks(items) {
   const holder = $('#download-tasks');
-  holder.innerHTML = items.slice(0, 30).map(task => {
+  const limit = Math.max(30, state.downloads.taskLimit || 30);
+  holder.innerHTML = items.slice(0, limit).map(task => {
     const products = task.downloads || [];
     const satellites = [...new Set(products.map(item => item.satellite ||
       state.sources.find(source => source.id === item.source_id)?.name || item.source_id).filter(Boolean))];
@@ -3449,20 +3748,47 @@ function renderDownloadTasks(items) {
       overview, details, expandedDownloadTasks.has(key));
   }).join('') || '<div class="pool-empty">暂无下载任务</div>';
   bindDownloadQueue(holder, expandedDownloadTasks);
-  const {page, pages, total} = state.downloads;
+  const {page, pages, total, hasMore, nextCursor} = state.downloads;
   const pager = $('#download-pages');
-  pager.classList.toggle('hidden', total <= 30);
-  $('#download-page-summary').textContent = `共 ${total} 个任务，每页最多 30 项`;
+  pager.classList.toggle('hidden', total <= 30 && !hasMore);
+  $('#download-page-summary').textContent = `共 ${total} 个任务，每页最多 ${limit} 项`;
   $('#download-page-current').textContent = `第 ${page} / ${Math.max(1, pages)} 页`;
   $('#download-page-prev').disabled = page <= 1;
   $('#download-page-next').disabled = page >= pages;
+  const moreBtn = $('#download-load-more');
+  if (moreBtn) {
+    const canLoadMore = page === 1 && Boolean(hasMore && nextCursor);
+    moreBtn.classList.toggle('hidden', !canLoadMore);
+    moreBtn.disabled = false;
+  }
 }
 
-function applyDownloadPage(payload) {
-  state.downloads.tasks = (payload.tasks || []).slice(0, 30);
+function applyDownloadPage(payload, append = false) {
+  const incoming = payload.tasks || [];
+  if (append) {
+    const byKey = new Map(state.downloads.tasks.map(item => [item.key || ('task-' + item.id), item]));
+    const next = [...state.downloads.tasks];
+    for (const item of incoming) {
+      const k = item.key || ('task-' + item.id);
+      if (byKey.has(k)) {
+        const idx = next.findIndex(x => (x.key || ('task-' + x.id)) === k);
+        if (idx >= 0) next[idx] = item;
+      } else {
+        byKey.set(k, item);
+        next.push(item);
+      }
+    }
+    state.downloads.tasks = next;
+  } else {
+    const limit = Math.max(30, state.downloads.taskLimit || 30);
+    state.downloads.tasks = incoming.slice(0, limit);
+  }
   state.downloads.page = payload.page || state.downloads.page;
-  state.downloads.total = payload.total || 0;
+  state.downloads.total = payload.total ?? state.downloads.total ?? 0;
   state.downloads.pages = Math.max(1, payload.pages || 1);
+  if (Object.hasOwn(payload, 'has_more')) state.downloads.hasMore = Boolean(payload.has_more);
+  if (Object.hasOwn(payload, 'next_cursor')) state.downloads.nextCursor = payload.next_cursor || '';
+  if (payload.cursor) state.downloads.syncCursor = payload.cursor;
   renderDownloadTasks(state.downloads.tasks);
 }
 
@@ -3470,11 +3796,36 @@ function changeDownloadPage(direction) {
   const next = Math.max(1, Math.min(state.downloads.pages, state.downloads.page + direction));
   if (next === state.downloads.page) return;
   state.downloads.page = next;
+  state.downloads.taskLimit = 30;
+  ensureDownloadTasksStream(true);
   loadDownloads(true);
 }
 
+async function loadMoreDownloadTasks() {
+  const cursor = state.downloads.nextCursor;
+  if (!cursor) return;
+  const moreBtn = $('#download-load-more');
+  if (moreBtn) moreBtn.disabled = true;
+  try {
+    const payload = await json('/api/v1/download-tasks?cursor=' + encodeURIComponent(cursor) + '&limit=30');
+    state.downloads.taskLimit = Math.min(200, Math.max(30, state.downloads.tasks.length + (payload.tasks || []).length));
+    applyDownloadPage(payload, true);
+    ensureDownloadTasksStream(true);
+  } catch (error) {
+    $('#downloads-error').textContent = '加载更多失败 · ' + error.message;
+  } finally {
+    if (moreBtn) moreBtn.disabled = false;
+  }
+}
+
+function stopDownloadsStreams() {
+  if (state.downloads.stream) { state.downloads.stream.close(); state.downloads.stream = null; }
+  if (state.downloads.tasksStream) { state.downloads.tasksStream.close(); state.downloads.tasksStream = null; }
+  if (state.downloads.historyStream) { state.downloads.historyStream.close(); state.downloads.historyStream = null; }
+}
+
 function ensureDownloadProviderStream() {
-  if (state.downloads.stream || !$('#downloads-view').classList.contains('active')) return;
+  if (typeof EventSource === 'undefined' || state.downloads.stream || !$('#downloads-view').classList.contains('active')) return;
   const stream = new EventSource('/api/v1/downloader/providers/stream');
   state.downloads.stream = stream;
   stream.addEventListener('providers', event => {
@@ -3512,22 +3863,142 @@ function ensureDownloadProviderStream() {
   stream.onerror = () => {
     state.downloads.providerError = '下载状态重新连接中';
     $('#downloads-error').textContent = [state.downloads.requestError, state.downloads.providerError].filter(Boolean).join(' · ');
+    setLiveBadge('downloads-live-pill', 'downloads-live-text', 'reconnecting', '重连中');
   };
   stream.onopen = () => {
     state.downloads.providerError = '';
     $('#downloads-error').textContent = state.downloads.requestError || '';
+    setLiveBadge('downloads-live-pill', 'downloads-live-text', 'connected', '实时同步');
   };
+}
+
+function ensureDownloadTasksStream(restart = false) {
+  if (typeof EventSource === 'undefined' || !$('#downloads-view').classList.contains('active')) return;
+  if (restart && state.downloads.tasksStream) {
+    state.downloads.tasksStream.close();
+    state.downloads.tasksStream = null;
+  }
+  if (state.downloads.tasksStream) return;
+  const params = new URLSearchParams({
+    page: String(state.downloads.page || 1),
+    limit: String(Math.max(30, state.downloads.taskLimit || 30)),
+  });
+  if (state.downloads.syncCursor) params.set('since', state.downloads.syncCursor);
+  const stream = new EventSource('/api/v1/download-tasks/stream?' + params.toString());
+  state.downloads.tasksStream = stream;
+  stream.addEventListener('open', () => {
+    if (state.downloads.tasksStream !== stream) return;
+    setLiveBadge('downloads-live-pill', 'downloads-live-text', 'connected', '实时同步');
+  });
+  stream.addEventListener('error', () => {
+    if (state.downloads.tasksStream !== stream) return;
+    setLiveBadge('downloads-live-pill', 'downloads-live-text', 'reconnecting', '重连中');
+  });
+  stream.addEventListener('tasks', event => {
+    if (state.downloads.tasksStream !== stream) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    state.downloads.requestError = '';
+    applyDownloadPage(payload);
+    setLiveBadge('downloads-live-pill', 'downloads-live-text', 'connected', '实时同步');
+  });
+  stream.addEventListener('sync', event => {
+    if (state.downloads.tasksStream !== stream) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    if (payload.cursor) state.downloads.syncCursor = payload.cursor;
+    if (Object.hasOwn(payload, 'total')) state.downloads.total = payload.total;
+    if (Object.hasOwn(payload, 'pages')) state.downloads.pages = Math.max(1, payload.pages || 1);
+    if (Object.hasOwn(payload, 'has_more')) state.downloads.hasMore = Boolean(payload.has_more);
+    if (Object.hasOwn(payload, 'next_cursor')) state.downloads.nextCursor = payload.next_cursor || '';
+    setLiveBadge('downloads-live-pill', 'downloads-live-text', 'connected', '实时同步');
+  });
+  stream.addEventListener('task', event => {
+    if (state.downloads.tasksStream !== stream) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    const updated = payload?.task;
+    if (!updated) return;
+    const key = updated.key || ('task-' + updated.id);
+    const idx = state.downloads.tasks.findIndex(t => (t.key || ('task-' + t.id)) === key);
+    if (idx >= 0) state.downloads.tasks[idx] = updated;
+    else state.downloads.tasks.unshift(updated);
+    if (payload.cursor) state.downloads.syncCursor = payload.cursor;
+    renderDownloadTasks(state.downloads.tasks);
+  });
+  stream.addEventListener('tasks_removed', event => {
+    if (state.downloads.tasksStream !== stream) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    const dead = new Set(payload?.keys || []);
+    if (dead.size) {
+      state.downloads.tasks = state.downloads.tasks.filter(t => !dead.has(t.key || ('task-' + t.id)));
+      renderDownloadTasks(state.downloads.tasks);
+    }
+    if (payload.cursor) state.downloads.syncCursor = payload.cursor;
+  });
+  stream.addEventListener('tasks_meta', event => {
+    if (state.downloads.tasksStream !== stream) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    if (Array.isArray(payload.order) && payload.order.length) {
+      const byKey = new Map(state.downloads.tasks.map(t => [t.key || ('task-' + t.id), t]));
+      const ordered = [];
+      for (const k of payload.order) if (byKey.has(k)) { ordered.push(byKey.get(k)); byKey.delete(k); }
+      for (const rest of byKey.values()) ordered.push(rest);
+      state.downloads.tasks = ordered.slice(0, Math.max(30, state.downloads.taskLimit || 30));
+    }
+    if (Object.hasOwn(payload, 'total')) state.downloads.total = payload.total;
+    if (Object.hasOwn(payload, 'pages')) state.downloads.pages = Math.max(1, payload.pages || 1);
+    if (Object.hasOwn(payload, 'has_more')) state.downloads.hasMore = Boolean(payload.has_more);
+    if (Object.hasOwn(payload, 'next_cursor')) state.downloads.nextCursor = payload.next_cursor || '';
+    if (payload.cursor) state.downloads.syncCursor = payload.cursor;
+    renderDownloadTasks(state.downloads.tasks);
+  });
+}
+
+function ensureDownloadHistoryStream(restart = false) {
+  if (typeof EventSource === 'undefined' || !$('#downloads-view').classList.contains('active')) return;
+  if (restart && state.downloads.historyStream) {
+    state.downloads.historyStream.close();
+    state.downloads.historyStream = null;
+  }
+  if (state.downloads.historyStream) return;
+  const history = state.downloads.history;
+  const params = new URLSearchParams({window: history.window || '1h'});
+  const since = history.payload?.window === history.window ? incrementalSeriesSince(history.payload, 'providers') : '';
+  if (since) params.set('since', since);
+  const stream = new EventSource('/api/v1/monitor/downloads/stream?' + params.toString());
+  state.downloads.historyStream = stream;
+  const handle = event => {
+    if (state.downloads.historyStream !== stream) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    history.payload = mergeDownloadHistory(history.payload, payload, history.window);
+    history.loadedAt = Date.now();
+    $('#download-monitor-error').textContent = '';
+    renderDownloadMonitor(state.downloads.providers, state.downloads.providers.length > 0 && !state.downloads.providerError);
+  };
+  stream.addEventListener('snapshot', handle);
+  stream.addEventListener('delta', handle);
 }
 
 async function loadDownloads(schedule = true, forceHistory = false) {
   clearTimeout(state.downloads.poll);
   const ticket = ++state.downloads.pollSeq;
   ensureDownloadProviderStream();
+  ensureDownloadTasksStream(false);
+  ensureDownloadHistoryStream(forceHistory);
   const history = state.downloads.history;
   if (!downloadWindowSeconds[history.window]) history.window = '1h';
   const cacheFresh = !forceHistory && history.payload?.window === history.window && Date.now() - history.loadedAt < 15_000;
   const historySince = !forceHistory && history.payload?.window === history.window ? incrementalSeriesSince(history.payload, 'providers') : '';
-  const requestURL = '/api/v1/download-tasks?page=' + encodeURIComponent(state.downloads.page);
+  const taskParams = new URLSearchParams({page: String(state.downloads.page || 1)});
+  if ((state.downloads.page || 1) === 1) {
+    taskParams.set('cursor', '');
+    taskParams.set('limit', String(Math.max(30, state.downloads.taskLimit || 30)));
+  }
+  const requestURL = '/api/v1/download-tasks?' + taskParams.toString();
   const [requests, samples] = await Promise.allSettled([
     json(requestURL),
     cacheFresh ? Promise.resolve(history.payload) : readDownloadPageJSON('/api/v1/monitor/downloads?window=' + encodeURIComponent(history.window) +
@@ -3551,7 +4022,8 @@ async function loadDownloads(schedule = true, forceHistory = false) {
   $('#download-monitor-error').textContent = samples.status === 'rejected' ? '历史采样读取失败 · ' + samples.reason.message : '';
   renderDownloadProviders(state.downloads.providers, state.downloads.providers.length > 0 && !state.downloads.providerError);
   if (schedule && $('#downloads-view').classList.contains('active')) {
-    state.downloads.poll = setTimeout(() => loadDownloads(true), 3000);
+    const streamAlive = state.downloads.tasksStream?.readyState === 1 && state.downloads.historyStream?.readyState === 1;
+    state.downloads.poll = setTimeout(() => loadDownloads(true), streamAlive ? 20_000 : 5000);
   }
 }
 
@@ -3561,20 +4033,68 @@ function syncMonitorWindowButtons() {
   });
 }
 
+function stopMonitorStream() {
+  if (state.monitor.stream) {
+    state.monitor.stream.close();
+    state.monitor.stream = null;
+  }
+}
+
+function ensureMonitorStream(restart = false) {
+  if (typeof EventSource === 'undefined' || !$('#monitor-view').classList.contains('active')) return;
+  if (restart && state.monitor.stream) {
+    state.monitor.stream.close();
+    state.monitor.stream = null;
+  }
+  if (state.monitor.stream) return;
+  const params = new URLSearchParams({window: state.monitor.window || '1h'});
+  const since = state.monitor.payload?.window === state.monitor.window ? incrementalSeriesSince(state.monitor.payload, 'links') : '';
+  if (since) params.set('since', since);
+  const stream = new EventSource('/api/v1/monitor/links/stream?' + params.toString());
+  state.monitor.stream = stream;
+  setLiveBadge('monitor-live-pill', 'monitor-live-text', 'connecting', '连接中');
+  stream.addEventListener('open', () => {
+    if (state.monitor.stream !== stream) return;
+    state.monitor.connection = 'connected';
+    setLiveBadge('monitor-live-pill', 'monitor-live-text', 'connected', '实时');
+  });
+  stream.addEventListener('error', () => {
+    if (state.monitor.stream !== stream) return;
+    state.monitor.connection = 'reconnecting';
+    setLiveBadge('monitor-live-pill', 'monitor-live-text', 'reconnecting', '重连中');
+  });
+  const handle = event => {
+    if (state.monitor.stream !== stream) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    state.monitor.payload = mergeLinkHistory(state.monitor.payload, payload, state.monitor.window);
+    if (payload.cursor) state.monitor.cursor = payload.cursor;
+    $('#monitor-error').textContent = '';
+    setLiveBadge('monitor-live-pill', 'monitor-live-text', 'connected', '实时');
+    renderMonitor();
+  };
+  stream.addEventListener('snapshot', handle);
+  stream.addEventListener('delta', handle);
+}
+
 async function loadMonitor(schedule = true) {
   clearTimeout(state.monitor.poll);
   syncMonitorWindowButtons();
-  try {
-    const since = incrementalSeriesSince(state.monitor.payload, 'links');
-    const payload = await json('/api/v1/monitor/links?window=' + encodeURIComponent(state.monitor.window) +
-      (since ? '&since=' + encodeURIComponent(since) : ''));
-    state.monitor.payload = mergeLinkHistory(state.monitor.payload, payload, state.monitor.window);
-    $('#monitor-error').textContent = '';
-    renderMonitor();
-  } catch (error) {
-    $('#monitor-error').textContent = '链路监控读取失败 · ' + error.message;
+  ensureMonitorStream(false);
+  const needsFetch = !state.monitor.payload || state.monitor.payload.window !== state.monitor.window;
+  if (needsFetch) {
+    try {
+      const since = incrementalSeriesSince(state.monitor.payload, 'links');
+      const payload = await json('/api/v1/monitor/links?window=' + encodeURIComponent(state.monitor.window) +
+        (since ? '&since=' + encodeURIComponent(since) : ''));
+      state.monitor.payload = mergeLinkHistory(state.monitor.payload, payload, state.monitor.window);
+      $('#monitor-error').textContent = '';
+      renderMonitor();
+    } catch (error) {
+      $('#monitor-error').textContent = '链路监控读取失败 · ' + error.message;
+    }
   }
-  if (schedule && $('#monitor-view').classList.contains('active')) {
+  if (schedule && $('#monitor-view').classList.contains('active') && typeof EventSource === 'undefined') {
     state.monitor.poll = setTimeout(() => loadMonitor(true), 15_000);
   }
 }
@@ -3608,15 +4128,20 @@ function showAccessSection(section) {
   });
   if (section === 'egress') {
     loadAccessEgress();
+    ensureAccessEgressStream();
   } else {
     clearTimeout(accessEgressTimer);
     accessEgressRequest?.abort();
+    stopAccessEgressStream();
   }
 }
 
 async function loadAccess() {
   $('#access-error').textContent = '';
-  if (state.access.section === 'egress') loadAccessEgress();
+  if (state.access.section === 'egress') {
+    loadAccessEgress();
+    ensureAccessEgressStream();
+  }
   try {
     await loadAccessPools();
   } catch (error) {
@@ -3696,11 +4221,19 @@ function egressProxyPaths(proxy) {
   }));
 }
 
+function stopAccessEgressStream() {
+  if (state.access.egressStream) {
+    state.access.egressStream.close();
+    state.access.egressStream = null;
+  }
+}
+
 function renderAccessEgress() {
   const routes = accessEgressRoutes;
   const selector = $('#download-egress-source');
   const summary = $('#download-egress-summary');
   const list = $('#download-egress-list');
+  if (!selector || !summary || !list) return;
   const sources = uniqueSorted(routes.flatMap(route => [...(route.sources || []), ...Object.keys(route.active_by_source || {})]));
   const options = sources.map(source => '<option value="' + esc(source) + '">' + esc(accessSourceName(source)) + '</option>').join('');
   if (selector.dataset.options !== options) {
@@ -3746,6 +4279,37 @@ function renderAccessEgress() {
   ].join('') || '<div class="pool-empty">未配置独立下载出口</div>';
 }
 
+function ensureAccessEgressStream() {
+  if (typeof EventSource === 'undefined' || state.access.section !== 'egress' ||
+      !$('#access-view')?.classList.contains('active') || state.access.user?.role !== 'admin') return;
+  if (state.access.egressStream) return;
+  const params = state.access.egressCursor ? '?since=' + encodeURIComponent(state.access.egressCursor) : '';
+  const stream = new EventSource('/api/v1/access/download-egress/stream' + params);
+  state.access.egressStream = stream;
+  stream.addEventListener('open', () => {
+    if (state.access.egressStream !== stream) return;
+    setLiveBadge('access-egress-live', '', 'connected');
+  });
+  stream.addEventListener('error', () => {
+    if (state.access.egressStream !== stream) return;
+    setLiveBadge('access-egress-live', '', 'reconnecting');
+  });
+  stream.addEventListener('sync', () => {
+    if (state.access.egressStream !== stream) return;
+    setLiveBadge('access-egress-live', '', 'connected');
+  });
+  stream.addEventListener('egress', event => {
+    if (state.access.egressStream !== stream) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    if (payload.cursor) state.access.egressCursor = payload.cursor;
+    setLiveBadge('access-egress-live', '', 'connected');
+    accessEgressRoutes = payload.routes || [];
+    accessEgressProxy = payload.proxy;
+    renderAccessEgress();
+  });
+}
+
 async function loadAccessEgress() {
   clearTimeout(accessEgressTimer);
   accessEgressRequest?.abort();
@@ -3761,11 +4325,13 @@ async function loadAccessEgress() {
     if (!request.signal.aborted) {
       accessEgressRoutes = [];
       accessEgressProxy = null;
-      $('#download-egress-summary').innerHTML = '';
-      $('#download-egress-list').innerHTML = '<div class="pool-empty">下载出口数据暂不可用</div>';
+      const summary = $('#download-egress-summary');
+      const list = $('#download-egress-list');
+      if (summary) summary.innerHTML = '';
+      if (list) list.innerHTML = '<div class="pool-empty">下载出口数据暂不可用</div>';
     }
   } finally {
-    if (accessEgressRequest === request && !request.signal.aborted) {
+    if (accessEgressRequest === request && !request.signal.aborted && typeof EventSource === 'undefined') {
       accessEgressTimer = setTimeout(loadAccessEgress, 5000);
     }
   }
@@ -4263,6 +4829,7 @@ function bind() {
   });
   $('#download-page-prev').addEventListener('click', () => changeDownloadPage(-1));
   $('#download-page-next').addEventListener('click', () => changeDownloadPage(1));
+  $('#download-load-more')?.addEventListener('click', loadMoreDownloadTasks);
   $('#download-timezone').addEventListener('change', event => setDownloadTimezone(event.target.value));
   $('#download-monitor-timezone').addEventListener('change', event => setDownloadMonitorTimezone(event.target.value));
   $('#download-monitor-provider').addEventListener('change', event => {
@@ -4277,6 +4844,7 @@ function bind() {
     state.downloads.history.window = button.dataset.downloadWindow;
     state.downloads.history.payload = null;
     state.downloads.history.loadedAt = 0;
+    state.downloads.history.cursor = '';
     localStorage.setItem('satellite-data-download-window', button.dataset.downloadWindow);
     state.downloads.history.chartKey = '';
     loadDownloads(true, true);
@@ -4389,12 +4957,47 @@ function bind() {
     event.preventDefault();
     closeDownloadConfirmation();
   });
+  $('#download-confirm').addEventListener('click', event => {
+    const dialog = event.currentTarget;
+    if (event.target !== dialog || typeof dialog.getBoundingClientRect !== 'function') return;
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) {
+      closeDownloadConfirmation();
+    }
+  });
+  if (typeof HTMLElement === 'undefined' || !('popover' in HTMLElement.prototype)) {
+    for (const trigger of document.querySelectorAll?.('[popovertarget]') || []) {
+      trigger.addEventListener('click', () => {
+        const panel = document.getElementById(trigger.getAttribute('popovertarget'));
+        if (panel) panel.classList.toggle('popover-open-fallback');
+      });
+    }
+  }
+  if (typeof document?.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        stopIndexStream();
+        stopDownloadsStreams();
+        stopMonitorStream();
+        stopAccessEgressStream();
+        setLiveBadge('downloads-live-pill', 'downloads-live-text', 'paused', '已暂停');
+        setLiveBadge('monitor-live-pill', 'monitor-live-text', 'paused', '已暂停');
+        return;
+      }
+      if ($('#calendar-view')?.classList.contains('active') && state.selected) ensureIndexStream(state.selected.id, Number(yearEl.value || defaultYear()));
+      if ($('#downloads-view')?.classList.contains('active')) loadDownloads(true);
+      if ($('#monitor-view')?.classList.contains('active')) { ensureMonitorStream(true); loadMonitor(true); }
+      if ($('#access-view')?.classList.contains('active') && state.access.section === 'egress') ensureAccessEgressStream();
+    });
+  }
   $('#monitor-window-tabs').addEventListener('click', event => {
     const button = event.target.closest('[data-monitor-window]');
     if (!button) return;
     state.monitor.window = button.dataset.monitorWindow;
     state.monitor.payload = null;
+    state.monitor.cursor = '';
     localStorage.setItem('satellite-data-monitor-window', state.monitor.window);
+    ensureMonitorStream(true);
     loadMonitor(true);
   });
   $('#monitor-links').addEventListener('click', event => {
@@ -4411,7 +5014,7 @@ function bind() {
   $('#cli-key-copy').addEventListener('click', copyCLIKey);
   $('#cli-key-dismiss').addEventListener('click', clearCLIKey);
   $('#refresh-access').addEventListener('click', loadAccess);
-  $('#download-egress-source').addEventListener('change', renderAccessEgress);
+  $('#download-egress-source')?.addEventListener('change', renderAccessEgress);
   document.querySelectorAll('[data-access-section]').forEach(node => node.addEventListener('click', () => showAccessSection(node.dataset.accessSection)));
   document.querySelectorAll('[data-pool-new]').forEach(node => node.addEventListener('click', () => openPoolForm(node.dataset.poolNew)));
   document.querySelectorAll('[data-form-cancel]').forEach(node => node.addEventListener('click', () => closePoolForm(node.dataset.formCancel)));
@@ -4455,6 +5058,8 @@ function bind() {
 }
 
 async function boot() {
+  const initialView = viewFromPath();
+  setView(initialView);
   const sessionPromise = json('/api/v1/auth/session');
   setSidebar(localStorage.getItem(SIDEBAR_KEY) === '1');
   const saved = readFilters();
@@ -4476,7 +5081,7 @@ async function boot() {
   $('#portal-user').textContent = session.user.username;
   document.querySelectorAll('[data-admin-only]').forEach(node => node.classList.toggle('hidden', session.user.role !== 'admin'));
   await sourcesPromise;
-  navigateView(viewFromPath(), 'none');
+  navigateView(initialView, 'none');
 }
 
 boot();

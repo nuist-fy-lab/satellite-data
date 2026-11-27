@@ -124,7 +124,14 @@ export function groupCatalog(products) {
   return [...groups.values()];
 }
 
-let catalog=[],selected={satellite:'',instrument:''},bound=false;
+let catalog=[],selected={satellite:'',instrument:''},bound=false,renderToken=0;
+function buildProductDetails(product) {
+  const details=document.createElement('details');details.className='catalog-product';details.dataset.product=product.product_key;
+  const range=[dateText(product.metadata?.time_start),dateText(product.metadata?.time_end)].filter(Boolean).join(' 至 ');
+  const rows=[['官方集合 ID',product.official_id],['处理级别',['AUX','ORBIT'].includes(product.level)?'':product.level],['处理状态',product.metadata?.processing_status],['平台',product.metadata?.platforms],['集合版本',product.version],['分辨率',product.resolution],['光谱采样点',product.metadata?.spectral_samples],['光谱范围',product.metadata?.spectral_range],['空间范围',product.area_type],['数据频率',product.cadence==='event'?'':product.cadence],['官方时间范围',range]].filter(([,value])=>value);
+  details.innerHTML=`<summary><strong>${esc(product.data_type)}</strong><span>${esc([product.level,product.version,product.metadata?.access_class].filter(Boolean).join(' · '))}</span></summary><div class="catalog-product-body"><h3>${esc(product.display_name || product.data_type)}</h3><p>${esc(productDescription(product))}</p><dl>${rows.map(([label,value])=>`<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('')}</dl>${product.metadata?.description?`<details class="catalog-official-description"><summary>官方摘要</summary><p>${esc(product.metadata.description)}</p></details>`:''}<div class="catalog-product-links">${link(product.metadata?.official_product_url,'官方产品目录')}${link(product.metadata?.official_documentation_url,'官方产品说明')}${link(product.metadata?.level_evidence,'元数据依据')}</div></div>`;
+  return details;
+}
 function matchedProducts() {
   const query=$('#catalog-search').value.trim().toLowerCase();
   return catalog.filter(item=>!query || [item.satellite,item.instrument,item.data_type,item.display_name,item.level,item.version,productDescription(item)].join(' ').toLowerCase().includes(query));
@@ -163,6 +170,7 @@ function descriptionPanel(name,items) {
   return `<header class="catalog-mission"><h1>${esc(name)}</h1><p>${esc(mission?.text || '该载星与产品归属来自官方集合目录。')}</p><dl>${facts}</dl>${link(mission?.url,'任务官网')}</header>`;
 }
 function render() {
+  const token=++renderToken;
   const products=matchedProducts();
   if(!products.some(item=>item.satellite===selected.satellite && (!selected.instrument || item.instrument===selected.instrument)))selected={satellite:products[0]?.satellite || '',instrument:''};
   renderTree(products);
@@ -170,6 +178,7 @@ function render() {
   if(!products.length){node.textContent='没有匹配的产品';return;}
   const items=products.filter(item=>item.satellite===selected.satellite);
   const header=document.createElement('div');header.innerHTML=descriptionPanel(selected.satellite,items);node.append(header);
+  const queued=[];
   for(const kind of unique(items.map(item=>item.instrument || '产品组'))) {
     if(selected.instrument && selected.instrument!==kind)continue;
     const own=items.filter(item=>(item.instrument || '产品组')===kind);
@@ -183,14 +192,28 @@ function render() {
       const note=document.createElement('div');note.className='catalog-instrument-date';
       note.textContent=dates.map(([platform,date])=>platform+' 随载星发射 '+dateText(date)).join(' · ');section.append(note);
     }
-    for(const product of own.sort((a,b)=>(a.data_type || '').localeCompare(b.data_type || '') || (a.version || '').localeCompare(b.version || ''))) {
-      const details=document.createElement('details');details.className='catalog-product';details.dataset.product=product.product_key;
-      const range=[dateText(product.metadata?.time_start),dateText(product.metadata?.time_end)].filter(Boolean).join(' 至 ');
-      const rows=[['官方集合 ID',product.official_id],['处理级别',['AUX','ORBIT'].includes(product.level)?'':product.level],['处理状态',product.metadata?.processing_status],['平台',product.metadata?.platforms],['集合版本',product.version],['分辨率',product.resolution],['光谱采样点',product.metadata?.spectral_samples],['光谱范围',product.metadata?.spectral_range],['空间范围',product.area_type],['数据频率',product.cadence==='event'?'':product.cadence],['官方时间范围',range]].filter(([,value])=>value);
-      details.innerHTML=`<summary><strong>${esc(product.data_type)}</strong><span>${esc([product.level,product.version,product.metadata?.access_class].filter(Boolean).join(' · '))}</span></summary><div class="catalog-product-body"><h3>${esc(product.display_name || product.data_type)}</h3><p>${esc(productDescription(product))}</p><dl>${rows.map(([label,value])=>`<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`).join('')}</dl>${product.metadata?.description?`<details class="catalog-official-description"><summary>官方摘要</summary><p>${esc(product.metadata.description)}</p></details>`:''}<div class="catalog-product-links">${link(product.metadata?.official_product_url,'官方产品目录')}${link(product.metadata?.official_documentation_url,'官方产品说明')}${link(product.metadata?.level_evidence,'元数据依据')}</div></div>`;
-      section.append(details);
+    const sorted=[...own].sort((a,b)=>(a.data_type || '').localeCompare(b.data_type || '') || (a.version || '').localeCompare(b.version || ''));
+    const initialLimit=40;
+    for(const product of sorted.slice(0,initialLimit)) {
+      section.append(buildProductDetails(product));
     }
+    if(sorted.length>initialLimit) queued.push({section,rest:sorted.slice(initialLimit)});
     node.append(section);
+  }
+  if(queued.length) {
+    const flush=()=>{
+      if(token!==renderToken)return;
+      let count=0;
+      while(queued.length && count<40) {
+        const current=queued[0];
+        const batch=current.rest.splice(0,40-count);
+        for(const product of batch) current.section.append(buildProductDetails(product));
+        count+=batch.length;
+        if(!current.rest.length) queued.shift();
+      }
+      if(queued.length) setTimeout(flush,0);
+    };
+    setTimeout(flush,0);
   }
 }
 export function initialize(products) {

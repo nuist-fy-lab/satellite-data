@@ -113,7 +113,25 @@ function showDetails(files,title,month) {
     const offset=new Date(Date.UTC(month.year,month.month,1)).getUTCDay();
     calendar=`<div class="inventory-day-grid" aria-label="本月逐日文件覆盖 UTC">${['日','一','二','三','四','五','六'].map(day=>`<span class="inventory-weekday">${day}</span>`).join('')}${'<i></i>'.repeat(offset)}${monthDays(files,month.year,month.month).map(day=>`<div class="inventory-day${day.files?' has-data':''}${day.files>day.verified?' unverified':''}" title="${month.year}-${String(month.month+1).padStart(2,'0')}-${String(day.day).padStart(2,'0')} UTC · ${day.files} 本地文件"><span>${day.day}</span><strong>${day.files || '·'}</strong></div>`).join('')}</div>`;
   }
-  node.innerHTML=`<h2>${escape(title)}</h2>${calendar}<div class="inventory-table-wrap"><table><thead><tr><th>核验</th><th>日期 UTC</th><th>变量</th><th>层</th><th>区域</th><th>时次 UTC</th><th>文件 / 容量</th></tr></thead><tbody>${files.slice(0,100).map(file=>`<tr><td>${file.verified?'已核验':file.state==='error'?'文件异常':'待核验'}</td><td>${file.start?escape(file.start.slice(0,10)+' ≤ t < '+file.end.slice(0,10)):'缺少日期溯源'}</td><td>${escape((file.variables?.length?file.variables:['缺少变量溯源']).join(', '))}</td><td>${escape(fileLevels(file).join(', '))}</td><td>${escape(areaName(file.area))}</td><td>${escape(file.times?.length?file.times.join(', '):'时次未记录')}</td><td>${escape(file.name)}<small>${bytes(file.bytes)}</small></td></tr>`).join('')}</tbody></table></div>${files.length>100?'<p>前 100 / '+files.length+' 文件</p>':''}`;
+  const pageSize=50;
+  let shown=Math.min(pageSize,files.length);
+  const renderRows=slice=>slice.map(file=>{
+    const badge=file.verified?'<span class="badge">已核验</span>':file.state==='error'?'<span class="badge">文件异常</span>':'<span class="badge">待核验</span>';
+    return `<tr><td>${badge}</td><td>${file.start?escape(file.start.slice(0,10)+' ≤ t < '+file.end.slice(0,10)):'缺少日期溯源'}</td><td>${escape((file.variables?.length?file.variables:['缺少变量溯源']).join(', '))}</td><td>${escape(fileLevels(file).join(', '))}</td><td>${escape(areaName(file.area))}</td><td>${escape(file.times?.length?file.times.join(', '):'时次未记录')}</td><td>${escape(file.name)}<small>${bytes(file.bytes)}</small></td></tr>`;
+  }).join('');
+  node.innerHTML=`<h2>${escape(title)}</h2>${calendar}<div class="inventory-table-wrap"><table><thead><tr><th>核验</th><th>日期 UTC</th><th>变量</th><th>层</th><th>区域</th><th>时次 UTC</th><th>文件 / 容量</th></tr></thead><tbody id="era5-inventory-tbody">${renderRows(files.slice(0,shown))}</tbody></table></div><div class="download-pagination${files.length>shown?'':' hidden'}" id="era5-inventory-more-wrap"><span id="era5-inventory-more-summary">已显示 ${shown} / ${files.length} 文件</span><button type="button" id="era5-inventory-more">加载更多</button></div>`;
+  const moreBtn=$('#era5-inventory-more');
+  if(moreBtn){
+    moreBtn.addEventListener('click',()=>{
+      const nextEnd=Math.min(files.length,shown+pageSize);
+      const tbody=$('#era5-inventory-tbody');
+      if(tbody)tbody.insertAdjacentHTML('beforeend',renderRows(files.slice(shown,nextEnd)));
+      shown=nextEnd;
+      const summary=$('#era5-inventory-more-summary');
+      if(summary)summary.textContent=`已显示 ${shown} / ${files.length} 文件`;
+      if(shown>=files.length)$('#era5-inventory-more-wrap')?.classList.add('hidden');
+    });
+  }
 }
 
 export function initialize(payload) {

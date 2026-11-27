@@ -21,6 +21,7 @@ type indexStreamUpdate struct {
 	Days     any      `json:"days"`
 	Removed  []string `json:"removed,omitempty"`
 	Active   bool     `json:"active"`
+	Cursor   string   `json:"cursor,omitempty"`
 }
 
 func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +38,10 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 	}
 	coverage := downloadfilter.ForProduct(product.SourceID, product.ProductKey) != nil
 	watch := r.URL.Query().Get("watch") == "1"
+	sinceCursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
+	if sinceCursor == "" {
+		sinceCursor = strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	}
 	stream, err := newSSEWriter(w)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -62,6 +67,7 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 		removed := []string{}
 		active := false
 		changed := false
+		maxUpdated := ""
 		var payload indexStreamUpdate
 		payload.Coverage = coverage
 
@@ -83,9 +89,21 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 				}
 				ordinal, _ := row[0].(int)
 				day := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, ordinal).Format(time.DateOnly)
+				updated := ""
+				if len(row) > 11 {
+					updated, _ = row[11].(string)
+				}
+				if updated > maxUpdated {
+					maxUpdated = updated
+				}
 				encoded, _ := json.Marshal(row)
 				next[day] = encoded
-				if first || !bytes.Equal(previous[day], encoded) {
+				if first {
+					if sinceCursor == "" || updated == "" || updated > sinceCursor {
+						rows = append(rows, row)
+						changed = true
+					}
+				} else if !bytes.Equal(previous[day], encoded) {
 					rows = append(rows, row)
 					changed = true
 				}
@@ -101,9 +119,21 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 			}
 			rows := make([]state.YearDay, 0)
 			for _, row := range yearData.Days {
+				updated := ""
+				if row.UpdatedAt != nil {
+					updated = *row.UpdatedAt
+				}
+				if updated > maxUpdated {
+					maxUpdated = updated
+				}
 				encoded, _ := json.Marshal(row)
 				next[row.Day] = encoded
-				if first || !bytes.Equal(previous[row.Day], encoded) {
+				if first {
+					if sinceCursor == "" || updated == "" || updated > sinceCursor {
+						rows = append(rows, row)
+						changed = true
+					}
+				} else if !bytes.Equal(previous[row.Day], encoded) {
 					rows = append(rows, row)
 					changed = true
 				}
@@ -122,9 +152,18 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 		}
 		payload.Removed = removed
 		payload.Active = active
+		payload.Cursor = maxUpdated
 
-		if first || changed || active != lastActive {
-			if _, err := stream.event("index", payload, false); err != nil {
+		if first && sinceCursor != "" && !changed && !active {
+			if _, err := stream.eventWithID("sync", "sync", maxUpdated, map[string]any{
+				"coverage": coverage,
+				"active":   active,
+				"cursor":   maxUpdated,
+			}, false); err != nil {
+				return false, err
+			}
+		} else if first || changed || active != lastActive {
+			if _, err := stream.eventWithID("index", "index", maxUpdated, payload, false); err != nil {
 				return false, err
 			}
 		}

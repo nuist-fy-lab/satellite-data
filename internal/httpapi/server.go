@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +16,6 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadfilter"
-	"github.com/nuist-fy-lab/satellite-data/internal/linkmon"
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 	"github.com/nuist-fy-lab/satellite-data/internal/producttime"
 	"github.com/nuist-fy-lab/satellite-data/internal/provider"
@@ -73,6 +71,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("POST /api/v1/download-tasks", s.createDownloadTask)
 	mux.HandleFunc("GET /api/v1/download-tasks", s.downloadTasks)
+	mux.HandleFunc("GET /api/v1/download-tasks/stream", s.downloadTasksStream)
 	mux.HandleFunc("POST /api/v1/downloads/batch", s.createDownloadGroup)
 	mux.HandleFunc("GET /api/v1/downloads/batch", s.downloadGroups)
 	mux.HandleFunc("GET /api/v1/downloads/batch/{id}", s.downloadGroup)
@@ -86,7 +85,9 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/index/stream", s.indexStream)
 	mux.HandleFunc("GET /api/v1/archive/index-status", s.archiveIndexStatus)
 	mux.HandleFunc("GET /api/v1/monitor/downloads", s.downloadMonitor)
+	mux.HandleFunc("GET /api/v1/monitor/downloads/stream", s.downloadMonitorStream)
 	mux.HandleFunc("GET /api/v1/monitor/links", s.linkMonitor)
+	mux.HandleFunc("GET /api/v1/monitor/links/stream", s.linkMonitorStream)
 	mux.HandleFunc("GET /api/v1/me/api-keys", s.listAPIKeys)
 	mux.HandleFunc("POST /api/v1/me/api-keys", s.createAPIKey)
 	mux.HandleFunc("DELETE /api/v1/me/api-keys/{id}", s.revokeAPIKey)
@@ -98,6 +99,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("GET /api/v1/access/session", s.accessSession)
 	mux.HandleFunc("GET /api/v1/access/pools", s.accessPools)
 	mux.HandleFunc("GET /api/v1/access/download-egress", s.accessDownloadEgress)
+	mux.HandleFunc("GET /api/v1/access/download-egress/stream", s.accessDownloadEgressStream)
 	mux.HandleFunc("POST /api/v1/access/credentials", s.accessCredential)
 	mux.HandleFunc("DELETE /api/v1/access/credentials/{id}", s.deleteAccessCredential)
 	mux.HandleFunc("POST /api/v1/access/proxies", s.accessProxy)
@@ -136,17 +138,37 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(data)
 	})
-	servePortal := func(w http.ResponseWriter, _ *http.Request) {
-		data, err := fs.ReadFile(static, "index.html")
-		if err != nil {
-			http.Error(w, "portal unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(data)
+	portalRoutes := map[string]string{
+		"/calendar":  "calendar-view",
+		"/downloads": "downloads-view",
+		"/era5":      "era5-view",
+		"/catalog":   "catalog-view",
+		"/monitor":   "monitor-view",
+		"/access":    "access-view",
 	}
-	for _, path := range []string{"/calendar", "/downloads", "/era5", "/catalog", "/monitor", "/access"} {
-		mux.HandleFunc("GET "+path, servePortal)
+	basePortalHTML, basePortalErr := fs.ReadFile(static, "index.html")
+	portalPages := make(map[string][]byte, len(portalRoutes)+1)
+	if basePortalErr == nil {
+		portalPages["/"] = renderPortalViewHTML(basePortalHTML, "/calendar", "calendar-view")
+		for path, viewID := range portalRoutes {
+			portalPages[path] = renderPortalViewHTML(basePortalHTML, path, viewID)
+		}
+	}
+	servePortalView := func(routePath string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			data, ok := portalPages[routePath]
+			if !ok {
+				http.Error(w, "portal unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(data)
+		}
+	}
+	mux.HandleFunc("GET /{$}", servePortalView("/"))
+	mux.HandleFunc("GET /index.html", servePortalView("/"))
+	for path := range portalRoutes {
+		mux.HandleFunc("GET "+path, servePortalView(path))
 	}
 	for path, target := range map[string]string{"/sources": "/catalog", "/sync": "/downloads", "/cli": "/access"} {
 		mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
@@ -199,140 +221,56 @@ var monitorWindows = map[string]monitorWindow{
 	"1w":  {duration: 7 * 24 * time.Hour, bucket: 30 * time.Minute},
 }
 
+func renderPortalViewHTML(raw []byte, routePath, viewID string) []byte {
+	if viewID == "" || viewID == "calendar-view" {
+		return append([]byte(nil), raw...)
+	}
+	html := string(raw)
+	html = strings.Replace(html, `<html lang="zh-CN" data-view="calendar-view">`, `<html lang="zh-CN" data-view="`+viewID+`">`, 1)
+	html = strings.Replace(html, `<main class="calendar-wide">`, `<main>`, 1)
+	html = strings.Replace(html, `class="nav-item active" href="/calendar"`, `class="nav-item" href="/calendar"`, 1)
+	html = strings.Replace(html, `class="nav-item" href="`+routePath+`"`, `class="nav-item active" href="`+routePath+`"`, 1)
+	html = strings.Replace(html, `<section class="view active" id="calendar-view">`, `<section class="view" id="calendar-view">`, 1)
+	html = strings.Replace(html, `<section class="view" id="`+viewID+`">`, `<section class="view active" id="`+viewID+`">`, 1)
+	return []byte(html)
+}
+
 func (s *Server) downloadMonitor(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimSpace(r.URL.Query().Get("window"))
-	if name == "" {
-		name = "1h"
-	}
-	window, ok := monitorWindows[name]
-	if name == "realtime" {
-		window, ok = monitorWindow{duration: 5 * time.Minute, bucket: 15 * time.Second}, true
-	}
-	if !ok {
-		writeError(w, http.StatusBadRequest, errors.New("unsupported download monitor window"))
+	name, window, err := parseMonitorWindow(r.URL.Query().Get("window"), true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	seriesSince := time.Now().UTC().Add(-window.duration)
-	if raw := strings.TrimSpace(r.URL.Query().Get("since")); raw != "" {
-		at, err := time.Parse(time.RFC3339Nano, raw)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, errors.New("invalid monitor cursor"))
-			return
-		}
-		if at.After(seriesSince) {
-			seriesSince = at.UTC()
-		}
+	since, hasSince, err := parseMonitorSince(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
-	latest, err := s.store.LatestDownloadSamples(r.Context())
+	payload, _, _, err := s.buildDownloadMonitorPayload(r.Context(), name, window, since, hasSince, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	points, err := s.store.DownloadSeries(r.Context(), seriesSince, window.bucket)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	type entry struct {
-		SourceID string                       `json:"source_id"`
-		Latest   *state.DownloadMonitorLatest `json:"latest,omitempty"`
-		Points   []state.DownloadMonitorPoint `json:"points"`
-	}
-	bySource := make(map[string]*entry)
-	for _, item := range latest {
-		sample := item
-		bySource[item.SourceID] = &entry{SourceID: item.SourceID, Latest: &sample, Points: []state.DownloadMonitorPoint{}}
-	}
-	for source, series := range points {
-		if bySource[source] == nil {
-			bySource[source] = &entry{SourceID: source}
-		}
-		bySource[source].Points = series
-	}
-	keys := make([]string, 0, len(bySource))
-	for key := range bySource {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	items := make([]entry, 0, len(keys))
-	for _, key := range keys {
-		items = append(items, *bySource[key])
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"window": name, "bucket_seconds": int(window.bucket.Seconds()),
-		"sample_interval_seconds": 15, "generated_at": time.Now().UTC(), "providers": items,
-	})
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) linkMonitor(w http.ResponseWriter, r *http.Request) {
-	windowName := strings.TrimSpace(r.URL.Query().Get("window"))
-	if windowName == "" {
-		windowName = "1h"
-	}
-	window, ok := monitorWindows[windowName]
-	if !ok {
-		writeError(w, http.StatusBadRequest, errors.New("unsupported monitor window"))
+	windowName, window, err := parseMonitorWindow(r.URL.Query().Get("window"), false)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	seriesSince := time.Now().UTC().Add(-window.duration)
-	if raw := strings.TrimSpace(r.URL.Query().Get("since")); raw != "" {
-		at, err := time.Parse(time.RFC3339Nano, raw)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, errors.New("invalid monitor cursor"))
-			return
-		}
-		if at.After(seriesSince) {
-			seriesSince = at.UTC()
-		}
+	since, hasSince, err := parseMonitorSince(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
 	}
-	latest, err := s.store.LatestLinkSamples(r.Context())
+	payload, _, _, err := s.buildLinkMonitorPayload(r.Context(), windowName, window, since, hasSince, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	series, err := s.store.LinkSeries(r.Context(), seriesSince, window.bucket)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	latestBySource := make(map[string]state.LinkSample, len(latest))
-	for _, item := range latest {
-		latestBySource[item.SourceID] = item
-	}
-	type link struct {
-		SourceID string            `json:"source_id"`
-		Name     string            `json:"name"`
-		Target   string            `json:"target"`
-		Port     int               `json:"port"`
-		Latest   *state.LinkSample `json:"latest,omitempty"`
-		Points   []state.LinkPoint `json:"points"`
-	}
-	items := make([]link, 0, len(linkmon.Targets()))
-	for _, target := range linkmon.Targets() {
-		item := link{
-			SourceID: target.SourceID,
-			Name:     target.Name,
-			Target:   target.Host,
-			Port:     target.Port,
-			Points:   series[target.SourceID],
-		}
-		if current, exists := latestBySource[target.SourceID]; exists {
-			value := current
-			item.Latest = &value
-		}
-		if item.Points == nil {
-			item.Points = []state.LinkPoint{}
-		}
-		items = append(items, item)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"origin":                  "c2ln1",
-		"window":                  windowName,
-		"bucket_seconds":          int(window.bucket.Seconds()),
-		"sample_interval_seconds": 15,
-		"generated_at":            time.Now().UTC(),
-		"links":                   items,
-	})
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) accessLogin(w http.ResponseWriter, r *http.Request) {
@@ -733,6 +671,10 @@ func (s *Server) downloadCatalog(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, item)
 	}
+	if r.URL.Query().Get("stream") == "1" {
+		writeNDJSONChunks(w, items, 24)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"products": items})
 }
 
@@ -812,6 +754,10 @@ func (s *Server) products(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range products {
 		products[i] = provider.NormalizeProduct(products[i])
+	}
+	if r.URL.Query().Get("stream") == "1" {
+		writeNDJSONChunks(w, products, 24)
+		return
 	}
 	writeJSON(w, http.StatusOK, products)
 }

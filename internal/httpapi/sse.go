@@ -32,10 +32,14 @@ func newSSEWriter(w http.ResponseWriter) (*sseWriter, error) {
 }
 
 func (s *sseWriter) event(name string, payload any, changedOnly bool) (bool, error) {
-	return s.eventKey(name, name, payload, changedOnly)
+	return s.eventWithID(name, name, "", payload, changedOnly)
 }
 
 func (s *sseWriter) eventKey(name, key string, payload any, changedOnly bool) (bool, error) {
+	return s.eventWithID(name, key, "", payload, changedOnly)
+}
+
+func (s *sseWriter) eventWithID(name, key, id string, payload any, changedOnly bool) (bool, error) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return false, err
@@ -43,8 +47,14 @@ func (s *sseWriter) eventKey(name, key string, payload any, changedOnly bool) (b
 	if changedOnly && bytes.Equal(encoded, s.last[key]) {
 		return false, nil
 	}
-	if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, encoded); err != nil {
-		return false, err
+	if id != "" {
+		if _, err := fmt.Fprintf(s.w, "id: %s\nevent: %s\ndata: %s\n\n", id, name, encoded); err != nil {
+			return false, err
+		}
+	} else {
+		if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", name, encoded); err != nil {
+			return false, err
+		}
 	}
 	s.flusher.Flush()
 	s.last[key] = append(s.last[key][:0], encoded...)
