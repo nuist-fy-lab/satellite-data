@@ -96,15 +96,16 @@ func (m *Monitor) Run(ctx context.Context) {
 		}
 	}()
 	go func() {
-		_ = m.store.DeleteLinkSamplesBefore(context.WithoutCancel(ctx), time.Now().UTC().Add(-8*24*time.Hour))
-		ticker := time.NewTicker(6 * time.Hour)
+		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = m.store.DeleteLinkSamplesBefore(context.WithoutCancel(ctx), time.Now().UTC().Add(-8*24*time.Hour))
+				cleanup, cancel := context.WithTimeout(ctx, 30*time.Second)
+				_ = m.store.DeleteLinkSamplesBefore(cleanup, time.Now().UTC().Add(-8*24*time.Hour))
+				cancel()
 			}
 		}
 	}()

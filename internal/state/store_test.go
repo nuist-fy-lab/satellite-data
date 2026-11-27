@@ -10,6 +10,33 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/model"
 )
 
+func TestDeleteLinkSamplesBeforeKeepsCutoffAndNewerSamples(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	cutoff := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	for offset := -2050; offset <= 1; offset++ {
+		sample := LinkSample{SourceID: "modis", TargetHost: "example.com", SampledAt: cutoff.Add(time.Duration(offset) * time.Second)}
+		if err := store.RecordLinkSample(ctx, sample); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.DeleteLinkSamplesBefore(ctx, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	var count, earliest int64
+	if err := store.db.QueryRowContext(ctx, "SELECT count(*), min(sampled_at_ns) FROM link_samples").Scan(&count, &earliest); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || earliest != cutoff.UnixNano() {
+		t.Fatalf("remaining rows = %d, first timestamp = %d", count, earliest)
+	}
+}
+
 func TestPersistentCatalogAndHourlyCompleteness(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")

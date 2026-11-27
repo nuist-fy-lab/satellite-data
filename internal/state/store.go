@@ -686,8 +686,25 @@ func (s *Store) LinkSeries(ctx context.Context, since time.Time, bucket time.Dur
 }
 
 func (s *Store) DeleteLinkSamplesBefore(ctx context.Context, before time.Time) error {
-	_, err := s.writer.ExecContext(ctx, `DELETE FROM link_samples WHERE sampled_at_ns<?`, before.UTC().UnixNano())
-	return err
+	const batchSize = 1024
+	for {
+		result, err := s.writer.ExecContext(ctx, `
+			DELETE FROM link_samples
+			WHERE (source_id, sampled_at_ns) IN (
+				SELECT source_id, sampled_at_ns
+				FROM link_samples
+				WHERE sampled_at_ns < ?
+				ORDER BY sampled_at_ns
+				LIMIT ?
+			)`, before.UnixNano(), batchSize)
+		if err != nil {
+			return err
+		}
+		deleted, err := result.RowsAffected()
+		if err != nil || deleted < batchSize {
+			return err
+		}
+	}
 }
 
 func (s *Store) RecoverOfficialWork(ctx context.Context) error {
