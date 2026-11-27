@@ -97,6 +97,18 @@ func Load(filename string) (*Config, error) {
 	return &cfg, nil
 }
 
+// DirectProxy is the configured direct download path, if the site has one.
+func (c *Config) DirectProxy() string {
+	if c != nil {
+		for _, route := range c.Routes {
+			if route.ID == "direct" && !route.Backup {
+				return route.Proxy
+			}
+		}
+	}
+	return ""
+}
+
 func (c *Config) UniquePublicIPs() int {
 	if c == nil {
 		return 1

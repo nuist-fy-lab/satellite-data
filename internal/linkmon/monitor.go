@@ -2,14 +2,17 @@ package linkmon
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nuist-fy-lab/satellite-data/internal/state"
+	"golang.org/x/net/proxy"
 )
 
 type Target struct {
@@ -41,21 +44,38 @@ func Targets() []Target {
 }
 
 type Monitor struct {
-	store    *state.Store
-	interval time.Duration
-	timeout  time.Duration
-	attempts int
-	targets  []Target
+	store       *state.Store
+	interval    time.Duration
+	timeout     time.Duration
+	attempts    int
+	targets     []Target
+	proxyDialer proxy.ContextDialer
 }
 
-func New(store *state.Store) *Monitor {
-	return &Monitor{
+func New(store *state.Store, directProxy string) (*Monitor, error) {
+	m := &Monitor{
 		store:    store,
 		interval: 15 * time.Second,
 		timeout:  2500 * time.Millisecond,
 		attempts: 4,
 		targets:  Targets(),
 	}
+	if directProxy != "" {
+		u, err := url.Parse(directProxy)
+		if err != nil {
+			return nil, err
+		}
+		dialer, err := proxy.FromURL(u, &net.Dialer{KeepAlive: -1})
+		if err != nil {
+			return nil, err
+		}
+		var ok bool
+		m.proxyDialer, ok = dialer.(proxy.ContextDialer)
+		if !ok {
+			return nil, errors.New("link monitor proxy requires a context-aware dialer")
+		}
+	}
+	return m, nil
 }
 
 func (m *Monitor) Run(ctx context.Context) {
@@ -117,19 +137,26 @@ func (m *Monitor) probe(ctx context.Context, target Target) state.LinkSample {
 	resolvedIP := ""
 	lastError := ""
 	address := net.JoinHostPort(target.Host, portString(target.Port))
+	dialer := m.proxyDialer
+	if dialer == nil {
+		dialer = &net.Dialer{KeepAlive: -1}
+	}
 	for attempt := 0; attempt < m.attempts; attempt++ {
 		if ctx.Err() != nil {
 			break
 		}
-		dialer := &net.Dialer{Timeout: m.timeout, KeepAlive: -1}
+		attemptCtx, cancel := context.WithTimeout(ctx, m.timeout)
 		started := time.Now()
-		conn, err := dialer.DialContext(ctx, "tcp", address)
+		conn, err := dialer.DialContext(attemptCtx, "tcp", address)
 		elapsed := time.Since(started)
+		cancel()
 		if err != nil {
 			lastError = err.Error()
 		} else {
 			latencies = append(latencies, float64(elapsed.Microseconds())/1000)
-			if resolvedIP == "" {
+			// The socket peer is the SOCKS listener in proxy mode. The
+			// proxy resolves the hostname and does not report the target IP.
+			if resolvedIP == "" && m.proxyDialer == nil {
 				resolvedIP = remoteIP(conn.RemoteAddr())
 			}
 			_ = conn.Close()

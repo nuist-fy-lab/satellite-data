@@ -22,6 +22,7 @@ import (
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadcoord"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloader"
 	"github.com/nuist-fy-lab/satellite-data/internal/downloadmon"
+	"github.com/nuist-fy-lab/satellite-data/internal/egress"
 	"github.com/nuist-fy-lab/satellite-data/internal/httpapi"
 	"github.com/nuist-fy-lab/satellite-data/internal/indexer"
 	"github.com/nuist-fy-lab/satellite-data/internal/linkmon"
@@ -131,7 +132,17 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	linkmon.New(store).Run(ctx)
+	egressConfig, err := egress.Load(os.Getenv("SATELLITE_DOWNLOAD_EGRESS_FILE"))
+	if err != nil {
+		slog.Error("configure satellite download SSH egress", "error", err)
+		os.Exit(1)
+	}
+	linkMonitor, err := linkmon.New(store, egressConfig.DirectProxy())
+	if err != nil {
+		slog.Error("configure satellite link monitor", "error", err)
+		os.Exit(1)
+	}
+	linkMonitor.Run(ctx)
 	archiveIndexer := indexer.New(registry, store, *archiveRoot,
 		os.Getenv("SATELLITED_EARTHCARE_ARCHIVE"), os.Getenv("SATELLITED_ERA5_ARCHIVE"), os.Getenv("SATELLITED_HIMAWARI_ARCHIVE"))
 	archiveIndexer.Run(ctx)
@@ -144,10 +155,7 @@ func main() {
 	}
 	defer authStore.Close()
 	centralService := central.NewService(centralStore)
-	if err := centralService.ConfigureDownloadEgress(os.Getenv("SATELLITE_DOWNLOAD_EGRESS_FILE")); err != nil {
-		slog.Error("configure satellite download SSH egress", "error", err)
-		os.Exit(1)
-	}
+	centralService.ConfigureDownloadEgress(egressConfig)
 	centralService.ConfigureProxyEgressMetrics(os.Getenv("SATELLITE_PROXY_EGRESS_METRICS_SOCKET"))
 	go func() {
 		if err := central.RunGateway(ctx, runtimeConfig.CentralSocket, centralService); err != nil && ctx.Err() == nil {

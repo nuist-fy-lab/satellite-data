@@ -44,13 +44,8 @@ func (s *Service) DownloadEgressStatus() []egress.Status {
 // ConfigureDownloadEgress selects the optional, download-only SSH SOCKS5
 // pool. Provider discovery and CDS job control retain their saved account
 // routes; each fetch acquires its own pinned egress until streaming finishes.
-func (s *Service) ConfigureDownloadEgress(path string) error {
-	cfg, err := egress.Load(path)
-	if err != nil {
-		return err
-	}
+func (s *Service) ConfigureDownloadEgress(cfg *egress.Config) {
 	s.egress = egress.NewPool(cfg)
-	return nil
 }
 
 // Each concurrent LAADS fetch leases one HTTP/2 transport for its entire
