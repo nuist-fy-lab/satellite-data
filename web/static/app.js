@@ -169,12 +169,12 @@ async function streamNDJSON(url, onChunk, options = {}) {
 }
 
 function setLiveBadge(pillID, textID, status, label) {
-  const pill = $('#' + pillID);
+  const pill = document.getElementById(pillID);
   if (pill) {
     pill.classList.toggle('reconnecting', status === 'reconnecting');
     pill.classList.toggle('paused', status === 'paused');
   }
-  const text = $('#' + textID);
+  const text = textID && document.getElementById(textID);
   if (text && label) text.textContent = label;
 }
 
@@ -4163,6 +4163,11 @@ function egressRouteMetrics(route, source) {
   };
 }
 
+function isProxyEgress(route) {
+  // east-hpc can participate in primary scheduling while still using the proxy.
+  return route.id === 'east-hpc' || route.backup;
+}
+
 function egressSummary(routes, source) {
   const groups = [
     {label: '直连', active: 0, live: null, smooth: null},
@@ -4170,7 +4175,7 @@ function egressSummary(routes, source) {
     {label: 'VWAN + 东方超算云代理', active: 0, live: null, smooth: null},
   ];
   for (const route of routes) {
-    const group = groups[route.backup ? 2 : route.id === 'direct' ? 0 : 1];
+    const group = groups[isProxyEgress(route) ? 2 : route.id === 'direct' ? 0 : 1];
     const row = egressRouteMetrics(route, source);
     group.active += row.active;
     if (Number.isFinite(row.live)) group.live = (group.live ?? 0) + row.live;
@@ -4253,28 +4258,28 @@ function renderAccessEgress() {
   const proxyOpen = readOpen('proxy');
   const directOpen = readOpen('direct');
   const pathsOpen = list.querySelector('[data-egress-detail="paths"]')?.open;
-  const backup = routes.filter(route => route.backup);
-  const primary = routes.filter(route => !route.backup);
-  const proxySources = source ? [source] : sources.filter(id => backup.some(route => {
+  const proxyRoutes = routes.filter(isProxyEgress);
+  const directRoutes = routes.filter(route => !isProxyEgress(route));
+  const proxySources = source ? [source] : sources.filter(id => proxyRoutes.some(route => {
     const row = egressRouteMetrics(route, id);
     return row.active || row.live > 0 || row.smooth >= 0.01 || route.blocked_by_source?.[id];
   }));
-  const backupRows = backup.flatMap(route => proxySources.map(id => ({
-    ...egressRouteRow(route, id), label: backup.length > 1 ? `${route.id} · ${accessSourceName(id)}` : accessSourceName(id),
+  const proxyRows = proxyRoutes.flatMap(route => proxySources.map(id => ({
+    ...egressRouteRow(route, id), label: proxyRoutes.length > 1 ? `${route.id} · ${accessSourceName(id)}` : accessSourceName(id),
   })));
   const protocols = egressProxyRows(accessEgressProxy);
   const proxyPaths = egressProxyPaths(accessEgressProxy);
   list.innerHTML = [
-    backup.length ? `<details class="egress-detail" data-egress-detail="proxy" ${proxyOpen ? 'open' : ''}>
+    proxyRoutes.length ? `<details class="egress-detail" data-egress-detail="proxy" ${proxyOpen ? 'open' : ''}>
       <summary>东方超算云代理</summary>
-      ${backupRows.length ? egressDetailsTable('数据源', backupRows) : '<div class="pool-empty">暂无代理下载</div>'}
+      ${proxyRows.length ? egressDetailsTable('数据源', proxyRows) : '<div class="pool-empty">暂无代理下载</div>'}
       <h3>代理节点 <span>全部流量</span></h3>
       ${protocols.length ? egressDetailsTable('协议', protocols) : '<div class="pool-empty">暂无节点监测数据</div>'}
       ${proxyPaths.length ? `<details class="egress-detail" data-egress-detail="paths" ${pathsOpen ? 'open' : ''}>
         <summary>VWAN → 代理路径</summary>${egressDetailsTable('路径', proxyPaths)}</details>` : ''}
     </details>` : '',
-    primary.length ? `<details class="egress-detail" data-egress-detail="direct" ${directOpen ? 'open' : ''}>
-      <summary>直连线路</summary>${egressDetailsTable('出口', primary.map(route => egressRouteRow(route, source)))}
+    directRoutes.length ? `<details class="egress-detail" data-egress-detail="direct" ${directOpen ? 'open' : ''}>
+      <summary>直连线路</summary>${egressDetailsTable('出口', directRoutes.map(route => egressRouteRow(route, source)))}
     </details>` : '',
   ].join('') || '<div class="pool-empty">未配置独立下载出口</div>';
 }

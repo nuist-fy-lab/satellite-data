@@ -112,7 +112,10 @@ function createHarness({pathname = '/', fetchImpl, hasEventSource = true} = {}) 
     documentElement: docEl,
     body: makeNode('body'),
     hidden: false,
-    querySelector: sel => getEl(sel),
+    querySelector(sel) {
+      if (sel === '#') throw new DOMException('Invalid selector', 'SyntaxError');
+      return getEl(sel);
+    },
     querySelectorAll: sel => getEl('#calendar-view').querySelectorAll(sel),
     getElementById: id => getEl('#' + id),
     createElement: tag => makeNode(tag),
@@ -190,6 +193,44 @@ test('modernized HTML keeps unified icons, native overlays, and pre-paint view a
   }
   assert.match(loginHTML, /href="\/styles\.css\?v=36"/);
   assert.match(indexHTML, /href="\/styles\.css\?v=36"/);
+});
+
+test('egress stream updates proxy metrics and details for an active primary proxy', () => {
+  const h = createHarness({pathname: '/access'});
+  try {
+    h.element('#access-view').classList.add('active');
+    vm.runInContext("state.access.section = 'egress'; state.access.user = {role: 'admin'};", h.context);
+    h.context.ensureAccessEgressStream();
+    const [stream] = h.streams;
+    const badge = h.element('#access-egress-live');
+    stream.emit('open');
+    stream.emit('error');
+    assert.ok(badge.classList.contains('reconnecting'));
+    stream.emit('sync');
+    assert.ok(!badge.classList.contains('reconnecting'));
+
+    const routes = [
+      {id: 'vwan1', active_transfers: 2, download_mbps: 3, smoothed_mbps: 2},
+      {id: 'east-hpc', active_transfers: 8, download_mbps: 104.23, smoothed_mbps: 79.6,
+        active_by_source: {viirs: 8}, rates_by_source: {viirs: {download_mbps: 104.23, smoothed_mbps: 79.6}}},
+    ];
+    const proxy = {nodes: [{protocol: 'vless', active_connections: 4, download_mbps: 50, smoothed_mbps: 45}]};
+    stream.emit('egress', {routes, proxy, cursor: 'egress-1'});
+
+    const summary = h.element('#download-egress-summary').innerHTML;
+    assert.match(summary, /VWAN 直连<\/strong>[\s\S]*?活动连接 <b>2<\/b>/);
+    assert.match(summary, /VWAN \+ 东方超算云代理<\/strong>[\s\S]*?活动连接 <b>8<\/b>[\s\S]*?104\.23 Mbps[\s\S]*?79\.60 Mbps/);
+    const details = h.element('#download-egress-list').innerHTML;
+    assert.match(details, /data-egress-detail="proxy"[\s\S]*?VLESS/);
+    const [, directDetails] = details.split('data-egress-detail="direct"');
+    assert.match(directDetails, /vwan1/);
+    assert.doesNotMatch(directDetails, /east-hpc/);
+
+    stream.emit('egress', {routes: [routes[0], {...routes[1], active_transfers: 6, download_mbps: 92}], proxy, cursor: 'egress-2'});
+    assert.match(h.element('#download-egress-summary').innerHTML, /VWAN \+ 东方超算云代理<\/strong>[\s\S]*?活动连接 <b>6<\/b>[\s\S]*?92\.00 Mbps/);
+  } finally {
+    h.cleanup();
+  }
 });
 
 test('boot lazily skips calendar product and year fetches on direct non-calendar routes', async () => {
