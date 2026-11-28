@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {readFile, mkdir, writeFile} from 'node:fs/promises';
+import {mkdir, open, readFile, writeFile} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {createRequire} from 'node:module';
 
@@ -18,7 +18,7 @@ window.styleFixture = async function(view, mode, wide) {
   ];
   state.downloads.selectedProducts = new Set(['goes18:ABI-L1b-RadF','modis:aqua']);
   stopIndexStream(); state.satelliteYears.clear();
-  $('#satellite-year-calendars').replaceChildren(); $('#year-product-heading').classList.add('hidden');
+  $('#satellite-year-calendars').replaceChildren();
   setView(view);
   setSidebar(wide);
   const bands = Array.from({length:16}, (_, i) => i + 1);
@@ -214,14 +214,16 @@ window.calendarSizingFixture = async function(source, product, supported, year) 
   state.coverage.view = 'year';
   yearEl.replaceChildren(new Option(String(year),String(year)));
   renderCoverageShell();
-  renderSatelliteTimelines();renderCalendar();
-  // Resizing square year cells can change the scrollbar before ResizeObserver runs.
+  renderSatelliteTimelines();renderCalendar(true);
+  const skeleton=$('#year-grid').getBoundingClientRect().toJSON();
+  renderCalendar();
   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   const grid=$('#year-grid'),wrap=$('.calendar-wrap'),cell=grid.querySelector('[data-day]');
   const box=grid.getBoundingClientRect(),rect=cell.getBoundingClientRect();
   const gap=parseFloat(getComputedStyle(grid).columnGap);
   const timeline=$('#satellite-timelines').getBoundingClientRect();
   return {available:wrap.clientWidth,width:box.width,cellWidth:rect.width,cellHeight:rect.height,gap,
+    skeletonShift:Math.max(...['left','top','width','height'].map(key=>Math.abs(skeleton[key]-box[key]))),
     columns:yearGridColumns(year),timelineWidth:timeline.width,timelineLeft:timeline.left,timelineRight:timeline.right,
     gridLeft:box.left,gridRight:box.right,
     axisLeft:$('.calendar-axis').getBoundingClientRect().left,sidebarRight:$('.sidebar').getBoundingClientRect().right,
@@ -259,6 +261,7 @@ window.calendarIndexFixture = async function(mode, wide) {
     scroll:document.documentElement.scrollWidth,viewport:innerWidth};
 };
 window.incrementalIndexFixture = function() {
+  applyCoverageYearRows(2025, [0,1].map(day=>[day,'missing',1,0,1,0,0,1,0,0,false,'',[[2,288,0,24,0,0,0,0,0,0,0]],2,'grid']));
   renderCoverageYear();
   const grid=$('#year-grid'),first=grid.querySelector('[data-day="2025-01-01"]'),second=grid.querySelector('[data-day="2025-01-02"]');
   const firstBand=first.children[0],secondBand=second.children[0];
@@ -414,7 +417,7 @@ const server = createServer((req, res) => {
 await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
 const base = 'http://127.0.0.1:'+server.address().port;
 await mkdir('dist/visual',{recursive:true});
-let driver;
+let driver, geckodriverLog;
 try {
   if (process.env.VISUAL_BROWSER === 'chrome') {
     const chrome = require('selenium-webdriver/chrome');
@@ -424,7 +427,13 @@ try {
   } else {
     const options = new firefox.Options().addArguments('-headless');
     if (process.env.FIREFOX_BIN) options.setBinary(process.env.FIREFOX_BIN);
-    driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).build();
+    const service = new firefox.ServiceBuilder(process.env.GECKODRIVER);
+    if (process.env.GECKODRIVER_LOG) {
+      geckodriverLog = await open(process.env.GECKODRIVER_LOG, 'w');
+      service.setStdio(['ignore', geckodriverLog.fd, geckodriverLog.fd]);
+    }
+    driver = await new Builder().forBrowser('firefox').setFirefoxOptions(options).setFirefoxService(service).build();
+    console.log('Firefox WebDriver ready:', (await driver.getCapabilities()).get('browserVersion'));
   }
   await driver.manage().setTimeouts({pageLoad:15000,script:15000});
   let viewportFrame = null;
@@ -545,6 +554,7 @@ try {
       ['modis','MOD021KM',false],['viirs','VNP02MOD',false],['mtg','FCI-L1c',true]]) {
       for (const year of [2026,2000]) {
         const size=await driver.executeScript('return window.calendarSizingFixture(...arguments)',source,product,supported,year);
+        assert.ok(size.skeletonShift<.1,product+' skeleton differs from its rendered year: '+JSON.stringify(size));
         assert.ok(Math.abs(size.cellWidth-size.cellHeight)<.1,product+' cells not square');
         assert.ok(Math.abs(size.cellWidth-size.gap*4)<.1,product+' spacing not proportional: '+JSON.stringify(size));
         assert.ok(size.scroll<=size.viewport+1,product+' year calendar overflows page');
@@ -835,5 +845,8 @@ try {
   }
 } finally {
   try {if(driver) await driver.quit();}
-  finally {await new Promise(resolve => server.close(resolve));}
+  finally {
+    try { await new Promise(resolve => server.close(resolve)); }
+    finally { await geckodriverLog?.close(); }
+  }
 }

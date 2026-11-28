@@ -791,40 +791,47 @@ func (s *Store) CatalogError(ctx context.Context, sourceID string, cause error) 
 }
 
 func (s *Store) Products(ctx context.Context, sourceID string) ([]model.Product, error) {
+	if sourceID == "" {
+		return s.products(ctx, "")
+	}
+	return s.ProductsBySources(ctx, []string{sourceID})
+}
+
+func (s *Store) ProductsBySources(ctx context.Context, sources []string) ([]model.Product, error) {
+	if len(sources) == 0 {
+		return []model.Product{}, nil
+	}
+	args := make([]any, len(sources))
+	for i, source := range sources {
+		args[i] = source
+	}
+	return s.products(ctx, " WHERE p.source_id IN ("+strings.Repeat("?,", len(args)-1)+"?)", args...)
+}
+
+func (s *Store) products(ctx context.Context, where string, args ...any) ([]model.Product, error) {
 	query := `
 		SELECT p.product_key,p.source_id,p.official_id,p.satellite,p.instrument,p.level,p.data_type,p.area_type,p.display_name,
 		       p.resolution,p.cadence,p.version,p.access_tier,p.catalog_source,p.product_count,p.metadata_json,
-		       COALESCE(l.covered,0),l.first_day,l.last_day
-		FROM products p LEFT JOIN (
-			SELECT product_key,1 AS covered,
-			       min(substr(slot_ts,1,10)) AS first_day,
-			       max(substr(slot_ts,1,10)) AS last_day
-			FROM local_slots WHERE state='ok' GROUP BY product_key
-		) l ON l.product_key=p.product_key`
-	args := []any{}
-	if sourceID != "" {
-		query += " WHERE p.source_id=?"
-		args = append(args, sourceID)
-	}
-	query += " ORDER BY p.source_id,p.satellite,p.instrument,p.level,p.data_type,p.version"
+		       (SELECT substr(slot_ts,1,10) FROM local_slots WHERE product_key=p.product_key AND state='ok' ORDER BY slot_ts LIMIT 1),
+		       (SELECT substr(slot_ts,1,10) FROM local_slots WHERE product_key=p.product_key AND state='ok' ORDER BY slot_ts DESC LIMIT 1)
+		FROM products p` + where + " ORDER BY p.source_id,p.satellite,p.instrument,p.level,p.data_type,p.version"
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]model.Product, 0, 512)
+	out := make([]model.Product, 0, len(args))
 	for rows.Next() {
 		var item model.Product
 		var tier, metadata string
-		var localCovered int
 		var first, last sql.NullString
 		if err := rows.Scan(&item.ProductKey, &item.SourceID, &item.OfficialID, &item.Satellite, &item.Instrument,
 			&item.Level, &item.DataType, &item.AreaType, &item.DisplayName, &item.Resolution, &item.Cadence,
-			&item.Version, &tier, &item.CatalogSource, &item.ProductCount, &metadata, &localCovered, &first, &last); err != nil {
+			&item.Version, &tier, &item.CatalogSource, &item.ProductCount, &metadata, &first, &last); err != nil {
 			return nil, err
 		}
 		item.AccessTier = model.AccessTier(tier)
-		item.LocalCovered = localCovered != 0
+		item.LocalCovered = first.Valid
 		_ = json.Unmarshal([]byte(metadata), &item.Metadata)
 		if first.Valid {
 			value := first.String
@@ -848,14 +855,12 @@ func (s *Store) Products(ctx context.Context, sourceID string) ([]model.Product,
 }
 
 func (s *Store) ProductSource(ctx context.Context, product string) (string, model.Product, error) {
-	products, err := s.Products(ctx, "")
+	products, err := s.products(ctx, " WHERE p.product_key=?", product)
 	if err != nil {
 		return "", model.Product{}, err
 	}
-	for _, item := range products {
-		if item.ProductKey == product {
-			return item.SourceID, item, nil
-		}
+	if len(products) > 0 {
+		return products[0].SourceID, products[0], nil
 	}
 	return "", model.Product{}, sql.ErrNoRows
 }

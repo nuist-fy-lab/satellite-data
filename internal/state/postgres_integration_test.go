@@ -50,6 +50,16 @@ func TestPostgresCompactStateRoundTrip(t *testing.T) {
 		products[0].LastDay == nil || *products[0].LastDay != "2006-07-23" {
 		t.Fatalf("PostgreSQL product local date bounds: %+v", products[0])
 	}
+	archived := 0
+	if err := s.VisitArchiveCalendar(ctx, []string{"goes18", "modis"}, 2006, func(row ArchiveCalendarProduct) error {
+		archived++
+		if row.Product != product.ProductKey || len(row.Spans) != 1 || row.Spans[0] != [3]int{203, 204, 0} {
+			t.Fatalf("PostgreSQL archive calendar: %+v", row)
+		}
+		return nil
+	}); err != nil || archived != 1 {
+		t.Fatalf("PostgreSQL archive calendar products: %d, %v", archived, err)
+	}
 	start := time.Date(2006, 7, 23, 0, 0, 0, 0, time.UTC)
 	assets := []model.Asset{
 		{ID: "1", Name: "one.hdf", URL: "https://test.example.org/a/b/one.hdf?name=1", Size: 1099511627776},

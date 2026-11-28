@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -123,5 +125,77 @@ func TestIndexOneShotRemainsCompatible(t *testing.T) {
 	New(provider.NewRegistry(), s).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/index/stream?product="+product.ProductKey+"&year=2023", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "event: complete") {
 		t.Fatalf("one-shot stream: %s", w.Body.String())
+	}
+}
+
+func TestProgressiveIndexStreamsOnceAndRevalidatesWithoutRows(t *testing.T) {
+	s, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	product := model.Product{ProductKey: "goes18:GLM-L2-LCFA", SourceID: "goes18"}
+	if err := s.UpsertProducts(t.Context(), product.SourceID, []model.Product{product}); err != nil {
+		t.Fatal(err)
+	}
+	// A synthetic future snapshot keeps background indexing out of this test.
+	start := time.Date(2099, time.January, 1, 0, 0, 0, 0, time.UTC)
+	batch := state.WorkBatch{Product: product.ProductKey}
+	for i := 0; i < 40; i++ {
+		batch.Days = append(batch.Days, start.AddDate(0, 0, i).Format(time.DateOnly))
+	}
+	if err := s.SaveOfficialBatch(t.Context(), batch, nil); err != nil {
+		t.Fatal(err)
+	}
+	h := New(provider.NewRegistry(), s)
+	load := func(lastEventID string) string {
+		t.Helper()
+		path := "/api/v1/index/stream?product=" + product.ProductKey + "&year=2099&progressive=1"
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Accept-Encoding", "gzip")
+		request.Header.Set("Last-Event-ID", lastEventID)
+		recorder := httptest.NewRecorder()
+		h.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Encoding") != "gzip" {
+			t.Fatalf("stream response: %d %v", recorder.Code, recorder.Header())
+		}
+		reader, err := gzip.NewReader(recorder.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	initial := load("")
+	if strings.Count(initial, "event: year") != 2 || !strings.Contains(initial, "id: pending\nevent: year") {
+		t.Fatal("expected an initial slice followed by a final slice")
+	}
+	frames := strings.Split(initial, "\n\n")
+	wantSizes := []int{28, 12}
+	for i, frame := range frames[1:3] {
+		_, payload, _ := strings.Cut(frame, "\ndata: ")
+		var got struct {
+			Days  []state.YearDay `json:"days"`
+			Ready bool            `json:"ready"`
+			Reset bool            `json:"reset"`
+		}
+		if err := json.Unmarshal([]byte(payload), &got); err != nil || len(got.Days) != wantSizes[i] || got.Reset != (i == 0) || got.Ready != (i == 1) {
+			t.Fatalf("snapshot slice %d: %+v, %v", i, got, err)
+		}
+	}
+	idLine, _, _ := strings.Cut(frames[2], "\n")
+	revision := strings.TrimPrefix(idLine, "id: ")
+	if len(revision) != 32 {
+		t.Fatalf("final snapshot revision %q", revision)
+	}
+	if current := load(revision); !strings.Contains(current, "event: sync") || strings.Contains(current, "event: year") {
+		t.Fatalf("unchanged reconnect should omit all rows: %s", current)
+	}
+	if interrupted := load("pending"); strings.Count(interrupted, "event: year") != 2 {
+		t.Fatal("interrupted snapshot did not restart")
 	}
 }

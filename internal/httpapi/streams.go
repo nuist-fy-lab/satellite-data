@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -427,26 +428,56 @@ func writeNDJSONChunks[T any](w http.ResponseWriter, items []T, chunkSize int) {
 	if chunkSize <= 0 {
 		chunkSize = 24
 	}
-	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher, hasFlusher := w.(http.Flusher)
-	for i := 0; i < len(items); i += chunkSize {
-		end := i + chunkSize
-		if end > len(items) {
-			end = len(items)
+	stream := &ndjsonWriter{w: w}
+	for i, item := range items {
+		if err := stream.encode(item); err != nil {
+			return
 		}
-		for _, item := range items[i:end] {
-			line, err := json.Marshal(item)
-			if err != nil {
-				continue
-			}
-			_, _ = w.Write(line)
-			_, _ = w.Write([]byte{'\n'})
-		}
-		if hasFlusher {
-			flusher.Flush()
+		if (i+1)%chunkSize == 0 && stream.flush() != nil {
+			return
 		}
 	}
+	if !stream.started || stream.buffer.Len() > 0 {
+		_ = stream.flush()
+	}
+}
+
+type ndjsonWriter struct {
+	w       http.ResponseWriter
+	buffer  bytes.Buffer
+	started bool
+}
+
+func (s *ndjsonWriter) encode(item any) error {
+	return json.NewEncoder(&s.buffer).Encode(item)
+}
+
+func (s *ndjsonWriter) finish() {
+	if s.encode(map[string]bool{"done": true}) == nil {
+		_ = s.flush()
+	}
+}
+
+func (s *ndjsonWriter) failure(message string) {
+	s.buffer.Reset()
+	if s.encode(map[string]string{"error": message}) == nil {
+		_ = s.flush()
+	}
+}
+
+func (s *ndjsonWriter) flush() error {
+	if !s.started {
+		s.w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		s.w.Header().Set("Cache-Control", "no-store")
+		s.w.Header().Set("X-Accel-Buffering", "no")
+		s.w.WriteHeader(http.StatusOK)
+		s.started = true
+	}
+	if _, err := s.buffer.WriteTo(s.w); err != nil {
+		return err
+	}
+	if flusher, ok := s.w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
 }

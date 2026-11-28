@@ -38,14 +38,14 @@ function harness(saved = {}) {
     constructor(url) { this.url = url; this.listeners = {}; this.closed = false; streams.push(this); }
     addEventListener(name, callback) { this.listeners[name] = callback; }
     close() { this.closed = true; }
-    emit(name, payload) { this.listeners[name]?.({data: JSON.stringify(payload)}); }
+    emit(name, payload, lastEventId = '') { this.listeners[name]?.({data: JSON.stringify(payload), lastEventId}); }
   }
   const context = vm.createContext({
     document: {querySelector: element, querySelectorAll: () => [], createElement: () => node(), createDocumentFragment: () => node(true)},
     window: {addEventListener() {}}, EventSource: Stream,
     Option: function(text, value) { this.text = text; this.value = value; },
     localStorage: {getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value)},
-    setTimeout, clearTimeout, console, URLSearchParams,
+    setTimeout, clearTimeout, console, URLSearchParams, AbortController, TextDecoder,
     fetch: async (url, options = {}) => { requests.push({url, ...options}); return {ok: true, json: async () => context.payload}; },
   });
   vm.runInContext(app, context);
@@ -275,7 +275,7 @@ test('index SSE stays attached while idle and mutates only changed day cells, in
   assert.equal(second.children[0], untouched);
   assert.equal(stream.closed, false);
   stream.emit('index', {coverage:true,days:[],removed:['2025-01-01'],active:false});
-  assert.equal(first.children[0].className, 'unknown');
+  assert.equal(first.children.length, 0);
   stream.emit('error');
   assert.match(h.element('#archive-scan-state').textContent, /重连中/);
   stream.emit('open');
@@ -283,7 +283,7 @@ test('index SSE stays attached while idle and mutates only changed day cells, in
   h.element('#year').value = '2026';
   h.context.ensureIndexStream('goes18:ABI-L1b-RadC', 2026);
   stream.emit('index', {coverage:true,days:[row],active:false});
-  assert.equal(first.children[0].className, 'unknown');
+  assert.equal(first.children.length, 0);
   assert.equal(stream.closed, true);
 });
 
@@ -384,7 +384,8 @@ test('MTG level-one options include the precise product type and precede other p
     {id:'normal',satellite:'MTG',instrument:'FCI',level:'L1c',product:'EO:EUM:DAT:0662',metadata:{product_type:'FCI-1C-RRAD-FDHSI-FD'}},
     {id:'high',satellite:'MTG',instrument:'FCI',level:'L1c',product:'EO:EUM:DAT:0665',metadata:{product_type:'FCI-1C-RRAD-HRFI-FD'}}];
     rebuildFilters('source', false);`);
-  assert.deepEqual(h.element('#product').options.map(option => option.value), ['normal', 'high', 'l2']);
+  assert.deepEqual(h.element('#product').options.map(option => option.value), ['normal', 'high', 'l2', ':all-archived:']);
+  assert.equal(h.element('#product').value, 'normal');
   assert.match(h.element('#product').options[0].text, /L1c.*FDHSI.*0662/);
   assert.match(h.element('#product').options[1].text, /L1c.*HRFI.*0665/);
 });
@@ -404,22 +405,23 @@ test('all satellites use the same scientific product and version, including MODI
   assert.equal(h.context.calendarProductType({source_id:'viirs',product:'VNP02MOD'}), h.context.calendarProductType({source_id:'viirs',product:'VJ202MOD'}));
 });
 
-test('all satellite calendars read independent indexes and SSE changes only the matching calendar', async () => {
+test('all satellite calendars stream once and patch only the matching calendar', async () => {
   const h = harness(); family(h);
-  h.context.fetch = async url => {
-    h.requests.push({url});
-    const product = new URL(url, 'https://fixture.invalid').searchParams.get('product');
-    return {ok: true, json: async () => ({days: [{day:'2025-01-01',status:product.startsWith('goes18')?'complete':'missing',official_count:144}]})};
-  };
   await h.context.loadYear(true);
-  assert.equal(h.requests.filter(request => request.url.startsWith('/api/year?')).length, 3);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.streams.length, 3);
+  for (const stream of h.streams) {
+    assert.match(stream.url, /summary=1/);
+    const status = stream.url.includes('goes18') ? 'complete' : 'missing';
+    stream.emit('year', {days:[{day:'2025-01-01',status,official_count:144}],reset:true,ready:true}, 'rev1');
+  }
   assert.equal(h.element('#satellite-year-calendars').children.length, 2);
   assert.equal(h.element('#year-grid').querySelector('[data-day="2025-01-01"]').className, 'c complete');
   const grid = h.run('state.satelliteYears.get("goes16:ABI-L1b-RadF").grid');
   const cell = grid.querySelector('[data-day="2025-01-01"]'), second = grid.children[grid.children.indexOf(cell) + 1];
   const original = grid.replacements;
   const stream = h.streams.find(stream => stream.url.includes('goes16'));
-  stream.emit('index', {coverage:true,days:[[0,'partial',144,10,24,2,0,134,0,0,false,'']],active:false});
+  stream.emit('index', {days:[{day:'2025-01-01',status:'partial',official_count:144,local_ok_count:10}]}, 'rev2');
   assert.equal(cell.className, 'c partial');
   assert.equal(grid.querySelector('[data-day="2025-01-01"]'), cell);
   assert.equal(grid.replacements, original);
@@ -433,14 +435,60 @@ test('all satellite calendars read independent indexes and SSE changes only the 
 
 test('stale all-satellite reads cannot overwrite a newly selected year', async () => {
   const h = harness(); family(h);
-  const responses = [];
-  h.context.fetch = () => new Promise(resolve => responses.push(resolve));
-  const pending = h.context.loadYear(true);
+  await h.context.loadYear(true);
+  const before = [...h.streams];
   h.element('#year').value = '2026';
-  for (const resolve of responses) resolve({ok:true,json:async () => ({days:[{day:'2025-01-01',status:'complete'}]})});
-  await pending;
+  await h.context.loadYear(true);
+  for (const stream of before) stream.emit('year', {reset:true,ready:true,days:[{day:'2025-01-01',status:'complete'}]}, 'rev1');
   assert.equal(h.run('state.dayState.size'), 0);
-  assert.equal(h.streams.length, 0);
+  assert.ok(before.every(stream => stream.closed));
+  assert.equal(h.streams.length, 6);
+});
+
+test('year snapshots paint progressively and an unchanged revision resumes without rebuilding', () => {
+  const h = harness();
+  h.context.loadYear(true);
+  assert.equal(h.requests.length, 0);
+  const stream = h.streams[0];
+  const row = [0,'complete',288,288,24,24,0,0,0,0,0,'',[[2,288,288,24,24,0,0,0,0,0,0]],2,'grid'];
+  stream.emit('year', {coverage:true,bands:[2],reset:true,days:[row]}, 'pending');
+  const grid = h.element('#year-grid');
+  const first = grid.querySelector('[data-day="2025-01-01"]');
+  assert.equal(first.children[0].className, 'complete');
+  assert.equal(h.run('state.mainYear.revision'), '');
+  stream.emit('year', {coverage:true,ready:true,days:[]}, 'latest');
+  h.context.stopIndexStream();
+  h.context.loadYear(true);
+  assert.match(h.streams[1].url, /revision=latest/);
+  h.streams[1].emit('sync', {coverage:true}, 'latest');
+  assert.equal(h.requests.length, 0);
+  assert.equal(grid.querySelector('[data-day="2025-01-01"]'), first);
+});
+
+test('archive view renders only known products and days and reuses its snapshot across facets', async () => {
+  const h = harness(); family(h);
+  h.run(`state.sources = ['goes16','goes18','goes19'].map(id=>({id}));
+    sourceEl.value='goes';productEl.value=ALL_ARCHIVED_PRODUCTS;state.selected=null;`);
+  const rows = [{product:'goes18:ABI-L1b-RadF',spans:[[3,5,1]]},
+    {product:'missing-catalog',spans:[[0,1,0]]},{product:'goes19:ABI-L1b-RadF',spans:[[59,60,0]]},{done:true}];
+  h.context.fetch = async (url, options) => {
+    h.requests.push({url,...options});
+    return {ok:true,json:async () => rows};
+  };
+  await h.context.loadYear(true);
+  assert.equal(h.requests.length, 1);
+  assert.match(h.requests[0].url, /^\/api\/calendar\/archive\?/);
+  const main = h.element('#year-grid');
+  assert.equal(main.children.length, 2);
+  assert.equal(main.children[0].dataset.day, '2025-01-04');
+  assert.equal(main.children[0].className, 'c complete');
+  assert.equal(h.element('#satellite-year-calendars').children.length, 1);
+  h.run(`satelliteEl.value='GOES-19';`);
+  await h.context.loadYear(true);
+  assert.equal(h.requests.length, 1);
+  assert.equal(main.children.length, 1);
+  assert.equal(main.children[0].dataset.day, '2025-03-01');
+  assert.equal(h.element('#satellite-year-calendars').children.length, 0);
 });
 
 test('month index priority applies to every displayed satellite, not only the first', async () => {

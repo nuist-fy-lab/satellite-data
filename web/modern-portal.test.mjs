@@ -166,7 +166,11 @@ function createHarness({pathname = '/', fetchImpl, hasEventSource = true} = {}) 
         return {ok: true, status: 200, headers: new Headers({'content-type': 'application/json'}), json: async () => ({products: []})};
       }
       if (String(url).startsWith('/api/products')) {
-        return {ok: true, status: 200, headers: new Headers({'content-type': 'application/json'}), json: async () => ([{product_key: 'goes18:ABI-L1b-RadC', source_id: 'goes18', satellite: 'GOES-18', instrument: 'ABI', level: 'L1b', data_type: 'ABI-L1b-RadC', metadata: {time_start: '2024-01-01'}}])};
+        return {ok: true, status: 200, headers: new Headers({'content-type': 'application/json'}), json: async () => ([
+          {sources:[{id:'goes18',name:'GOES-18'}],family:'goes'},
+          {product_key: 'goes18:ABI-L1b-RadC', source_id: 'goes18', satellite: 'GOES-18', instrument: 'ABI', level: 'L1b', data_type: 'ABI-L1b-RadC', metadata: {time_start: '2024-01-01'}},
+          {done:true},
+        ])};
       }
       if (String(url).startsWith('/api/coverage/year')) {
         return {ok: true, status: 200, headers: new Headers({'content-type': 'application/json'}), json: async () => ({v: 1, bands: [2], days: []})};
@@ -191,8 +195,8 @@ test('modernized HTML keeps unified icons, native overlays, and pre-paint view a
   for (const sym of ['menu', 'calendar', 'download', 'layers', 'book', 'activity', 'key', 'help', 'globe']) {
     assert.match(iconsSVG, new RegExp(`id="${sym}"`));
   }
-  assert.match(loginHTML, /href="\/styles\.css\?v=37"/);
-  assert.match(indexHTML, /href="\/styles\.css\?v=37"/);
+  assert.match(loginHTML, /href="\/styles\.css\?v=38"/);
+  assert.match(indexHTML, /href="\/styles\.css\?v=38"/);
 });
 
 test('egress stream applies fresh metrics for an active primary proxy', () => {
@@ -253,7 +257,8 @@ test('boot lazily skips calendar product and year fetches on direct non-calendar
   try {
     await cal.context.boot();
     assert.equal(cal.docEl.dataset.view, 'calendar-view');
-    assert.ok(cal.requests.some(r => r.url.startsWith('/api/products')));
+    assert.equal(cal.requests.filter(r => r.url.startsWith('/api/products?bootstrap=1')).length, 1);
+    assert.ok(!cal.requests.some(r => r.url === '/api/v1/sources' || r.url.startsWith('/api/coverage/year')));
   } finally {
     cal.cleanup();
   }
