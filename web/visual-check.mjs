@@ -325,6 +325,57 @@ window.sidebarFooterFixture = async function(expanded) {
     sidebarScroll:$('.sidebar').scrollWidth,sidebarClient:$('.sidebar').clientWidth,viewportHeight:innerHeight};
 };
 bind();
+window.egressScrollFixture = async function() {
+  setView('access-view');
+  state.access.user = {role:'admin'};
+  state.access.section = 'egress';
+  for (const panel of document.querySelectorAll('[data-access-panel]')) {
+    panel.classList.toggle('hidden',panel.dataset.accessPanel!=='egress');
+  }
+  let stream;
+  const previous=window.EventSource;
+  window.EventSource=class {
+    constructor() { this.listeners={}; stream=this; }
+    addEventListener(name,callback) { this.listeners[name]=callback; }
+    close() {}
+  };
+  try { ensureAccessEgressStream(); } finally { window.EventSource=previous; }
+  const routes = [
+    ...Array.from({length:9},(_,i)=>({id:'vwan'+(i+1),active_transfers:1})),
+    {id:'east-hpc',sources:['modis'],active_by_source:{modis:8},active_transfers:8,download_mbps:13},
+  ];
+  const publish = (rate, available=true) => {
+    const proxy = available ? {
+      nodes:[{protocol:'hysteria2',active_connections:8,download_mbps:rate,smoothed_mbps:12}],
+      paths:Array.from({length:18},(_,i)=>({wan:'vwan'+(Math.floor(i/2)+1),protocol:i%2?'vless':'hysteria2',
+        healthy:true,slots:i<6?1:0,active_connections:1,download_mbps:rate,smoothed_mbps:12})),
+    } : null;
+    stream.listeners.egress({data:JSON.stringify({routes,proxy})});
+  };
+  const settle = () => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  const findPaths = () => $('[data-egress-detail="paths"]');
+  const findRow = () => findPaths()?.querySelectorAll('tbody tr')[12];
+  try {
+    publish(13);
+    const paths = findPaths();
+    const toggle = paths.querySelector('summary');
+    toggle.click();
+    toggle.focus();
+    const row = findRow();
+    row.scrollIntoView({block:'center'});
+    await settle();
+    const snapshot = () => ({y:scrollY,top:findRow()?.getBoundingClientRect().top??null,
+      open:findPaths()?.open??false,focused:document.activeElement===toggle,sameRow:findRow()===row,
+      rate:findRow()?.cells[2].textContent??null,status:findRow()?.querySelector('small').textContent??null});
+    const before = snapshot();
+    publish(127); await settle(); const tick = snapshot();
+    publish(127,false); await settle(); const gap = snapshot();
+    publish(19); await settle(); const recovered = snapshot();
+    const direct = $('[data-egress-detail="direct"]');
+    return {before,tick,gap,recovered,directRows:direct.querySelectorAll('tbody tr').length,
+      protocol:$('[data-egress-detail="proxy"] table[aria-label="协议"]').textContent};
+  } finally { stopAccessEgressStream(); }
+};
 window.styleFixtureReady = true;
 window.granuleFixtureSetup = function() {
  const p=state.downloads.catalog.find(p=>p.product_key==='goes18:ABI-L1b-RadF');p.available_granules=true;
@@ -355,7 +406,7 @@ for (const file of ['index.html','login.html','styles.css','login.js','catalog.j
 assets.set('app.js', Buffer.from(app+fixture));
 const server = createServer((req, res) => {
   const path = new URL(req.url,'http://localhost').pathname;
-  const file = path==='/'?'index.html':path==='/login'?'login.html':path.slice(1);
+  const file = path==='/'||path==='/access'?'index.html':path==='/login'?'login.html':path.slice(1);
   if (!assets.has(file)) {res.writeHead(404);res.end();return;}
   res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':file.endsWith('.svg')?'image/svg+xml':'text/html');
   res.end(assets.get(file));
@@ -396,6 +447,26 @@ try {
     return screenshot;
   }
   const focused = process.env.VISUAL_GRANULE_ONLY === '1';
+  if (!focused) {
+    for (const width of [320,390,1440]) {
+      await openViewport(width,650,base+'/access');
+      await driver.wait(() => driver.executeScript('return window.styleFixtureReady===true'),10000);
+      const egress = await driver.executeScript('return window.egressScrollFixture()');
+      assert.ok(egress.before.y>0,'egress fixture did not scroll');
+      assert.equal(egress.directRows,9);
+      assert.match(egress.protocol,/Hysteria2/);
+      for (const frame of [egress.tick,egress.gap,egress.recovered]) {
+        assert.ok(frame.open && frame.focused && frame.sameRow,'proxy paths were replaced or collapsed: '+JSON.stringify(egress));
+        assert.ok(Math.abs(frame.top-egress.before.top)<=1,
+          'egress update moved the reading position: '+JSON.stringify(egress));
+      }
+      assert.equal(egress.tick.rate,'127.00 Mbps');
+      assert.equal(egress.gap.rate,'—');
+      assert.equal(egress.gap.status,'监测暂不可用');
+      assert.equal(egress.recovered.rate,'19.00 Mbps');
+      console.log('Egress scroll OK:',width);
+    }
+  }
   const cases = focused ? [['downloads-view','year']] : [['calendar-view','year'],['calendar-view','month'],['calendar-view','day'],['era5-view','inventory'],['era5-view','download'],['catalog-view','products'],['catalog-view','sources'],['downloads-view','year'],['monitor-view','year'],['access-view','year'],['access-view','form']];
   for (const width of focused ? [320,390,1440] : [320,390,1440,1920,2560]) {
     await openViewport(width,900,base+'/login');

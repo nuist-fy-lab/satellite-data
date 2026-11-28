@@ -590,12 +590,15 @@ main.calendar-wide{width:100%}
 .egress-detail>summary{cursor:pointer;font-size:14px;font-weight:600;padding:6px 0}
 .egress-detail>h3{font-size:13px;margin:14px 0 6px}
 .egress-detail>h3 span{font-size:12px;font-weight:400;color:var(--muted);margin-inline-start:6px}
-.egress-detail-table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+.egress-detail-table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
 .egress-detail-table th,.egress-detail-table td{text-align:right;padding:6px 5px;border-bottom:1px solid var(--line)}
 .egress-detail-table th:first-child{text-align:left;overflow-wrap:anywhere}
 .egress-detail-table thead th{color:var(--muted);font-weight:500}
-.egress-detail-table td{white-space:nowrap}
+.egress-detail-table thead th:nth-child(2){width:min(14%,4em)}
+.egress-detail-table thead th:nth-child(n+3){width:min(28%,8em)}
+.egress-detail-table td{overflow-wrap:anywhere}
 .egress-detail-table small{display:block;color:var(--warn-fg);font-size:11px;font-weight:400}
+@media(max-width:600px){.egress-detail-table td{height:4em}}
 .pool-list{display:grid;min-width:0}.pool-row{padding:10px 12px;border-top:1px solid var(--line);display:grid;gap:6px;min-width:0}.pool-row:first-child{border-top:0}.pool-row-main{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.pool-row-title{min-width:0}.pool-row-title strong{display:block;font-size:14px;overflow-wrap:anywhere}.pool-row-title>span{display:block;color:var(--muted);font-size:13px;margin-top:4px;overflow-wrap:anywhere}.pool-actions{display:flex;gap:4px;flex:0 0 auto}.pool-actions button{font-size:12px;padding:5px 8px}.pool-meta{display:flex;gap:5px;flex-wrap:wrap;color:var(--muted);font-size:11px}.pool-pill{display:inline-flex;padding:2px 6px;border:1px solid var(--line);border-radius:6px;background:var(--soft);max-width:100%;overflow-wrap:anywhere}.pool-pill.ready{color:var(--good-fg);background:var(--good-bg);border-color:#aceebb}.pool-pill.auth_required,.pool-pill.degraded{color:var(--warn-fg);background:var(--warn-bg);border-color:#eedf8b}.pool-pill.disabled{color:var(--muted)}
 .pool-pill.expiry-unknown{color:var(--muted)}.pool-pill.expiring{color:#9a6700;background:#fff8c5;border-color:#eedf8b}.pool-pill.expired{color:#cf222e;background:#ffebe9;border-color:#ff8182}
 .pool-empty{padding:16px 12px;color:var(--muted);font-size:13px;text-align:center}
