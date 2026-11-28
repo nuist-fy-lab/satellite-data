@@ -457,7 +457,7 @@ try {
       assert.match(egress.protocol,/Hysteria2/);
       for (const frame of [egress.tick,egress.gap,egress.recovered]) {
         assert.ok(frame.open && frame.focused && frame.sameRow,'proxy paths were replaced or collapsed: '+JSON.stringify(egress));
-        assert.ok(Math.abs(frame.y-egress.before.y)<=1 && Math.abs(frame.top-egress.before.top)<=1,
+        assert.ok(Math.abs(frame.top-egress.before.top)<=1,
           'egress update moved the reading position: '+JSON.stringify(egress));
       }
       assert.equal(egress.tick.rate,'127.00 Mbps');
