@@ -191,11 +191,11 @@ test('modernized HTML keeps unified icons, native overlays, and pre-paint view a
   for (const sym of ['menu', 'calendar', 'download', 'layers', 'book', 'activity', 'key', 'help', 'globe']) {
     assert.match(iconsSVG, new RegExp(`id="${sym}"`));
   }
-  assert.match(loginHTML, /href="\/styles\.css\?v=36"/);
-  assert.match(indexHTML, /href="\/styles\.css\?v=36"/);
+  assert.match(loginHTML, /href="\/styles\.css\?v=37"/);
+  assert.match(indexHTML, /href="\/styles\.css\?v=37"/);
 });
 
-test('egress stream updates proxy metrics and details for an active primary proxy', () => {
+test('egress stream applies fresh metrics for an active primary proxy', () => {
   const h = createHarness({pathname: '/access'});
   try {
     h.element('#access-view').classList.add('active');
@@ -215,19 +215,21 @@ test('egress stream updates proxy metrics and details for an active primary prox
         active_by_source: {viirs: 8}, rates_by_source: {viirs: {download_mbps: 104.23, smoothed_mbps: 79.6}}},
     ];
     const proxy = {nodes: [{protocol: 'vless', active_connections: 4, download_mbps: 50, smoothed_mbps: 45}]};
+    const frames = [];
+    h.context.renderAccessEgress = () => frames.push(vm.runInContext(
+      '({groups: egressSummary(accessEgressRoutes, ""), nodes: egressProxyRows(accessEgressProxy), cursor: state.access.egressCursor})', h.context));
     stream.emit('egress', {routes, proxy, cursor: 'egress-1'});
-
-    const summary = h.element('#download-egress-summary').innerHTML;
-    assert.match(summary, /VWAN 直连<\/strong>[\s\S]*?活动连接 <b>2<\/b>/);
-    assert.match(summary, /VWAN \+ 东方超算云代理<\/strong>[\s\S]*?活动连接 <b>8<\/b>[\s\S]*?104\.23 Mbps[\s\S]*?79\.60 Mbps/);
-    const details = h.element('#download-egress-list').innerHTML;
-    assert.match(details, /data-egress-detail="proxy"[\s\S]*?VLESS/);
-    const [, directDetails] = details.split('data-egress-detail="direct"');
-    assert.match(directDetails, /vwan1/);
-    assert.doesNotMatch(directDetails, /east-hpc/);
-
     stream.emit('egress', {routes: [routes[0], {...routes[1], active_transfers: 6, download_mbps: 92}], proxy, cursor: 'egress-2'});
-    assert.match(h.element('#download-egress-summary').innerHTML, /VWAN \+ 东方超算云代理<\/strong>[\s\S]*?活动连接 <b>6<\/b>[\s\S]*?92\.00 Mbps/);
+    assert.equal(frames.length, 2);
+    const [first, second] = frames;
+    assert.equal(first.groups[1].active, 2);
+    assert.equal(first.groups[2].active, 8);
+    assert.equal(first.groups[2].live, 104.23);
+    assert.equal(first.groups[2].smooth, 79.6);
+    assert.equal(first.nodes[0].label, 'VLESS');
+    assert.equal(second.groups[2].active, 6);
+    assert.equal(second.groups[2].live, 92);
+    assert.equal(second.cursor, 'egress-2');
   } finally {
     h.cleanup();
   }

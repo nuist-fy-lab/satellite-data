@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>Satellite Data</title>
   <script>(function(){var m={'/calendar':'calendar-view','/downloads':'downloads-view','/era5':'era5-view','/catalog':'catalog-view','/monitor':'monitor-view','/access':'access-view'};document.documentElement.dataset.view=m[location.pathname]||'calendar-view';})();</script>
-  <link rel="stylesheet" href="/styles.css?v=36">
+  <link rel="stylesheet" href="/styles.css?v=37">
 </head>
 <body class="with-sidebar sidebar-collapsed">
   <script>try{if(localStorage.getItem("satellite-data-sidebar-expanded")==="1")document.body.classList.remove("sidebar-collapsed")}catch{}</script>
@@ -426,9 +426,25 @@
           </section>
 
           <section class="pool-card hidden" data-access-panel="egress" aria-label="下载出口">
-            <div class="pool-head"><strong>出口汇总</strong><span class="live-pill" id="access-egress-live"><i></i><span>实时遥测</span></span><select id="download-egress-source" aria-label="下载出口数据源"><option value="">全部数据源</option></select></div>
+            <div class="pool-head"><strong>出口汇总</strong><span class="live-pill" id="access-egress-live"><i></i><span id="access-egress-live-label">实时遥测</span></span><select id="download-egress-source" aria-label="下载出口数据源"><option value="">全部数据源</option></select></div>
             <div id="download-egress-summary" class="egress-summary"></div>
-            <div id="download-egress-list" class="pool-list"></div>
+            <div id="download-egress-list" class="pool-list">
+              <div id="download-egress-empty" class="pool-empty hidden"></div>
+              <details class="egress-detail hidden" data-egress-detail="proxy" open>
+                <summary>东方超算云代理</summary>
+                <div id="download-egress-proxy-sources"></div>
+                <h3>代理节点 <span>全部流量</span></h3>
+                <div id="download-egress-protocols"></div>
+                <details class="egress-detail hidden" data-egress-detail="paths">
+                  <summary>VWAN → 代理路径</summary>
+                  <div id="download-egress-paths"></div>
+                </details>
+              </details>
+              <details class="egress-detail hidden" data-egress-detail="direct" open>
+                <summary>直连线路</summary>
+                <div id="download-egress-direct"></div>
+              </details>
+            </div>
           </section>
         </div>
       </section>
@@ -443,6 +459,6 @@
   <script>(function(){var v=document.documentElement.dataset.view||'calendar-view',m=document.querySelector('main');if(m)m.classList.toggle('calendar-wide',v==='calendar-view');document.querySelectorAll('.view').forEach(function(n){n.classList.toggle('active',n.id===v)});document.querySelectorAll('.nav-item').forEach(function(n){n.classList.toggle('active',n.dataset.view===v)});})();</script>
 
   <div id="tip" class="tip hidden"></div>
-  <script type="module" src="/app.js?v=52"></script>
+  <script type="module" src="/app.js?v=53"></script>
 </body>
 </html>
