@@ -4199,28 +4199,73 @@ function egressRouteStatus(route, source) {
   return '';
 }
 
-function egressDetailsTable(label, rows) {
-  return `<table class="egress-detail-table" aria-label="${esc(label)}"><thead><tr><th scope="col">${esc(label)}</th>
-    <th scope="col">连接</th><th scope="col">实时</th><th scope="col">平滑</th></tr></thead><tbody>
-    ${rows.map(row => `<tr><th scope="row">${esc(row.label)}${row.status ? `<small>${esc(row.status)}</small>` : ''}</th>
-      <td>${row.active}</td><td>${egressRate(row.live)}</td><td>${egressRate(row.smooth)}</td></tr>`).join('')}</tbody></table>`;
+function setEgressText(node, value) {
+  const text = String(value);
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function renderEgressDetailsTable(container, label, rows, emptyText = '') {
+  if (!container.firstElementChild) {
+    container.innerHTML = `<table class="egress-detail-table" aria-label="${esc(label)}"><thead><tr><th scope="col">${esc(label)}</th>
+      <th scope="col">连接</th><th scope="col">实时</th><th scope="col">平滑</th></tr></thead><tbody></tbody></table>
+      <div class="pool-empty">${esc(emptyText)}</div>`;
+  }
+  const [table, empty] = container.children;
+  const body = table.tBodies[0];
+  if (rows === null) {
+    // A missing sample leaves the route layout intact while clearing the readings.
+    for (const row of body.rows) {
+      const [heading, ...values] = row.cells;
+      const status = heading.lastElementChild;
+      if (!status.classList.contains('hidden')) setEgressText(status, '监测暂不可用');
+      for (const value of values) setEgressText(value, '—');
+    }
+  } else {
+    const keys = new Set(rows.map(row => row.key));
+    const existing = new Map();
+    for (const row of [...body.rows]) {
+      if (keys.has(row.dataset.key)) existing.set(row.dataset.key, row);
+      else row.remove();
+    }
+    rows.forEach((row, index) => {
+      let tr = existing.get(row.key);
+      if (!tr) {
+        tr = document.createElement('tr');
+        tr.dataset.key = row.key;
+        tr.innerHTML = '<th scope="row"><span></span><small></small></th><td></td><td></td><td></td>';
+      }
+      if (tr !== body.rows[index]) body.insertBefore(tr, body.rows[index] || null);
+      const [heading, active, live, smooth] = tr.cells;
+      const status = heading.lastElementChild;
+      setEgressText(heading.firstElementChild, row.label);
+      setEgressText(status, row.status || '');
+      status.classList.toggle('hidden', !row.status);
+      setEgressText(active, row.active);
+      setEgressText(live, egressRate(row.live));
+      setEgressText(smooth, egressRate(row.smooth));
+    });
+  }
+  const hasRows = body.rows.length > 0;
+  table.classList.toggle('hidden', !hasRows);
+  empty.classList.toggle('hidden', hasRows);
+  return hasRows;
 }
 
 function egressRouteRow(route, source) {
-  return {label: route.id === 'direct' ? '节点直连' : route.id, ...egressRouteMetrics(route, source), status: egressRouteStatus(route, source)};
+  return {key: route.id, label: route.id === 'direct' ? '节点直连' : route.id, ...egressRouteMetrics(route, source), status: egressRouteStatus(route, source)};
 }
 
 function egressProxyRows(proxy) {
   const labels = {vless:'VLESS', hysteria2:'Hysteria2', other:'其他节点'};
   return (proxy?.nodes || []).filter(node => Object.hasOwn(labels, node.protocol)).map(node => ({
-    label: labels[node.protocol], active: node.active_connections, live: node.download_mbps, smooth: node.smoothed_mbps,
+    key: node.protocol, label: labels[node.protocol], active: node.active_connections, live: node.download_mbps, smooth: node.smoothed_mbps,
   }));
 }
 
 function egressProxyPaths(proxy) {
   const labels = {vless:'VLESS', hysteria2:'Hysteria2'};
   return (proxy?.paths || []).filter(row => Object.hasOwn(labels, row.protocol)).map(row => ({
-    label: `${row.wan} · ${labels[row.protocol]}`, active: row.active_connections,
+    key: `${row.wan}/${row.protocol}`, label: `${row.wan} · ${labels[row.protocol]}`, active: row.active_connections,
     live: row.download_mbps, smooth: row.smoothed_mbps,
     status: row.healthy ? `轮询份额 ${row.slots}/6` : '健康检查未通过',
   }));
@@ -4248,16 +4293,22 @@ function renderAccessEgress() {
     selector.dataset.options = options;
   }
   const source = selector.value;
-  summary.innerHTML = routes.length ? egressSummary(routes, source).map(group =>
-    `<div class="egress-summary-item"><strong>${group.label}</strong><div class="egress-metrics">
-      <span>活动连接 <b>${group.active}</b></span>
-      <span>实时 <b>${egressRate(group.live)}</b></span>
-      <span>平滑 <b>${egressRate(group.smooth)}</b></span></div></div>`
-  ).join('') : '';
-  const readOpen = kind => list.querySelector(`[data-egress-detail="${kind}"]`)?.open ?? true;
-  const proxyOpen = readOpen('proxy');
-  const directOpen = readOpen('direct');
-  const pathsOpen = list.querySelector('[data-egress-detail="paths"]')?.open;
+  const groups = egressSummary(routes, source);
+  if (routes.length && !summary.firstElementChild) {
+    summary.innerHTML = groups.map(group =>
+      `<div class="egress-summary-item"><strong>${group.label}</strong><div class="egress-metrics">
+        <span>活动连接 <b></b></span><span>实时 <b></b></span><span>平滑 <b></b></span></div></div>`
+    ).join('');
+  }
+  summary.classList.toggle('hidden', !routes.length);
+  [...summary.children].forEach((item, index) => {
+    const {active, live, smooth} = groups[index];
+    const [count, rate, smoothed] = item.querySelectorAll('b');
+    setEgressText(count, active);
+    setEgressText(rate, egressRate(live));
+    setEgressText(smoothed, egressRate(smooth));
+  });
+
   const proxyRoutes = routes.filter(isProxyEgress);
   const directRoutes = routes.filter(route => !isProxyEgress(route));
   const proxySources = source ? [source] : sources.filter(id => proxyRoutes.some(route => {
@@ -4265,23 +4316,21 @@ function renderAccessEgress() {
     return row.active || row.live > 0 || row.smooth >= 0.01 || route.blocked_by_source?.[id];
   }));
   const proxyRows = proxyRoutes.flatMap(route => proxySources.map(id => ({
-    ...egressRouteRow(route, id), label: proxyRoutes.length > 1 ? `${route.id} · ${accessSourceName(id)}` : accessSourceName(id),
+    ...egressRouteRow(route, id), key: JSON.stringify([route.id, id]),
+    label: proxyRoutes.length > 1 ? `${route.id} · ${accessSourceName(id)}` : accessSourceName(id),
   })));
   const protocols = egressProxyRows(accessEgressProxy);
   const proxyPaths = egressProxyPaths(accessEgressProxy);
-  list.innerHTML = [
-    proxyRoutes.length ? `<details class="egress-detail" data-egress-detail="proxy" ${proxyOpen ? 'open' : ''}>
-      <summary>东方超算云代理</summary>
-      ${proxyRows.length ? egressDetailsTable('数据源', proxyRows) : '<div class="pool-empty">暂无代理下载</div>'}
-      <h3>代理节点 <span>全部流量</span></h3>
-      ${protocols.length ? egressDetailsTable('协议', protocols) : '<div class="pool-empty">暂无节点监测数据</div>'}
-      ${proxyPaths.length ? `<details class="egress-detail" data-egress-detail="paths" ${pathsOpen ? 'open' : ''}>
-        <summary>VWAN → 代理路径</summary>${egressDetailsTable('路径', proxyPaths)}</details>` : ''}
-    </details>` : '',
-    directRoutes.length ? `<details class="egress-detail" data-egress-detail="direct" ${directOpen ? 'open' : ''}>
-      <summary>直连线路</summary>${egressDetailsTable('出口', directRoutes.map(route => egressRouteRow(route, source)))}
-    </details>` : '',
-  ].join('') || '<div class="pool-empty">未配置独立下载出口</div>';
+  renderEgressDetailsTable($('#download-egress-proxy-sources'), '数据源', proxyRows, '暂无代理下载');
+  renderEgressDetailsTable($('#download-egress-protocols'), '协议', protocols.length ? protocols : null, '暂无节点监测数据');
+  const hasPaths = renderEgressDetailsTable($('#download-egress-paths'), '路径', proxyPaths.length ? proxyPaths : null);
+  renderEgressDetailsTable($('#download-egress-direct'), '出口', directRoutes.map(route => egressRouteRow(route, source)));
+  list.querySelector('[data-egress-detail="proxy"]').classList.toggle('hidden', !proxyRoutes.length);
+  list.querySelector('[data-egress-detail="paths"]').classList.toggle('hidden', !hasPaths);
+  list.querySelector('[data-egress-detail="direct"]').classList.toggle('hidden', !directRoutes.length);
+  const empty = $('#download-egress-empty');
+  setEgressText(empty, '未配置独立下载出口');
+  empty.classList.toggle('hidden', !!routes.length);
 }
 
 function ensureAccessEgressStream() {
@@ -4293,22 +4342,22 @@ function ensureAccessEgressStream() {
   state.access.egressStream = stream;
   stream.addEventListener('open', () => {
     if (state.access.egressStream !== stream) return;
-    setLiveBadge('access-egress-live', '', 'connected');
+    setLiveBadge('access-egress-live', 'access-egress-live-label', 'connected', '实时遥测');
   });
   stream.addEventListener('error', () => {
     if (state.access.egressStream !== stream) return;
-    setLiveBadge('access-egress-live', '', 'reconnecting');
+    setLiveBadge('access-egress-live', 'access-egress-live-label', 'reconnecting', '遥测重连中');
   });
   stream.addEventListener('sync', () => {
     if (state.access.egressStream !== stream) return;
-    setLiveBadge('access-egress-live', '', 'connected');
+    setLiveBadge('access-egress-live', 'access-egress-live-label', 'connected', '实时遥测');
   });
   stream.addEventListener('egress', event => {
     if (state.access.egressStream !== stream) return;
     let payload;
     try { payload = JSON.parse(event.data); } catch { return; }
     if (payload.cursor) state.access.egressCursor = payload.cursor;
-    setLiveBadge('access-egress-live', '', 'connected');
+    setLiveBadge('access-egress-live', 'access-egress-live-label', 'connected', '实时遥测');
     accessEgressRoutes = payload.routes || [];
     accessEgressProxy = payload.proxy;
     renderAccessEgress();
@@ -4326,14 +4375,15 @@ async function loadAccessEgress() {
     accessEgressRoutes = payload.routes || [];
     accessEgressProxy = payload.proxy;
     renderAccessEgress();
+    if (!state.access.egressStream) setLiveBadge('access-egress-live', 'access-egress-live-label', 'connected', '实时遥测');
   } catch (error) {
     if (!request.signal.aborted) {
-      accessEgressRoutes = [];
-      accessEgressProxy = null;
-      const summary = $('#download-egress-summary');
-      const list = $('#download-egress-list');
-      if (summary) summary.innerHTML = '';
-      if (list) list.innerHTML = '<div class="pool-empty">下载出口数据暂不可用</div>';
+      if (!state.access.egressStream) setLiveBadge('access-egress-live', 'access-egress-live-label', 'reconnecting', '遥测暂不可用');
+      if (!accessEgressRoutes.length) {
+        const empty = $('#download-egress-empty');
+        empty.textContent = '下载出口数据暂不可用';
+        empty.classList.remove('hidden');
+      }
     }
   } finally {
     if (accessEgressRequest === request && !request.signal.aborted && typeof EventSource === 'undefined') {
