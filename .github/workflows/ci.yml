@@ -86,10 +86,9 @@ jobs:
       - name: Install ACL tools for archive inheritance checks
         if: contains(matrix.packages, './internal/dataplane/transfer')
         run: sudo apt-get update && sudo apt-get install -y acl
-      - name: Format, vet, test and race-check affected module dependencies
+      - name: Format, vet and test affected module dependencies
         env:
           PACKAGES: ${{ toJSON(matrix.packages) }}
-          RACE_PACKAGES: ${{ toJSON(matrix.race_packages) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -97,8 +96,19 @@ jobs:
           test -z "$(gofmt -l "${packages[@]}")"
           go vet "${packages[@]}"
           go test "${packages[@]}"
-          mapfile -t race < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["RACE_PACKAGES"])) ,end="")')
-          if ((${#race[@]})); then go test -race "${race[@]}"; fi
+      - name: Run complete race suites on Linux
+        if: toJSON(matrix.race_packages) != '[]'
+        timeout-minutes: 10
+        env:
+          CGO_ENABLED: '1'
+          RACE_PACKAGES: ${{ toJSON(matrix.race_packages) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(python3 -c 'import json,os; print("\n".join(json.loads(os.environ["RACE_PACKAGES"])))')
+          go version
+          # A process-level timeout also covers hangs during race-runtime shutdown.
+          timeout --kill-after=15s 8m go test -race -count=1 -timeout=5m "${packages[@]}"
       - name: Build affected Linux binary
         if: matrix.binary != ''
         env:
@@ -146,11 +156,26 @@ jobs:
         with:
           token: ${{ github.token }}
       - name: Check desktop and mobile layouts in cloud Firefox
+        timeout-minutes: 6
         env:
           FIREFOX_BIN: ${{ steps.firefox.outputs.firefox-path }}
+          GECKODRIVER_LOG: ${{ runner.temp }}/satellite-geckodriver.log
         run: |
           npm install --prefix "$RUNNER_TEMP/satellite-visual" --no-save --ignore-scripts selenium-webdriver@4.35.0
-          NODE_PATH="$RUNNER_TEMP/satellite-visual/node_modules" node web/visual-check.mjs
+          GECKODRIVER="$(command -v geckodriver)"
+          export GECKODRIVER
+          "$FIREFOX_BIN" --version
+          "$GECKODRIVER" --version
+          NODE_PATH="$RUNNER_TEMP/satellite-visual/node_modules" timeout --kill-after=15s 4m node web/visual-check.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: ci-firefox-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/satellite-geckodriver.log
+            dist/visual/*.png
+          if-no-files-found: ignore
+          retention-days: 3
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ci-visual-${{ github.run_id }}

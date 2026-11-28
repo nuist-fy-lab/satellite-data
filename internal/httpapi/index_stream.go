@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -22,11 +24,14 @@ type indexStreamUpdate struct {
 	Removed  []string `json:"removed,omitempty"`
 	Active   bool     `json:"active"`
 	Cursor   string   `json:"cursor,omitempty"`
+	Reset    bool     `json:"reset,omitempty"`
+	Ready    bool     `json:"ready,omitempty"`
 }
 
 func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
-	productKey := strings.TrimSpace(r.URL.Query().Get("product"))
-	year, err := strconv.Atoi(r.URL.Query().Get("year"))
+	query := r.URL.Query()
+	productKey := strings.TrimSpace(query.Get("product"))
+	year, err := strconv.Atoi(query.Get("year"))
 	if err != nil || year < 1970 || year > 2100 {
 		writeError(w, http.StatusBadRequest, errors.New("invalid year"))
 		return
@@ -37,9 +42,19 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	coverage := downloadfilter.ForProduct(product.SourceID, product.ProductKey) != nil
-	watch := r.URL.Query().Get("watch") == "1"
-	sinceCursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	if sinceCursor == "" {
+	watch := query.Get("watch") == "1"
+	progressive := query.Get("progressive") == "1"
+	watchArchive := watch && (!progressive || query.Get("archive") != "0")
+	sinceCursor := strings.TrimSpace(query.Get("cursor"))
+	sinceRevision := ""
+	if progressive {
+		coverage = coverage && query.Get("summary") != "1"
+		sinceRevision = strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+		if sinceRevision == "" {
+			sinceRevision = query.Get("revision")
+		}
+		sinceCursor = ""
+	} else if sinceCursor == "" {
 		sinceCursor = strings.TrimSpace(r.Header.Get("Last-Event-ID"))
 	}
 	stream, err := newSSEWriter(w)
@@ -51,15 +66,22 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 	previous := map[string][]byte{}
 	first := true
 	lastActive := false
+	lastRevision := ""
+	var lastArchive time.Time
 	warming := false
 
+	emitArchive := func() error {
+		status, err := s.store.ProductArchiveIndexStatus(r.Context(), productKey, year)
+		if err != nil {
+			return err
+		}
+		_, err = stream.event("archive", status, true)
+		return err
+	}
+
 	emit := func() (bool, error) {
-		if watch {
-			status, err := s.store.ProductArchiveIndexStatus(r.Context(), productKey, year)
-			if err != nil {
-				return false, err
-			}
-			if _, err := stream.event("archive", status, true); err != nil {
+		if watchArchive && !progressive {
+			if err := emitArchive(); err != nil {
 				return false, err
 			}
 		}
@@ -70,6 +92,8 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 		maxUpdated := ""
 		var payload indexStreamUpdate
 		payload.Coverage = coverage
+		digest := sha256.New()
+		represented := 0
 
 		if coverage {
 			yearData, err := s.store.BandCoverageYear(r.Context(), productKey, year)
@@ -77,6 +101,7 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 				return false, err
 			}
 			payload.Bands = yearData.Bands
+			represented = len(yearData.Days)
 			payload.Pending = yearData.Pending
 			warming = yearData.Pending > 0
 			if yearData.Pending > 0 {
@@ -98,6 +123,9 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 				}
 				encoded, _ := json.Marshal(row)
 				next[day] = encoded
+				if progressive {
+					_, _ = digest.Write(encoded)
+				}
 				if first {
 					if sinceCursor == "" || updated == "" || updated > sinceCursor {
 						rows = append(rows, row)
@@ -117,6 +145,7 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return false, err
 			}
+			represented = len(yearData.Days)
 			rows := make([]state.YearDay, 0)
 			for _, row := range yearData.Days {
 				updated := ""
@@ -128,6 +157,9 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 				}
 				encoded, _ := json.Marshal(row)
 				next[row.Day] = encoded
+				if progressive {
+					_, _ = digest.Write(encoded)
+				}
 				if first {
 					if sinceCursor == "" || updated == "" || updated > sinceCursor {
 						rows = append(rows, row)
@@ -154,7 +186,34 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 		payload.Active = active
 		payload.Cursor = maxUpdated
 
-		if first && sinceCursor != "" && !changed && !active {
+		if progressive {
+			meta := indexStreamUpdate{Coverage: coverage, Bands: payload.Bands, Pending: payload.Pending, Active: active}
+			encoded, _ := json.Marshal(meta)
+			_, _ = digest.Write(encoded)
+			revision := hex.EncodeToString(digest.Sum(nil)[:16])
+			if first {
+				if sinceRevision == revision {
+					if _, err := stream.eventWithID("sync", "sync", revision, meta, false); err != nil {
+						return false, err
+					}
+				} else if err := sendIndexYear(stream, payload, revision); err != nil {
+					return false, err
+				}
+				s.queueCalendarYear(productKey, year, represented)
+			} else if revision != lastRevision {
+				payload.Cursor, payload.Bands = "", nil
+				if _, err := stream.eventWithID("index", "index", revision, payload, false); err != nil {
+					return false, err
+				}
+			}
+			lastRevision = revision
+			if watchArchive && time.Since(lastArchive) >= 15*time.Second {
+				lastArchive = time.Now()
+				if err := emitArchive(); err != nil && r.Context().Err() == nil {
+					slog.Warn("index stream archive status", "product", productKey, "year", year, "error", err)
+				}
+			}
+		} else if first && sinceCursor != "" && !changed && !active {
 			if _, err := stream.eventWithID("sync", "sync", maxUpdated, map[string]any{
 				"coverage": coverage,
 				"active":   active,
@@ -220,4 +279,38 @@ func (s *Server) indexStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func sendIndexYear(stream *sseWriter, payload indexStreamUpdate, revision string) error {
+	payload.Reset = true
+	payload.Cursor = ""
+	switch rows := payload.Days.(type) {
+	case []state.YearDay:
+		return sendIndexYearRows(stream, payload, rows, revision)
+	case [][]any:
+		return sendIndexYearRows(stream, payload, rows, revision)
+	}
+	return errors.New("unsupported calendar rows")
+}
+
+func sendIndexYearRows[T any](stream *sseWriter, payload indexStreamUpdate, rows []T, revision string) error {
+	// Smaller first batch lets the visible grid paint without waiting for the
+	// whole year. Flush larger subsequent batches to keep compression useful.
+	size := 28
+	for len(rows) > size {
+		payload.Days = rows[:size]
+		id := ""
+		if payload.Reset {
+			id = "pending"
+		}
+		if _, err := stream.eventWithID("year", "year", id, payload, false); err != nil {
+			return err
+		}
+		rows = rows[size:]
+		size = 84
+		payload.Reset, payload.Bands = false, nil
+	}
+	payload.Days, payload.Ready = rows, true
+	_, err := stream.eventWithID("year", "year", revision, payload, false)
+	return err
 }

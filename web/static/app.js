@@ -16,8 +16,12 @@ const state = {
   sources: [],
   collections: [],
   catalogFamily: '',
-  catalogSeq: 0,
+  catalogRequest: null,
   selected: null,
+  mainYear: null,
+  calendarYearKey: '',
+  yearSnapshots: new Map(),
+  archiveCalendar: {key: '', filter: '', rows: [], cache: new Map(), request: null, observer: null, products: new Map(), shown: 0},
   dayState: new Map(),
   coverage: {
     supported: false, bands: [], yearDays: new Map(), month: null, dayData: null,
@@ -27,12 +31,11 @@ const state = {
   indexStream: null,
   indexStreamKey: '',
   satelliteYears: new Map(),
-  calendarSeq: 0,
   calendarHydrated: false,
   archiveIndex: null,
   indexConnection: 'connecting',
-  yearPoll: 0,
   dayPoll: 0,
+  detailSeq: 0,
   era5: {catalog: [], selected: null, schema: null, seq: 0, catalogSeq: 0, submitting: false, checking: false, inventory: null, inventorySeq: 0},
   encyclopedia: {catalog: [], loading: 0, module: null},
   monitor: {
@@ -65,6 +68,9 @@ const SIDEBAR_KEY = 'satellite-data-sidebar-expanded';
 const FILTER_KEY = 'satellite-data-filters-v1';
 const FAMILY_FILTER_KEY = 'satellite-data-family-filters-v1';
 const CALENDAR_YEARS_KEY = 'satellite-data-calendar-years-v1';
+const ALL_ARCHIVED_PRODUCTS = ':all-archived:';
+const archiveDayStatuses = ['partial', 'complete', 'complete_official_gap', 'hourly_complete', 'hourly_complete_official_gap'];
+const yearGrids = new WeakMap();
 function storedDisplayZone(key, fallback) {
   const zone = localStorage.getItem(key);
   return zone === 'UTC' || zone === 'BJT' ? zone : fallback;
@@ -108,7 +114,7 @@ function yieldToMain() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-async function streamNDJSON(url, onChunk, options = {}) {
+async function streamNDJSON(url, onChunk, {batchSize = 24, flushOnRead = false, ...options} = {}) {
   const response = await fetch(url, {
     ...options,
     headers: {'Accept': 'application/x-ndjson, application/json', ...(options.headers || {})},
@@ -128,7 +134,7 @@ async function streamNDJSON(url, onChunk, options = {}) {
   if (!type.includes('ndjson') || !response.body?.getReader) {
     const payload = await response.json();
     const list = Array.isArray(payload) ? payload : (payload?.products || []);
-    if (list.length) await onChunk(list, true);
+    if (list.length) await onChunk?.(list, true);
     return list;
   }
   const reader = response.body.getReader();
@@ -141,31 +147,41 @@ async function streamNDJSON(url, onChunk, options = {}) {
     const chunk = pending;
     pending = [];
     await onChunk(chunk, done);
-    if (!done) await yieldToMain();
+    if (!done && !flushOnRead) await yieldToMain();
   };
-  while (true) {
-    const {value, done} = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, {stream: true});
-    let nl;
-    while ((nl = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
-      if (!line) continue;
-      const item = JSON.parse(line);
-      all.push(item);
-      pending.push(item);
-      if (pending.length >= 24) await flushChunk(false);
+  try {
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        const item = JSON.parse(line);
+        all.push(item);
+        if (onChunk) {
+          pending.push(item);
+          if (pending.length >= batchSize) await flushChunk(false);
+        }
+      }
+      if (onChunk && flushOnRead) await flushChunk(false);
     }
+    const tail = (buffer + decoder.decode()).trim();
+    if (tail) {
+      const item = JSON.parse(tail);
+      all.push(item);
+      if (onChunk) pending.push(item);
+    }
+    if (onChunk) await flushChunk(true);
+    return all;
+  } catch (error) {
+    await reader.cancel?.().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock?.();
   }
-  const tail = (buffer + decoder.decode()).trim();
-  if (tail) {
-    const item = JSON.parse(tail);
-    all.push(item);
-    pending.push(item);
-  }
-  await flushChunk(true);
-  return all;
 }
 
 function setLiveBadge(pillID, textID, status, label) {
@@ -198,15 +214,6 @@ function closeTopLayerDialog(dialog) {
   dialog.close();
 }
 
-function maxDayUpdatedAt(days) {
-  let max = '';
-  for (const row of days?.values?.() || []) {
-    const u = String(row?.updated_at || '');
-    if (u && u > max) max = u;
-  }
-  return max;
-}
-
 function esc(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -237,7 +244,10 @@ function setView(id) {
     clearTimeout(state.monitor.poll);
     stopMonitorStream();
   }
-  if (id !== 'calendar-view') stopIndexStream();
+  if (id !== 'calendar-view') {
+    stopIndexStream();
+    stopArchiveCalendarRequest();
+  }
   if (id !== 'downloads-view') {
     clearTimeout(state.downloads.poll);
     stopDownloadsStreams();
@@ -270,7 +280,7 @@ function loadViewContent(id) {
   if (id === 'calendar-view') {
     if (!state.calendarHydrated && state.sources.length) {
       loadCatalog();
-    } else if (state.selected) {
+    } else if (state.selected || allArchivedProducts()) {
       loadYear(true);
     }
   }
@@ -298,6 +308,10 @@ function selectedSource() {
 
 function selectedCollection() {
   return state.collections.find(item => item.id === productEl.value) || null;
+}
+
+function allArchivedProducts() {
+  return productEl.value === ALL_ARCHIVED_PRODUCTS;
 }
 
 function uniqueSorted(values) {
@@ -372,8 +386,6 @@ function fillMetadataSelect(node, products, field) {
   }
   if ([...node.options].some(option => option.value === previous)) node.value = previous;
   node.disabled = values.length === 0;
-  const wrapper=node.closest?.('label');
-  if (wrapper) wrapper.hidden=values.length === 0;
 }
 
 function calendarProductLabel(product) {
@@ -418,11 +430,6 @@ const sourceFamilyLabels = Object.freeze({
   era5: 'ERA5',
 });
 const sourceFamilyOrder = Object.keys(sourceFamilyLabels);
-const sourceFamilyHints = Object.freeze({
-  goes: ['goes16', 'goes17', 'goes18', 'goes19'],
-  himawari: ['himawari8', 'himawari9'],
-});
-
 function sourceFamilyID(sourceID) {
   const id = String(sourceID || '').toLowerCase();
   if (/^goes\d+$/.test(id)) return 'goes';
@@ -456,18 +463,6 @@ function sourceFamilies() {
 
 function savedFamily(saved = readFilters()) {
   return saved.family || sourceFamilyID(saved.source);
-}
-
-function hintedFamilySourceIDs(familyID) {
-  return sourceFamilyHints[familyID] || [familyID];
-}
-
-function sameSourceSet(a, b) {
-  return [...a].sort().join('|') === [...b].sort().join('|');
-}
-
-function familyProductsURL(sourceIDs) {
-  return '/api/products?sources=' + encodeURIComponent(sourceIDs.join(','));
 }
 
 // Mission periods are not file-coverage intervals. An end is shown only for
@@ -552,31 +547,43 @@ function filteredCollections(stage = 6) {
   });
 }
 
-function rebuildFilters(changed = 'source', update = true) {
+function rebuildFilters(changed = 'source', update = true, saved = {}) {
   const counterpart = state.selected && calendarProductType(state.selected);
   if (changed === 'source') {
     const satellites = uniqueSorted(state.collections.flatMap(collectionSatellites));
     fillSelect(satelliteEl, satellites, satellites.length > 1 ? '全部卫星' : '');
     if (satellites.length === 1) satelliteEl.value = satellites[0];
+    restoreSelect(satelliteEl, saved.satellite);
   }
   if (changed === 'source' || changed === 'satellite') {
     fillSelect(instrumentEl, uniqueSorted(filteredCollections(1).map(item => item.instrument)), '全部');
+    restoreSelect(instrumentEl, saved.instrument);
   }
   if (changed === 'source' || changed === 'satellite' || changed === 'instrument') {
     fillMetadataSelect(levelEl, filteredCollections(2), 'level');
+    restoreSelect(levelEl, saved.level);
   }
-  if (['source','satellite','instrument','level'].includes(changed)) fillMetadataSelect(areaEl, filteredCollections(3), 'area_type');
-  if (['source','satellite','instrument','level','area'].includes(changed)) fillMetadataSelect(resolutionEl, filteredCollections(4), 'resolution');
+  if (['source','satellite','instrument','level'].includes(changed)) {
+    fillMetadataSelect(areaEl, filteredCollections(3), 'area_type');
+    restoreSelect(areaEl, saved.area);
+  }
+  if (['source','satellite','instrument','level','area'].includes(changed)) {
+    fillMetadataSelect(resolutionEl, filteredCollections(4), 'resolution');
+    restoreSelect(resolutionEl, saved.resolution);
+  }
   const products = filteredCollections(5).sort((a, b) => {
     if (sourceEl.value !== 'mtg' && sourceEl.value !== 'iasi' && sourceEl.value !== 'iasi-ng') return 0;
     return Number(!/^L1/i.test(a.level)) - Number(!/^L1/i.test(b.level));
   });
-  const previous = productEl.value;
+  const previous = saved.product ?? (changed === 'source' ? '' : productEl.value);
   productEl.replaceChildren();
   for (const item of products) {
     const option = new Option(productOptionLabel(item), item.id);
     option.title = item.metadata?.title || item.product;
     productEl.add(option);
+  }
+  if (products.length || (state.collections.length && previous === ALL_ARCHIVED_PRODUCTS)) {
+    productEl.add(new Option('全部产品（已有归档）', ALL_ARCHIVED_PRODUCTS));
   }
   if ([...productEl.options].some(option => option.value === previous)) productEl.value = previous;
   else if (counterpart && products.some(item => calendarProductType(item) === counterpart)) productEl.value = products.find(item => calendarProductType(item) === counterpart).id;
@@ -609,39 +616,45 @@ function fillMonths() {
   monthEl.value = /^(?:[0-9]|1[01])$/.test(String(saved.month)) ? String(saved.month) : current;
 }
 
-function updateSelectedProduct() {
-  stopIndexStream();
-  state.calendarSeq++;
-  state.satelliteYears.clear();
-  state.archiveIndex = null;
-  state.selected = selectedCollection();
+function updateSelectedProduct({year} = {}) {
+  const previous = state.selected;
+  const product = selectedCollection();
+  const all = allArchivedProducts();
+  state.selected = product;
   renderSatelliteTimelines();
-  state.dayState.clear();
-  state.coverage.requestSeq++;
-  state.coverage.fileSeq++;
-  state.coverage.supported = false;
-  state.coverage.yearDays.clear();
-  state.coverage.month = null;
-  state.coverage.dayData = null;
-  state.coverage.day = '';
-  state.coverage.view = 'year';
-  clearTimeout(state.coverage.poll);
-  closeDetail();
-  renderCoverageShell();
-  renderCalendar();
-  const product = state.selected;
-  selectCalendarYear(product);
-  renderArchiveIndex();
+  if (!all) {
+    stopArchiveCalendarRequest();
+    state.archiveCalendar.observer?.disconnect();
+    state.archiveCalendar.observer = null;
+    state.archiveCalendar.defer = null;
+  }
+  if (year) restoreSelect(yearEl, year);
+  else if (product && product.id !== previous?.id) selectCalendarYear(product);
+  if (all || !product) resetCalendarYear();
+  fitYearCalendar();
   const onDemand = product?.metadata?.availability_mode === 'on-demand';
   $('#query-month').disabled = onDemand;
-  $('#clear-calendar').disabled = onDemand;
+  $('#clear-calendar').disabled = Boolean(onDemand || (!product && !all));
   for (const node of [yearEl, monthEl, timezoneEl]) node.disabled = onDemand;
   $('#calendar-help').classList.add('hidden');
   $('#year-layout').classList.toggle('hidden', onDemand);
+  if (all) {
+    $('#product-title').textContent = '全部产品';
+    $('#product-meta').textContent = '仅显示所选年份已有本地归档的产品和日期';
+    $('#product-details').classList.add('hidden');
+    persistFilters();
+    loadArchiveCalendar();
+    return;
+  }
   if (!product) {
     $('#product-title').textContent = state.collections.length ? '当前筛选无产品' : '读取产品目录…';
     $('#product-meta').textContent = '';
     $('#product-details').classList.add('hidden');
+    $('#coverage-status').textContent = '';
+    $('#year-product-heading').textContent = '';
+    $('#satellite-year-calendars').replaceChildren();
+    showYearSkeleton(gridEl);
+    if (state.calendarHydrated) finishYearFrame(gridEl);
     return;
   }
   const products = selectedCalendarProducts();
@@ -655,17 +668,41 @@ function updateSelectedProduct() {
   if (product.metadata?.version) metadata.push(`版本 ${product.metadata.version}`);
   if (source) metadata.push(tierLabels[source.tier] || source.tier);
   metadata.push(product.metadata?.local_covered ? '本地已覆盖' : '本地未覆盖');
-  $('#product-meta').textContent = metadata.join(' · ');
+  $('#product-meta').title = $('#product-meta').textContent = metadata.join(' · ');
   renderProductDetails(product);
   persistFilters();
   if (onDemand) {
-    clearTimeout(state.yearPoll);
+    resetCalendarYear();
     clearTimeout(state.dayPoll);
     $('#product-title').textContent = product.metadata.title || product.product;
     $('#product-meta').textContent = [product.metadata.temporal_start?.slice(0, 10), product.metadata.temporal_end?.slice(0, 10)].filter(Boolean).join(' 至 ') + ' · CDS 按需生成 · 本地未归档';
     return;
   }
   loadYear();
+}
+
+function resetCalendarYear() {
+  stopIndexStream();
+  state.calendarYearKey = '';
+  state.mainYear = null;
+  state.satelliteYears.clear();
+  state.archiveIndex = null;
+  state.dayState = new Map();
+  const coverage = state.coverage;
+  coverage.requestSeq++;
+  coverage.fileSeq++;
+  coverage.supported = false;
+  coverage.yearDays = new Map();
+  coverage.month = null;
+  coverage.dayData = null;
+  coverage.day = '';
+  coverage.view = 'year';
+  clearTimeout(coverage.poll);
+  hideTip();
+  closeDetail();
+  renderCoverageShell();
+  renderArchiveIndex();
+  renderProductCoverageViz();
 }
 
 function renderProductDetails(product) {
@@ -847,7 +884,7 @@ async function loadEncyclopedia() {
   try {
     const modulePromise = state.encyclopedia.module || (state.encyclopedia.module = import('/catalog.js?v=44'));
     const [products, module] = await Promise.all([
-      streamNDJSON('/api/products?stream=1', () => {}),
+      streamNDJSON('/api/products?stream=1'),
       modulePromise,
     ]);
     if (ticket !== state.encyclopedia.loading) return;
@@ -864,65 +901,75 @@ function yearGridColumns(year) {
 }
 
 function fitYearCalendar() {
+  const columns = yearGridColumns(Number(yearEl.value || defaultYear()));
+  const layout = $('#year-layout');
+  layout.style.setProperty('--year-columns', String(columns));
+  if (globalThis.CSS?.supports('width', '1cqi')) return;
   const width = $('.calendar-wrap').clientWidth;
   if (!(width > 0)) return;
-  const columns = yearGridColumns(Number(yearEl.value || defaultYear()));
   // Keep square cells and the original 4:1 cell/gap ratio. Narrow screens scroll.
   const cell = Math.max(12, width / (columns + (columns - 1) / 4));
-  const layout = $('#year-layout');
   layout.style.setProperty('--cell', cell.toFixed(4) + 'px');
   layout.style.setProperty('--gap', (cell / 4).toFixed(4) + 'px');
 }
 
-function renderCalendar() {
+function renderCalendar(waiting = false) {
   const products = selectedCalendarProducts();
   const multiple = products.length > 1;
   const heading = $('#year-product-heading');
-  heading.classList.toggle('hidden', !multiple);
   heading.textContent = multiple ? calendarProductLabel(state.selected) : '';
   const calendars = $('#satellite-year-calendars');
   calendars.replaceChildren();
+  fitYearCalendar();
+  if (waiting) showYearSkeleton(gridEl);
   if (state.coverage.supported) {
-    renderCoverageYear();
+    if (!waiting) renderCoverageYear();
     return;
   }
   const year = Number(yearEl.value || defaultYear());
   gridEl.classList.remove('coverage-year');
-  $('.calendar-axis').classList.remove('coverage-axis');
-  renderYearGrid(gridEl, state.dayState, year, day => queryCalendarDay(state.selected, day));
+  if (!waiting) renderYearGrid(gridEl, state.dayState, year, day => queryCalendarDay(state.selected, day));
   for (const product of products.slice(1)) {
     const entry = state.satelliteYears.get(product.id);
-    const section = document.createElement('section');
-    section.className = 'satellite-year-calendar';
-    section.dataset.product = product.id;
-    const title = document.createElement('div');
-    title.className = 'year-product-heading';
-    title.textContent = calendarProductLabel(product) + (entry?.error ? ` · ${entry.error}` : entry?.loading ? ' · 读取中' : '');
-    const axis = document.createElement('div');
-    axis.className = 'calendar-axis';
-    axis.setAttribute('aria-hidden', 'true');
-    for (const text of ['日', '一', '二', '三', '四', '五', '六']) {
-      const label = document.createElement('span');
-      label.textContent = text;
-      axis.append(label);
-    }
-    const wrap = document.createElement('div');
-    wrap.className = 'calendar-wrap';
-    const grid = document.createElement('div');
-    grid.className = 'year-grid';
-    grid.setAttribute('aria-label', `${product.satellite} 年度数据日历`);
-    renderYearGrid(grid, entry?.days || new Map(), year, day => queryCalendarDay(product, day));
-    if (entry) entry.grid = grid;
-    if (entry) entry.heading = title;
-    wrap.append(grid);
-    const frame = document.createElement('div');
-    frame.className = 'year-calendar';
-    frame.append(axis, wrap);
-    section.append(title, frame);
+    const {section, title, grid} = createCalendarPanel(product);
+    if (waiting) showYearSkeleton(grid);
+    else renderYearGrid(grid, entry?.days || new Map(), year, day => queryCalendarDay(product, day));
+    if (entry) Object.assign(entry, {grid, heading: title});
     calendars.append(section);
   }
-  fitYearCalendar();
-  renderProductCoverageViz();
+  if (!waiting) renderProductCoverageViz();
+}
+
+function createCalendarPanel(product, archive = false) {
+  const section = document.createElement('section');
+  section.className = 'satellite-year-calendar';
+  section.dataset.product = product.id;
+  const title = document.createElement(archive ? 'button' : 'div');
+  title.className = 'year-product-heading';
+  if (archive) {
+    title.type = 'button';
+    title.addEventListener('click', () => selectCalendarProduct(product));
+  }
+  title.title = title.textContent = calendarProductLabel(product);
+  const frame = document.createElement('div');
+  frame.className = 'year-calendar';
+  const axis = document.createElement('div');
+  axis.className = 'calendar-axis';
+  axis.setAttribute('aria-hidden', 'true');
+  for (const text of ['日', '一', '二', '三', '四', '五', '六']) {
+    const label = document.createElement('span');
+    label.textContent = text;
+    axis.append(label);
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'calendar-wrap';
+  const grid = document.createElement('div');
+  grid.className = 'year-grid';
+  grid.setAttribute('aria-label', title.textContent + ' 年度数据日历');
+  wrap.append(grid);
+  frame.append(axis, wrap);
+  section.append(title, frame);
+  return {section, title, grid};
 }
 
 function calendarBaseStatus(item) {
@@ -930,53 +977,222 @@ function calendarBaseStatus(item) {
   return item?.indexing && status === 'missing' && !item.official_count ? 'unknown' : status;
 }
 
-function renderYearGrid(grid, days, year, open) {
-  grid.classList.remove('placeholder-grid');
+function showYearSkeleton(grid) {
+  yearGrids.delete(grid);
+  delete grid.dataset.archiveKey;
+  grid.classList.remove('archive-grid', 'calendar-ready', 'coverage-year');
+  grid.classList.add('placeholder-grid');
   grid.replaceChildren();
+  grid.setAttribute('aria-busy', 'true');
+}
+
+function finishYearFrame(grid) {
+  if (grid.classList.contains('placeholder-grid')) {
+    grid.classList.remove('placeholder-grid');
+    grid.classList.add('calendar-ready');
+  }
+  grid.setAttribute('aria-busy', 'false');
+}
+
+function createCalendarCell(day) {
+  const cell = document.createElement('i');
+  cell.dataset.day = day;
+  cell.tabIndex = 0;
+  cell.setAttribute('role', 'button');
+  return cell;
+}
+
+function stopArchiveCalendarRequest() {
+  const archive = state.archiveCalendar;
+  archive.request?.controller.abort();
+  archive.request = null;
+}
+
+function loadArchiveCalendar(refresh = false) {
+  if (!$('#calendar-view').classList.contains('active')) return;
+  const archive = state.archiveCalendar;
+  const family = sourceEl.value;
+  const year = Number(yearEl.value);
+  const key = family + '|' + year;
+  const candidates = filteredCollections(5);
+  const filter = candidates.map(item => item.id).join('|');
+  if (key !== archive.key || refresh) {
+    stopArchiveCalendarRequest();
+    archive.key = key;
+    archive.rows = [];
+    if (refresh) archive.cache.delete(key);
+  }
+  const cached = archive.cache.get(key);
+  if (refresh || filter !== archive.filter || key !== gridEl.dataset.archiveKey) {
+    archive.filter = filter;
+    archive.products = new Map(candidates.map(item => [item.id, item]));
+    resetArchiveFrames(key);
+    renderArchiveBatch(cached || archive.rows, year);
+  }
+  if (cached || !candidates.length) {
+    finishArchiveCalendar();
+    return;
+  }
+  if (archive.request) return archive.request.promise;
+
+  const sources = familySources(family).map(item => item.id);
+  if (!sources.length) { finishArchiveCalendar(); return; }
+  const param = new URLSearchParams({sources: sources.join(','), year, stream: '1'});
+  const request = {controller: new AbortController()};
+  archive.request = request;
+  if (archive.rows.length) {
+    archive.rows = [];
+    resetArchiveFrames(key);
+  }
+  $('#coverage-status').textContent = '读取已有归档…';
+  request.promise = (async () => {
+    let done = false;
+    try {
+      await streamNDJSON('/api/calendar/archive?' + param, batch => {
+        if (archive.request !== request) return;
+        const rows = [];
+        for (const row of batch) {
+          if (row.error) throw new Error(row.error);
+          if (row.done) done = true;
+          else if (row.product && row.spans?.length) rows.push(row);
+        }
+        archive.rows.push(...rows);
+        renderArchiveBatch(rows, year);
+      }, {signal: request.controller.signal, batchSize: 8, flushOnRead: true});
+      if (archive.request !== request) return;
+      if (!done) throw new Error('连接中断');
+      archive.cache.set(key, archive.rows);
+      if (archive.cache.size > 8) archive.cache.delete(archive.cache.keys().next().value);
+      finishArchiveCalendar();
+    } catch (error) {
+      if (archive.request !== request) return;
+      finishYearFrame(gridEl);
+      renderCalendarFailure('归档日历读取失败 · ' + error.message);
+    } finally {
+      if (archive.request === request) archive.request = null;
+    }
+  })();
+  return request.promise;
+}
+
+function resetArchiveFrames(key) {
+  const archive = state.archiveCalendar;
+  archive.shown = 0;
+  archive.observer?.disconnect();
+  archive.observer = null;
+  archive.defer = null;
+  showYearSkeleton(gridEl);
+  gridEl.dataset.archiveKey = key;
+  $('#year-product-heading').textContent = '';
+  $('#satellite-year-calendars').replaceChildren();
+  if (typeof IntersectionObserver === 'undefined') return;
+  const panels = new WeakMap();
+  const observer = new IntersectionObserver(entries => {
+    if (archive.observer !== observer) return;
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      observer.unobserve(entry.target);
+      const paint = panels.get(entry.target);
+      paint?.();
+      panels.delete(entry.target);
+    }
+  }, {rootMargin: '260px 0px'});
+  archive.observer = observer;
+  archive.defer = (section, paint) => { panels.set(section, paint); observer.observe(section); };
+}
+
+function renderArchiveBatch(rows, year) {
+  const archive = state.archiveCalendar;
+  const fragment = document.createDocumentFragment();
+  for (const row of rows) {
+    const product = archive.products.get(row.product);
+    if (!product) continue;
+    if (archive.shown++ === 0) {
+      const heading = $('#year-product-heading');
+      heading.title = heading.textContent = calendarProductLabel(product);
+      renderArchiveGrid(gridEl, year, row.spans, product);
+      continue;
+    }
+    const {section, title, grid} = createCalendarPanel(product, true);
+    showYearSkeleton(grid);
+    fragment.append(section);
+    const paint = () => {
+      if (grid.classList.contains('placeholder-grid')) renderArchiveGrid(grid, year, row.spans, product);
+    };
+    title.addEventListener('focus', paint, {once:true});
+    if (archive.observer) archive.defer(section, paint);
+    else paint();
+  }
+  if (fragment.children.length) $('#satellite-year-calendars').append(fragment);
+}
+
+function renderArchiveGrid(grid, year, spans, product) {
   const start = new Date(Date.UTC(year, 0, 1));
-  const end = new Date(Date.UTC(year, 11, 31));
-  for (let i = 0; i < start.getUTCDay(); i++) {
-    const spacer = document.createElement('i');
-    spacer.className = 'c spacer';
-    grid.append(spacer);
+  const offset = start.getUTCDay();
+  const fragment = document.createDocumentFragment();
+  for (const [first, end, code] of spans) {
+    const status = archiveDayStatuses[code] || 'partial';
+    for (let index = first; index < end; index++) {
+      const position = index + offset;
+      const day = new Date(Date.UTC(year, 0, index + 1)).toISOString().slice(0, 10);
+      const cell = createCalendarCell(day);
+      cell.className = 'c ' + status;
+      cell.dataset.status = status;
+      cell.style.gridArea = (position % 7 + 1) + '/' + (Math.floor(position / 7) + 1);
+      cell.setAttribute('aria-label', day + ' · ' + statusLabels[status]);
+      fragment.append(cell);
+    }
   }
-  for (let date = new Date(start); date <= end; date.setUTCDate(date.getUTCDate() + 1)) {
-    const day = date.toISOString().slice(0, 10);
-    const item = days.get(day);
-    const status = calendarBaseStatus(item);
-    const cell = document.createElement('i');
-    cell.className = `c ${status}${item?.indexing ? ' indexing' : ''}`;
-    cell.dataset.day = day;
-    cell.dataset.status = status;
-    cell.tabIndex = 0;
-    cell.setAttribute('aria-label', dayTip(day, days));
-    cell.addEventListener('mouseenter', event => {
-      tipEl.textContent = dayTip(day, days);
-      tipEl.classList.remove('hidden');
-      moveTip(event);
-    });
-    cell.addEventListener('mousemove', moveTip);
-    cell.addEventListener('mouseleave', hideTip);
-    cell.addEventListener('click', () => open(day));
-    cell.addEventListener('keydown', event => {
-      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(day); }
-    });
-    grid.append(cell);
+  grid.replaceChildren(fragment);
+  grid.classList.add('archive-grid');
+  yearGrids.set(grid, {archive: true, open: day => queryCalendarDay(product, day)});
+  finishYearFrame(grid);
+}
+
+function finishArchiveCalendar() {
+  finishYearFrame(gridEl);
+  const count = state.archiveCalendar.shown;
+  $('#coverage-status').textContent = count ? '' : '所选年份和筛选条件下暂无已归档产品';
+}
+
+function renderYearGrid(grid, days, year, open, coverage = false) {
+  let layout = yearGrids.get(grid);
+  if (layout?.year !== year || layout.coverage !== coverage || layout.archive) {
+    layout = {year, coverage, cells: new Map()};
+    yearGrids.set(grid, layout);
+    const fragment = document.createDocumentFragment();
+    const start = new Date(Date.UTC(year, 0, 1));
+    for (let i = 0; i < start.getUTCDay(); i++) {
+      const spacer = document.createElement('i');
+      spacer.className = 'c spacer';
+      fragment.append(spacer);
+    }
+    for (let date = new Date(start); date.getUTCFullYear() === year; date.setUTCDate(date.getUTCDate() + 1)) {
+      const day = date.toISOString().slice(0, 10);
+      const cell = createCalendarCell(day);
+      layout.cells.set(day, cell);
+      fragment.append(cell);
+    }
+    grid.replaceChildren(fragment);
   }
+  Object.assign(layout, {days, open});
+  grid.classList.toggle('coverage-year', coverage);
+  for (const day of layout.cells.keys()) updateCell(day, grid);
+  finishYearFrame(grid);
 }
 
 async function queryCalendarDay(product, day) {
   if (!product) return;
-  if (selectedCalendarProducts().length > 1) {
-    const year = yearEl.value;
-    satelliteEl.value = collectionSatellites(product)[0];
-    rebuildFilters('satellite', false);
-    restoreSelect(productEl, product.id);
-    updateSelectedProduct();
-    yearEl.value = year;
-    await loadYear(true);
-  }
+  if (allArchivedProducts() || selectedCalendarProducts().length > 1) selectCalendarProduct(product);
   await queryDay(day);
+}
+
+function selectCalendarProduct(product) {
+  const year = yearEl.value;
+  satelliteEl.value = collectionSatellites(product)[0];
+  rebuildFilters('satellite', false);
+  restoreSelect(productEl, product.id);
+  updateSelectedProduct({year});
 }
 
 function bandCoverageSupported(product) {
@@ -1087,13 +1303,14 @@ function renderCoverageShell() {
   tools.classList.toggle('coverage-tools-limited', !visible && !onDemand);
   tools.title = !visible && !onDemand ? '当前产品仅支持年视图' : '';
   const band = $('#coverage-band');
-  band.disabled = !visible;
+  band.disabled = !visible || !coverage.bands.length;
   if (!visible) {
-    band.replaceChildren(new Option('无波段维度', '0'));
+    band.replaceChildren(new Option(allArchivedProducts() ? '全部波段' : '无波段维度', '0'));
     coverage.band = 0;
     coverage.view = 'year';
     coverage.time = 'all';
   }
+  if (visible && !coverage.bands.length) band.replaceChildren(new Option('全部波段', '0'));
   document.querySelectorAll('[data-coverage-view]').forEach(button => {
     button.disabled = !visible && button.dataset.coverageView !== 'year';
   });
@@ -1124,7 +1341,6 @@ function applyCoverageYearRows(year, rows) {
   const changed = [];
   for (const row of rows || []) {
     const day = new Date(Date.UTC(year, 0, row[0] + 1)).toISOString().slice(0, 10);
-    if (JSON.stringify(state.coverage.yearDays.get(day)) === JSON.stringify(row)) continue;
     state.coverage.yearDays.set(day, row);
     state.dayState.set(day, {
       day, status: row[1], official_count: row[2], local_ok_count: row[3],
@@ -1142,37 +1358,61 @@ function stopIndexStream() {
   for (const entry of state.satelliteYears.values()) { entry.stream?.close(); entry.stream = null; }
   state.indexStream = null;
   state.indexStreamKey = '';
+  if (state.mainYear) state.mainYear.stream = null;
 }
 
-function ensureIndexStream(product, year) {
-  if (!$('#calendar-view').classList.contains('active')) return;
+function ensureIndexStream(product, year, refresh = false) {
+  if (typeof EventSource === 'undefined' || document.hidden || !$('#calendar-view').classList.contains('active')) return;
   const key = product + '|' + year;
-  if (state.indexStream && state.indexStreamKey === key) return;
-  stopIndexStream();
-  const cursor = maxDayUpdatedAt(state.dayState);
-  const cursorParam = cursor ? '&cursor=' + encodeURIComponent(cursor) : '';
-  const stream = new EventSource('/api/v1/index/stream?product=' + encodeURIComponent(product) + '&year=' + year + cursorParam + '&watch=1');
-  state.indexStream = stream;
+  if (state.indexStream && state.indexStreamKey === key && !refresh) return;
+  state.indexStream?.close();
+  state.mainYear ||= {product: state.selected, days: state.dayState, grid: gridEl};
+  state.indexStream = connectCalendarYear(state.mainYear, product, year, true);
   state.indexStreamKey = key;
+}
+
+function connectCalendarYear(entry, product, year, main) {
+  const param = new URLSearchParams({product, year, progressive: '1'});
+  if (!main) param.set('archive', '0');
+  if (!main || !state.coverage.supported) param.set('summary', '1');
+  if (entry.revision) param.set('revision', entry.revision);
+  param.set('watch', '1');
+  const stream = new EventSource('/api/v1/index/stream?' + param);
+  entry.stream = stream;
+  const current = () => entry.stream === stream && Number(yearEl.value) === year &&
+    (main ? state.selected?.id === product : state.satelliteYears.get(product) === entry);
+  stream.addEventListener('error', () => {
+    if (!current() || document.hidden || stream.readyState !== 2) return;
+    entry.stream = null;
+    if (main) state.indexStream = null;
+    if (!entry.ready) fetchCalendarYear(entry, year, main);
+    else if (main) renderCalendarFailure('实时索引连接已断开');
+  });
+  const receive = (event, snapshot = false) => {
+    if (!current()) return;
+    let payload;
+    try { payload = JSON.parse(event.data); } catch { return; }
+    applyCalendarUpdate(entry, year, main, payload, snapshot, event.lastEventId);
+  };
+  stream.addEventListener('year', event => receive(event, true));
+  stream.addEventListener('index', receive);
+  stream.addEventListener('sync', receive);
+  if (!main) return stream;
+
   state.indexConnection = 'connecting';
   renderArchiveIndex();
   stream.addEventListener('open', () => {
-    if (state.indexStream !== stream) return;
-    state.indexConnection = 'connected';
-    renderArchiveIndex();
-  });
-  stream.addEventListener('sync', () => {
-    if (state.indexStream !== stream) return;
+    if (!current()) return;
     state.indexConnection = 'connected';
     renderArchiveIndex();
   });
   stream.addEventListener('error', () => {
-    if (state.indexStream !== stream) return;
+    if (!current()) return;
     state.indexConnection = 'reconnecting';
     renderArchiveIndex();
   });
   stream.addEventListener('archive', event => {
-    if (state.indexStream !== stream || state.selected?.id !== product || Number(yearEl.value) !== year) return;
+    if (!current()) return;
     let status;
     try { status = JSON.parse(event.data); } catch { return; }
     if (status.product !== product || status.year !== year) return;
@@ -1190,118 +1430,93 @@ function ensureIndexStream(product, year) {
     }
     renderArchiveIndex();
   });
-  stream.addEventListener('index', event => {
-    if (state.indexStream !== stream || state.selected?.id !== product || Number(yearEl.value) !== year) return;
-    let payload;
-    try { payload = JSON.parse(event.data); } catch { return; }
-    const changed = [];
-    if (payload.coverage) {
-	  $('#coverage-status').textContent = payload.pending ? `正在补全 ${payload.pending} 天的波段明细…` : '';
-      if (payload.bands?.length) state.coverage.bands = payload.bands;
-      changed.push(...applyCoverageYearRows(year, payload.days || []));
-      for (const day of payload.removed || []) {
-        state.coverage.yearDays.delete(day);
-        state.dayState.delete(day);
-        changed.push(day);
-      }
-    } else {
-      for (const day of payload.days || []) {
-        if (JSON.stringify(state.dayState.get(day.day)) === JSON.stringify(day)) continue;
-        state.dayState.set(day.day, day);
-        changed.push(day.day);
-      }
-      for (const day of payload.removed || []) {
-        state.dayState.delete(day);
-        changed.push(day);
-      }
-    }
-    if (changed.length) {
-      for (const day of changed) updateCell(day);
-      renderProductCoverageViz();
-      if (state.coverage.supported && state.coverage.view === 'month') {
-        const monthPrefix = year + '-' + String(Number(monthEl.value) + 1).padStart(2, '0') + '-';
-        if (changed.some(day => day.startsWith(monthPrefix))) loadCoverageMonth();
-      }
-      if (state.coverage.supported && state.coverage.view === 'day' && changed.includes(state.coverage.day)) {
-        openCoverageDay(state.coverage.day);
-      } else if (!state.coverage.supported && detailEl.dataset.day && changed.includes(detailEl.dataset.day)) {
-        openDay(detailEl.dataset.day, false);
-      }
-    }
-  });
-  stream.addEventListener('complete', () => {
-    if (state.indexStream === stream) stopIndexStream();
-  });
+  return stream;
 }
 
-// Reuse an in-flight year response. Startup previously loaded the identical
-// product/year once when selecting the catalog and again on navigation.
-const coverageYearFlights = new Map();
-async function loadCoverageYear(schedulePoll = true) {
-  const product = state.selected.id;
-  const year = Number(yearEl.value);
-  const seq = ++state.coverage.requestSeq;
-  $('#coverage-status').textContent = '读取年历…';
-  try {
-    const requestKey = product + '|' + year;
-    let flight = coverageYearFlights.get(requestKey);
-    if (!flight) {
-      flight = json(`/api/coverage/year?product=${encodeURIComponent(product)}&year=${year}`)
-        .finally(() => coverageYearFlights.delete(requestKey));
-      coverageYearFlights.set(requestKey, flight);
-    }
-    const payload = await flight;
-    if (seq !== state.coverage.requestSeq || state.selected?.id !== product || Number(yearEl.value) !== year) return;
-    if (payload.v !== 1) throw new Error('不支持的年历数据版本');
-    const coverage = state.coverage;
-    coverage.supported = true;
-    coverage.bands = payload.bands;
-    coverage.yearDays = new Map();
-    state.dayState.clear();
-    applyCoverageYearRows(year, payload.days || []);
-    const bandEl = $('#coverage-band');
-    if (bandEl.options.length !== coverage.bands.length + 1 ||
-        coverage.bands.some((band, i) => Number(bandEl.options[i + 1]?.value) !== band)) {
-      bandEl.replaceChildren(new Option('全部波段', '0'));
-      for (const band of coverage.bands) bandEl.add(new Option(coverageBandName(band), String(band)));
-    }
-    if (!coverage.bands.includes(coverage.band)) coverage.band = 0;
-    bandEl.value = String(coverage.band);
-    $('#coverage-status').textContent = payload.pending ? `正在补全 ${payload.pending} 天的波段明细…` : '';
-    renderCoverageShell();
-    renderCalendar();
-    if (coverage.view === 'month') loadCoverageMonth();
-    if (schedulePoll) ensureIndexStream(product, year);
-  } catch (error) {
-    if (seq === state.coverage.requestSeq) {
-      $('#coverage-status').textContent = `年历读取失败 · ${error.message}`;
-      $('#product-meta').textContent = `年历读取失败 · ${error.message}`;
+function setCoverageBands(bands) {
+  const coverage = state.coverage;
+  const bandEl = $('#coverage-band');
+  bandEl.disabled = bands.length === 0;
+  coverage.bands = bands;
+  if (bandEl.options.length !== bands.length + 1 || bands.some((band, i) => Number(bandEl.options[i + 1]?.value) !== band)) {
+    bandEl.replaceChildren(new Option('全部波段', '0'));
+    for (const band of bands) bandEl.add(new Option(coverageBandName(band), String(band)));
+  }
+  if (!bands.includes(coverage.band)) coverage.band = 0;
+  bandEl.value = String(coverage.band);
+}
+
+function applyCalendarUpdate(entry, year, main, payload, snapshot, revision) {
+  const changed = new Set(payload.removed || []);
+  if (payload.reset) {
+    entry.changed = new Set();
+    entry.revision = '';
+    state.yearSnapshots.delete(entry.cacheKey);
+    for (const day of entry.days.keys()) changed.add(day);
+    entry.days.clear();
+    if (main) state.coverage.yearDays.clear();
+  }
+  for (const day of payload.removed || []) {
+    entry.days.delete(day);
+    if (main) state.coverage.yearDays.delete(day);
+  }
+  if (main && payload.coverage) {
+    if (payload.bands?.length) setCoverageBands(payload.bands);
+    for (const day of applyCoverageYearRows(year, payload.days || [])) changed.add(day);
+  } else {
+    for (const row of payload.days || []) {
+      entry.days.set(row.day, row);
+      changed.add(row.day);
     }
   }
+  const coverage = main && state.coverage.supported;
+  const grid = entry.grid;
+  if (!yearGrids.has(grid)) {
+    renderYearGrid(grid, entry.days, year, day => queryCalendarDay(entry.product, day), coverage);
+  } else {
+    for (const day of changed) updateCell(day, grid);
+  }
+  if (snapshot) {
+    entry.changed ||= new Set();
+    for (const day of changed) entry.changed.add(day);
+    grid.setAttribute('aria-busy', String(!payload.ready));
+    if (!payload.ready) return;
+  }
+  if (revision) entry.revision = revision;
+  const first = !entry.ready;
+  entry.ready = true;
+  if (revision && entry.cacheKey) {
+    const cache = state.yearSnapshots;
+    cache.delete(entry.cacheKey);
+    cache.set(entry.cacheKey, {days:entry.days, revision, pending:payload.pending,
+      ...(coverage ? {bandDays:state.coverage.yearDays, bands:state.coverage.bands} : {})});
+    if (cache.size > 6) cache.delete(cache.keys().next().value);
+  }
+  if (entry.heading) entry.heading.textContent = calendarProductLabel(entry.product);
+  if (!main) return;
+  if (state.coverage.view === 'year') $('#coverage-status').textContent = calendarPendingText(payload.pending);
+  const allChanged = entry.changed || changed;
+  entry.changed = null;
+  if (!first && !allChanged.size) return;
+  renderProductCoverageViz();
+  if (coverage && state.coverage.view === 'month') {
+    const monthPrefix = year + '-' + String(Number(monthEl.value) + 1).padStart(2, '0') + '-';
+    if (first || [...allChanged].some(day => day.startsWith(monthPrefix))) loadCoverageMonth();
+  }
+  if (!first && coverage && state.coverage.view === 'day' && allChanged.has(state.coverage.day) && state.coverage.dayData) {
+    openCoverageDay(state.coverage.day);
+  } else if (!first && !coverage && detailEl.dataset.day && allChanged.has(detailEl.dataset.day)) {
+    openDay(detailEl.dataset.day, false);
+  }
+}
+
+function loadCoverageYear() {
+  state.mainYear ||= {product: state.selected, days: state.dayState, grid: gridEl};
+  return fetchCalendarYear(state.mainYear, Number(yearEl.value), true);
 }
 
 function renderCoverageYear() {
-  const coverage = state.coverage;
-  const year = Number(yearEl.value || defaultYear());
-  gridEl.classList.remove('placeholder-grid');
-  gridEl.classList.add('coverage-year');
-  $('.calendar-axis').classList.add('coverage-axis');
-  const fragment = document.createDocumentFragment();
-  const first = new Date(Date.UTC(year, 0, 1));
-  for (let i = 0; i < first.getUTCDay(); i++) {
-    const spacer = document.createElement('i');
-    spacer.className = 'c spacer';
-    fragment.append(spacer);
-  }
-  for (let date = new Date(first); date.getUTCFullYear() === year; date.setUTCDate(date.getUTCDate() + 1)) {
-    const day = date.toISOString().slice(0, 10);
-    const cell = document.createElement('i');
-    cell.dataset.day = day;
-    cell.tabIndex = 0;
-    paintCoverageCell(cell, day);
-    fragment.append(cell);
-  }
-  gridEl.replaceChildren(fragment);
+  renderYearGrid(gridEl, state.dayState, Number(yearEl.value || defaultYear()), queryDay, true);
   fitYearCalendar();
   renderProductCoverageViz();
 }
@@ -1309,11 +1524,15 @@ function renderCoverageYear() {
 function paintCoverageCell(cell, day) {
   const coverage = state.coverage;
   const row = coverage.yearDays.get(day);
-  const byBand = new Map((row?.[12] || []).map(total => [total[0], total]));
-  const hasLocal = coverageTotalsHaveLocal(row?.[12]);
-  const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
   cell.className = `c coverage-day${row?.[10] ? ' indexing' : ''}${day === coverage.day ? ' selected-day' : ''}`;
   cell.setAttribute('aria-label', dayTip(day));
+  if (!row || (!row[12]?.length && !row[13])) {
+    if (cell.children.length) cell.replaceChildren();
+    return;
+  }
+  const byBand = new Map((row[12] || []).map(total => [total[0], total]));
+  const hasLocal = coverageTotalsHaveLocal(row[12]);
+  const cadence = Number.parseInt(state.selected?.cadence, 10) || 0;
   if (cell.children.length !== coverage.bands.length) {
     cell.replaceChildren(...coverage.bands.map(() => document.createElement('i')));
   }
@@ -1326,14 +1545,19 @@ function paintCoverageCell(cell, day) {
   });
 }
 
-function updateCell(day) {
-  const cell = gridEl.querySelector(`[data-day="${day}"]`);
+function updateCell(day, grid = gridEl) {
+  const layout = yearGrids.get(grid);
+  const cell = layout?.cells.get(day);
   if (!cell) return;
-  if (state.coverage.supported) { paintCoverageCell(cell, day); return; }
-  const status = calendarBaseStatus(state.dayState.get(day));
-  cell.className = `c ${status}${state.dayState.get(day)?.indexing ? ' indexing' : ''}`;
+  if (layout.coverage) {
+    paintCoverageCell(cell, day);
+    return;
+  }
+  const item = layout.days.get(day);
+  const status = calendarBaseStatus(item);
+  cell.className = 'c ' + status + (item?.indexing ? ' indexing' : '');
   cell.dataset.status = status;
-  cell.setAttribute('aria-label', dayTip(day));
+  cell.setAttribute('aria-label', dayTip(day, layout.days));
 }
 
 function dayTip(day, days = state.dayState) {
@@ -1377,118 +1601,114 @@ function requestYear(product, year) {
   return flight;
 }
 
-async function loadYear(schedulePoll = true) {
-  clearTimeout(state.yearPoll);
+function loadYear(watch = true, refresh = false) {
+  if (allArchivedProducts()) return loadArchiveCalendar(refresh);
   if (!state.selected || state.selected.metadata?.availability_mode === 'on-demand') return;
-  const products = selectedCalendarProducts();
-  if (products.length > 1) {
-    await loadSatelliteYears(products, schedulePoll);
-    return;
-  }
-  const streamKey = state.selected.id + '|' + Number(yearEl.value || defaultYear());
-  if (state.indexStreamKey && state.indexStreamKey !== streamKey) stopIndexStream();
-  if (bandCoverageSupported(state.selected)) {
-    await loadCoverageYear(schedulePoll);
-    return;
-  }
-  state.coverage.supported = false;
-  renderCoverageShell();
-  const product = state.selected.id;
-  const year = Number(yearEl.value || defaultYear());
-  try {
-    const payload = await requestYear(product, year);
-    if (state.selected?.id !== product || Number(yearEl.value) !== year) return;
-    state.dayState.clear();
-    for (const day of payload.days || []) state.dayState.set(day.day, day);
-    renderCalendar();
-    if (schedulePoll) ensureIndexStream(product, year);
-  } catch (error) {
-    $('#product-meta').textContent = `年历索引读取失败 · ${error.message}`;
-  }
-}
 
-async function loadSatelliteYears(products, watch) {
-  const seq = ++state.calendarSeq;
-  const product = state.selected.id;
+  const products = selectedCalendarProducts();
   const year = Number(yearEl.value || defaultYear());
-  stopIndexStream();
-  state.satelliteYears.clear();
-  state.coverage.supported = false;
-  state.coverage.view = 'year';
-  for (const item of products.slice(1)) state.satelliteYears.set(item.id, {product: item, days: new Map(), loading: true});
-  state.dayState.clear();
-  renderCoverageShell();
-  renderCalendar();
-  await Promise.all(products.map(async item => {
-    try {
-      const payload = await requestYear(item.id, year);
-      if (seq !== state.calendarSeq || state.selected?.id !== product || Number(yearEl.value) !== year) return;
-      const entry = state.satelliteYears.get(item.id);
-      const days = entry ? entry.days : state.dayState;
-      for (const row of payload.days || []) days.set(row.day, row);
-      if (entry) {
-        entry.loading = false;
-        if (entry.heading && entry.grid) {
-          entry.heading.textContent = calendarProductLabel(entry.product);
-          renderYearGrid(entry.grid, entry.days, year, day => queryCalendarDay(entry.product, day));
-        } else {
-          renderCalendar();
-        }
-      } else {
-        renderYearGrid(gridEl, state.dayState, year, day => queryCalendarDay(state.selected, day));
-        fitYearCalendar();
-        renderProductCoverageViz();
-      }
-    } catch (error) {
-      if (seq !== state.calendarSeq) return;
-      const entry = state.satelliteYears.get(item.id);
-      if (entry) {
-        entry.loading = false;
-        entry.error = `索引读取失败 · ${error.message}`;
-        if (entry.heading) entry.heading.textContent = `${calendarProductLabel(entry.product)} · ${entry.error}`;
-      } else {
-        $('#product-meta').textContent = `年历索引读取失败 · ${error.message}`;
+  const key = [year, ...products.map(item => item.id)].join('|');
+  if (state.calendarYearKey !== key) {
+    const sameProduct = state.mainYear?.product === state.selected;
+    const view = state.coverage.view;
+    const time = state.coverage.time;
+    const band = state.coverage.band;
+    resetCalendarYear();
+    state.calendarYearKey = key;
+    state.coverage.supported = products.length === 1 && bandCoverageSupported(state.selected);
+    state.coverage.bands = [];
+    if (sameProduct && state.coverage.supported) {
+      if (view === 'month') state.coverage.view = view;
+      state.coverage.time = time;
+      state.coverage.band = band;
+    }
+    const coverage = state.coverage.supported;
+    state.mainYear = calendarYearEntry(state.selected, year, coverage);
+    state.mainYear.grid = gridEl;
+    state.dayState = state.mainYear.days;
+    const cached = state.yearSnapshots.get(state.mainYear.cacheKey);
+    if (coverage && cached) {
+      state.coverage.yearDays = cached.bandDays;
+      setCoverageBands(cached.bands);
+    }
+    for (const item of products.slice(1)) state.satelliteYears.set(item.id, calendarYearEntry(item, year, false));
+    renderCoverageShell();
+    renderCalendar(true);
+    for (const entry of [state.mainYear, ...state.satelliteYears.values()]) {
+      if (!entry.ready) continue;
+      renderYearGrid(entry.grid, entry.days, year, day => queryCalendarDay(entry.product, day), entry === state.mainYear && coverage);
+    }
+    if (cached) {
+      $('#coverage-status').textContent = calendarPendingText(cached.pending);
+      renderProductCoverageViz();
+      if (state.coverage.view === 'month') loadCoverageMonth();
+    } else {
+      $('#coverage-status').textContent = '读取年历…';
+    }
+  }
+
+  if (watch && typeof EventSource !== 'undefined') {
+    if (document.hidden || !$('#calendar-view').classList.contains('active')) return;
+    ensureIndexStream(state.selected.id, year, refresh);
+    for (const entry of state.satelliteYears.values()) {
+      if (!entry.stream || refresh) {
+        entry.stream?.close();
+        connectCalendarYear(entry, entry.product.id, year, false);
       }
     }
-  }));
-  if (seq !== state.calendarSeq || state.selected?.id !== product || Number(yearEl.value) !== year) return;
-  if (!watch || !$('#calendar-view').classList.contains('active')) return;
-  ensureIndexStream(product, year);
-  for (const [id, entry] of state.satelliteYears) {
-    const satCursor = maxDayUpdatedAt(entry.days);
-    const satCursorParam = satCursor ? '&cursor=' + encodeURIComponent(satCursor) : '';
-    const stream = new EventSource('/api/v1/index/stream?product=' + encodeURIComponent(id) + '&year=' + year + satCursorParam + '&watch=1');
-    entry.stream = stream;
-    stream.addEventListener('index', event => {
-      if (seq !== state.calendarSeq || entry.stream !== stream || Number(yearEl.value) !== year) return;
-      let payload;
-      try { payload = JSON.parse(event.data); } catch { return; }
-      if (entry.error) {
-        entry.error = '';
-        if (entry.heading) entry.heading.textContent = calendarProductLabel(entry.product);
-      }
-      const changed = [];
-      for (const row of payload.days || []) {
-        const day = payload.coverage ? {
-          day: new Date(Date.UTC(year, 0, row[0] + 1)).toISOString().slice(0, 10),
-          status: row[1], official_count: row[2], local_ok_count: row[3],
-          hourly_official_count: row[4], hourly_local_ok_count: row[5], official_gap_count: row[6],
-          missing_count: row[7], error_count: row[8], processing_count: row[9], indexing: row[10], updated_at: row[11],
-        } : row;
-        entry.days.set(day.day, day);
-        changed.push(day.day);
-      }
-      for (const day of payload.removed || []) { entry.days.delete(day); changed.push(day); }
-      for (const day of changed) {
-        const cell = entry.grid?.querySelector(`[data-day="${day}"]`);
-        if (!cell) continue;
-        const status = calendarBaseStatus(entry.days.get(day));
-        cell.className = `c ${status}${entry.days.get(day)?.indexing ? ' indexing' : ''}`;
-        cell.dataset.status = status;
-        cell.setAttribute('aria-label', dayTip(day, entry.days));
-      }
-    });
+    return;
   }
+  return Promise.all([
+    state.coverage.supported ? loadCoverageYear() : fetchCalendarYear(state.mainYear, year, true),
+    ...Array.from(state.satelliteYears.values(), entry => fetchCalendarYear(entry, year, false)),
+  ]);
+}
+
+function calendarYearEntry(product, year, coverage) {
+  const cacheKey = [product.id, year, coverage ? 'bands' : 'summary'].join('|');
+  const cached = state.yearSnapshots.get(cacheKey);
+  return {product, cacheKey, days: cached?.days || new Map(), revision: cached?.revision || '', ready:Boolean(cached)};
+}
+
+function calendarPendingText(pending) {
+  return pending ? `正在补全 ${pending} 天的波段明细…` : '';
+}
+
+async function fetchCalendarYear(entry, year, main) {
+  if (entry.flight) return entry.flight;
+  const product = entry.product.id;
+  const coverage = main && state.coverage.supported;
+  const current = () => Number(yearEl.value) === year &&
+    (main ? state.mainYear === entry && state.selected?.id === product : state.satelliteYears.get(product) === entry);
+  entry.flight = (async () => {
+    try {
+      const payload = coverage
+        ? await json('/api/coverage/year?product=' + encodeURIComponent(product) + '&year=' + year)
+        : await requestYear(product, year);
+      if (!current()) return;
+      if (coverage && payload.v !== 1) throw new Error('不支持的年历数据版本');
+      applyCalendarUpdate(entry, year, main, {...payload, coverage, reset: true, ready: true}, true, '');
+    } catch (error) {
+      if (!current()) return;
+      finishYearFrame(entry.grid);
+      if (main) renderCalendarFailure('年历读取失败 · ' + error.message);
+      else entry.heading.textContent = calendarProductLabel(entry.product) + ' · 年历读取失败';
+    } finally {
+      entry.flight = null;
+    }
+  })();
+  return entry.flight;
+}
+
+function renderCalendarFailure(message, reload = () => loadYear(true, true)) {
+  const status = $('#coverage-status');
+  status.textContent = message;
+  const retry = document.createElement('button');
+  retry.className = 'calendar-retry';
+  retry.type = 'button';
+  retry.textContent = '重试';
+  retry.addEventListener('click', () => reload());
+  status.append(retry);
 }
 
 async function queryDay(day) {
@@ -1524,20 +1744,26 @@ async function loadCoverageMonth() {
   const month = Number(monthEl.value) + 1;
   const band = coverage.band;
   const mode = coverage.time;
+  const params = new URLSearchParams({product, year, month, band, time:mode});
+  const key = params.toString();
+  if (coverage.monthRequest?.key === key && coverage.monthRequest.seq === coverage.requestSeq) return;
   const seq = ++coverage.requestSeq;
+  coverage.monthRequest = {key, seq};
   coverage.month = null;
   $('#coverage-status').textContent = '读取月度覆盖…';
   try {
-    const params = new URLSearchParams({product, year, month, band, time:mode});
     const payload = await json('/api/coverage/month?' + params);
     if (seq !== coverage.requestSeq || state.selected?.id !== product ||
         Number(yearEl.value) !== year || Number(monthEl.value) + 1 !== month || coverage.band !== band || coverage.time !== mode) return;
     if (payload.v !== 1) throw new Error('不支持的月度数据版本');
+    if (!coverage.bands.length && payload.bands?.length) setCoverageBands(payload.bands);
     coverage.month = payload;
     $('#coverage-status').textContent = '';
     renderCoverageMonth();
   } catch (error) {
     if (seq === coverage.requestSeq) $('#coverage-status').textContent = `月度覆盖读取失败 · ${error.message}`;
+  } finally {
+    if (coverage.monthRequest?.seq === seq) coverage.monthRequest = null;
   }
 }
 
@@ -1630,8 +1856,6 @@ function moveCoverageMonth(delta) {
   yearEl.value = String(next.getUTCFullYear());
   monthEl.value = String(next.getUTCMonth());
   if (next.getUTCFullYear() !== year) {
-    state.dayState.clear();
-    state.coverage.yearDays.clear();
     persistFilters();
     loadYear(true);
   } else {
@@ -1646,6 +1870,7 @@ async function openCoverageDay(day) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number(day.slice(0, 4)) !== year ||
       !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) return;
   const refreshing = coverage.day === day && coverage.view === 'day';
+  const previous = coverage.day;
   if (!refreshing) coverage.hour = -1;
   coverage.day = day;
   coverage.dayData = null;
@@ -1655,7 +1880,10 @@ async function openCoverageDay(day) {
   monthEl.value = String(Number(day.slice(5, 7)) - 1);
   closeDetail();
   renderCoverageShell();
-  if (!refreshing) renderCalendar();
+  if (!refreshing) {
+    updateCell(previous);
+    updateCell(day);
+  }
   $('#coverage-day-picker').value = day;
   $('#coverage-day-picker').min = `${year}-01-01`;
   $('#coverage-day-picker').max = `${year}-12-31`;
@@ -1668,6 +1896,7 @@ async function openCoverageDay(day) {
     const payload = await json(`/api/coverage/day?product=${encodeURIComponent(product)}&day=${day}`);
     if (seq !== coverage.requestSeq || state.selected?.id !== product || coverage.day !== day) return;
     if (payload.v !== 1) throw new Error('不支持的日度数据版本');
+    if (!coverage.bands.length && payload.bands?.length) setCoverageBands(payload.bands);
     coverage.dayData = payload;
     coverage.cells = new Map(payload.cells.map(cell => [`${cell[0]}:${cell[1]}`, cell]));
     renderCoverageDay();
@@ -1958,10 +2187,13 @@ async function openDay(day, schedulePoll = false) {
   clearTimeout(state.dayPoll);
   if (!state.selected) return;
   const product = state.selected.id;
+  const seq = ++state.detailSeq;
+  const current = () => seq === state.detailSeq && state.selected?.id === product && day.startsWith(yearEl.value + '-');
   let item;
   try {
     item = await json(`/api/day?product=${encodeURIComponent(product)}&day=${day}`);
   } catch (error) {
+    if (!current()) return;
     detailEl.classList.remove('hidden');
     $('#detail-day').textContent = `${day} · ${state.displayZone}`;
     $('#detail-summary').textContent = `读取失败 · ${error.message}`;
@@ -1969,7 +2201,7 @@ async function openDay(day, schedulePoll = false) {
     $('#granule-list').replaceChildren();
     return;
   }
-  if (state.selected?.id !== product) return;
+  if (!current()) return;
   detailEl.classList.remove('hidden');
   detailEl.dataset.day = day;
   $('#detail-day').textContent = `${day} · ${state.displayZone}`;
@@ -2050,20 +2282,20 @@ function renderGranules(slots) {
 }
 
 function closeDetail() {
+  state.detailSeq++;
   clearTimeout(state.dayPoll);
   detailEl.classList.add('hidden');
   delete detailEl.dataset.day;
 }
 
-function showTip(event, day) {
-  tipEl.textContent = dayTip(day);
+function showTip(event, cell, layout) {
+  tipEl.textContent = layout.archive ? cell.getAttribute('aria-label') : dayTip(cell.dataset.day, layout.days);
   tipEl.classList.remove('hidden');
   moveTip(event);
 }
 
 function moveTip(event) {
-  tipEl.style.left = `${event.clientX + 12}px`;
-  tipEl.style.top = `${event.clientY + 12}px`;
+  tipEl.style.transform = `translate(${event.clientX + 12}px, ${event.clientY + 12}px)`;
 }
 
 function hideTip() {
@@ -2100,124 +2332,143 @@ function renderSources() {
 const familyCatalogCache = new Map();
 
 function applyCatalog(payload, family, saved = readFamilyFilters(family)) {
+  const changed = state.catalogFamily !== family;
   state.catalogFamily = family;
   state.calendarHydrated = true;
-  if (Array.isArray(payload)) familyCatalogCache.set(family, payload);
-  state.collections = (payload || []).map(normalizeCatalogProduct).map(product => ({
-    id: product.product_key,
-    source_id: product.source_id,
-    satellite: product.satellite,
-    instrument: product.instrument,
-    level: catalogLevel(product.source_id, product.level),
-    product: product.data_type,
-    cadence: product.cadence,
-    metadata: {
-      ...(product.metadata || {}),
-      official_id: product.official_id || '',
-      title: product.display_name || product.data_type,
-      spatial_resolution: product.resolution || '',
-      version: product.version || '',
-      area_type: product.area_type || '',
-      catalog_source: product.catalog_source || '',
-      product_count: product.product_count ? String(product.product_count) : '',
-      local_covered: Boolean(product.local_covered),
-      first_day: product.first_day || '',
-      last_day: product.last_day || '',
-    },
-  }));
-  setCatalogLoading(false);
-  rebuildFilters('source', false);
-  if (savedFamily(saved) === family) {
-    let rememberedSatellite = saved.satellite;
-    if (!Object.hasOwn(saved, 'satellite') && saved.source) {
-      rememberedSatellite = state.sources.find(item => item.id === saved.source)?.name || '';
-    }
-    restoreSelect(satelliteEl, rememberedSatellite);
-    rebuildFilters('satellite', false);
-    restoreSelect(instrumentEl, saved.instrument);
-    rebuildFilters('instrument', false);
-    restoreSelect(levelEl, catalogLevel(family, saved.level));
-    rebuildFilters('level', false);
-    restoreSelect(areaEl, saved.area);
-    rebuildFilters('area', false);
-    restoreSelect(resolutionEl, saved.resolution);
-    rebuildFilters('resolution', false);
-    restoreSelect(productEl, saved.product);
+  if (!familyCatalogCache.has(family)) {
+    familyCatalogCache.set(family, (payload || []).map(row => {
+      const product = normalizeCatalogProduct(row);
+      return {
+        id: product.product_key,
+        source_id: product.source_id,
+        satellite: product.satellite,
+        instrument: product.instrument,
+        level: catalogLevel(product.source_id, product.level),
+        product: product.data_type,
+        cadence: product.cadence,
+        metadata: {
+          ...(product.metadata || {}),
+          official_id: product.official_id || '',
+          title: product.display_name || product.data_type,
+          spatial_resolution: product.resolution || '',
+          version: product.version || '',
+          area_type: product.area_type || '',
+          catalog_source: product.catalog_source || '',
+          product_count: product.product_count ? String(product.product_count) : '',
+          local_covered: Boolean(product.local_covered),
+          first_day: product.first_day || '',
+          last_day: product.last_day || '',
+        },
+      };
+    }));
   }
+  state.collections = familyCatalogCache.get(family);
+  if (changed) for (const select of [satelliteEl, instrumentEl, levelEl, areaEl, resolutionEl, productEl]) select.value = '';
+  const restored = savedFamily(saved) === family ? {...saved, level: catalogLevel(family, saved.level)} : {};
+  if (!Object.hasOwn(restored, 'satellite') && restored.source) {
+    restored.satellite = state.sources.find(item => item.id === restored.source)?.name || '';
+  }
+  if (restored.product === ALL_ARCHIVED_PRODUCTS) restoreSelect(yearEl, restored.year);
+  setCatalogLoading(false);
+  rebuildFilters('source', false, restored);
   updateSelectedProduct();
 }
 
-async function loadSources(hydrateCalendar = ($('#calendar-view')?.classList?.contains('active') ?? true)) {
-  const saved = readFilters();
-  const preferredFamily = savedFamily(saved) === 'era5' ? 'goes' : savedFamily(saved) || 'goes';
-  const hintedSources = hintedFamilySourceIDs(preferredFamily);
-  const catalogPromise = hydrateCalendar && preferredFamily
-    ? streamNDJSON(familyProductsURL(hintedSources) + '&stream=1', () => {}).catch(() => null)
-    : Promise.resolve(null);
-  const [payload, prefetchedCatalog] = await Promise.all([json('/api/v1/sources'), catalogPromise]);
-  state.sources = payload.sources || [];
-  if ($('#catalog-view').classList.contains('active')) renderSources();
+function applySources(sources, preferred) {
+  state.sources = sources;
   const families = sourceFamilies();
-  const previous = sourceEl.value;
   sourceEl.replaceChildren();
   for (const family of families) sourceEl.add(new Option(family.label, family.id));
-  if (families.some(item => item.id === previous)) sourceEl.value = previous;
-  if (families.some(item => item.id === preferredFamily)) sourceEl.value = preferredFamily;
+  if (families.some(item => item.id === preferred)) sourceEl.value = preferred;
   else if (families.some(item => item.id === 'goes')) sourceEl.value = 'goes';
-  else if (families.length) sourceEl.value = families[0].id;
-  if (hydrateCalendar) {
-    const actualSources = familySources(sourceEl.value).map(item => item.id);
-    if (sourceEl.value === preferredFamily && prefetchedCatalog && sameSourceSet(actualSources, hintedSources)) {
-      applyCatalog(prefetchedCatalog, sourceEl.value, saved);
-    } else {
-      await loadCatalog();
-    }
-  } else {
-    state.calendarHydrated = false;
-  }
+  sourceEl.disabled = !families.length;
+  if ($('#catalog-view').classList.contains('active')) renderSources();
   if ($('#downloads-view').classList.contains('active')) initializeDownloadSubmit();
 }
 
-async function loadCatalog() {
-  const family = sourceEl.value;
-  const saved = readFamilyFilters(family);
-  const cached = familyCatalogCache.get(family);
-  if (cached) {
-    applyCatalog(cached, family, saved);
+async function loadSources(hydrateCalendar = ($('#calendar-view')?.classList?.contains('active') ?? true)) {
+  const preferred = savedFamily() || 'goes';
+  if (!hydrateCalendar) {
+    const payload = await json('/api/v1/sources');
+    applySources(payload.sources || [], sourceEl.value || preferred);
+    if ($('#calendar-view').classList.contains('active') && !state.catalogRequest) loadCatalog();
     return;
   }
-  const ticket = ++state.catalogSeq;
-  stopIndexStream();
-  state.calendarSeq++;
-  state.coverage.requestSeq++;
-  state.coverage.fileSeq++;
-  clearTimeout(state.yearPoll);
-  clearTimeout(state.dayPoll);
-  clearTimeout(state.coverage.poll);
-  state.satelliteYears.clear();
+
+  const request = beginCatalogLoad();
+  const products = [];
+  let family, done = false;
+  try {
+    await streamNDJSON('/api/products?bootstrap=1&stream=1&family=' + encodeURIComponent(preferred), batch => {
+      if (state.catalogRequest !== request) return;
+      for (const row of batch) {
+        if (row.error) throw new Error(row.error);
+        if (Array.isArray(row.sources)) {
+          family = row.family;
+          applySources(row.sources, family);
+        } else if (row.done) {
+          done = true;
+        } else if (row.product_key) {
+          products.push(row);
+        }
+      }
+    }, {signal: request.signal, flushOnRead: true});
+    if (state.catalogRequest !== request) return;
+    if (family === undefined || !done) throw new Error('目录连接中断');
+    applyCatalog(products, family);
+  } catch (error) {
+    if (state.catalogRequest === request) showCatalogError(error, () => family ? loadCatalog() : loadSources());
+  } finally {
+    if (state.catalogRequest === request) state.catalogRequest = null;
+  }
+}
+
+function beginCatalogLoad() {
+  state.catalogRequest?.abort();
+  const request = new AbortController();
+  state.catalogRequest = request;
+  stopArchiveCalendarRequest();
+  state.selected = null;
+  state.collections = [];
+  state.calendarHydrated = false;
+  resetCalendarYear();
+  $('#year-product-heading').textContent = '';
   $('#satellite-year-calendars').replaceChildren();
-  closeDetail();
+  showYearSkeleton(gridEl);
+  $('#year-layout').classList.remove('hidden');
   setCatalogLoading(true);
   $('#product-title').textContent = '读取产品目录…';
   $('#product-meta').textContent = '';
   $('#product-details').classList.add('hidden');
-  state.collections = [];
-  state.selected = null;
-  gridEl.classList.add('placeholder-grid');
-  gridEl.replaceChildren();
-  const sourceIDs = familySources(family).map(item => item.id);
-  if (!sourceIDs.length) { setCatalogLoading(false); return; }
+  $('#coverage-status').textContent = '';
+  return request;
+}
+
+async function loadCatalog() {
+  const family = sourceEl.value;
+  const request = beginCatalogLoad();
   try {
-    const payload = await streamNDJSON(familyProductsURL(sourceIDs) + '&stream=1', () => {});
-    if (ticket !== state.catalogSeq || family !== sourceEl.value) return;
-    applyCatalog(payload, family, saved);
+    if (familyCatalogCache.has(family)) {
+      applyCatalog(null, family);
+      return;
+    }
+    const sources = familySources(family).map(item => item.id);
+    const products = sources.length
+      ? await streamNDJSON('/api/products?stream=1&sources=' + encodeURIComponent(sources.join(',')), null, {signal: request.signal})
+      : [];
+    if (state.catalogRequest === request && family === sourceEl.value) applyCatalog(products, family);
   } catch (error) {
-    if (ticket !== state.catalogSeq || family !== sourceEl.value) return;
-    setCatalogLoading(false);
-    gridEl.classList.remove('placeholder-grid');
-    $('#product-title').textContent = '产品目录读取失败';
-    $('#product-meta').textContent = error.message;
+    if (state.catalogRequest === request) showCatalogError(error, loadCatalog);
+  } finally {
+    if (state.catalogRequest === request) state.catalogRequest = null;
   }
+}
+
+function showCatalogError(error, retry) {
+  setCatalogLoading(false);
+  finishYearFrame(gridEl);
+  $('#product-title').textContent = '产品目录读取失败';
+  renderCalendarFailure(error.message, retry);
 }
 
 function setCatalogLoading(loading) {
@@ -2292,20 +2543,13 @@ function changeCalendarYear(manual = true) {
     saved[state.selected.id] = yearEl.value;
     localStorage.setItem(CALENDAR_YEARS_KEY, JSON.stringify(saved));
   }
-  state.coverage.requestSeq++;
-  state.coverage.fileSeq++;
-  clearTimeout(state.coverage.poll);
-  state.coverage.day = '';
-  state.coverage.dayData = null;
-  state.coverage.month = null;
-  state.coverage.yearDays.clear();
-  state.archiveIndex = null;
-  if (state.coverage.view === 'day') state.coverage.view = 'year';
-  state.dayState.clear(); closeDetail(); renderCoverageShell(); renderCalendar(); renderArchiveIndex(); persistFilters(); loadYear(true);
+  fitYearCalendar();
+  persistFilters();
+  loadYear(true);
 }
 
 function persistFilters() {
-  if (!state.selected) return;
+  if (!state.selected && !allArchivedProducts()) return;
   const family = state.catalogFamily || sourceEl.value;
   const record = {
     family,
@@ -4764,8 +5008,10 @@ async function health() {
 }
 
 function bind() {
-  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitYearCalendar).observe($('.calendar-wrap'));
-  else window.addEventListener('resize', fitYearCalendar);
+  if (!globalThis.CSS?.supports('width', '1cqi')) {
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitYearCalendar).observe($('.calendar-wrap'));
+    else window.addEventListener('resize', fitYearCalendar);
+  }
   $('.sidebar-toggle').addEventListener('click', () => setSidebar(document.body.classList.contains('sidebar-collapsed'), true));
   document.querySelectorAll('.nav-item').forEach(node => node.addEventListener('click', event => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -4773,6 +5019,10 @@ function bind() {
     navigateView(node.dataset.view, 'push');
   }));
   window.addEventListener('popstate', () => navigateView(viewFromPath(), 'none'));
+  window.addEventListener('pagehide', stopIndexStream);
+  window.addEventListener('pageshow', event => {
+    if (event.persisted && $('#calendar-view').classList.contains('active')) loadYear(true);
+  });
   sourceEl.addEventListener('change', () => { persistFilters(); loadCatalog(); });
   satelliteEl.addEventListener('change', () => { rebuildFilters('satellite'); persistFilters(); });
   instrumentEl.addEventListener('change', () => { rebuildFilters('instrument'); persistFilters(); });
@@ -4786,13 +5036,13 @@ function bind() {
     localStorage.setItem('satellite-data-zone', state.displayZone);
     persistFilters();
     closeDetail();
-    renderCalendar();
+    if (!allArchivedProducts()) renderCalendar(state.mainYear && !yearGrids.has(gridEl));
     if (state.coverage.supported && state.coverage.view === 'day') renderCoverageDay();
     if (state.monitor.payload) renderMonitor();
   });
   $('#reset-filters').addEventListener('click', resetFilters);
   $('#query-month').addEventListener('click', queryMonth);
-  $('#clear-calendar').addEventListener('click', () => loadYear(true));
+  $('#clear-calendar').addEventListener('click', () => loadYear(true, true));
   $('#coverage-views').addEventListener('click', event => {
     const button = event.target.closest('[data-coverage-view]');
     if (!button || !state.coverage.supported) return;
@@ -4829,19 +5079,27 @@ function bind() {
     if (state.coverage.view === 'month') loadCoverageMonth();
     if (state.coverage.view === 'day') { $('#coverage-files').replaceChildren(); renderCoverageDay(); }
   });
-  gridEl.addEventListener('mouseover', event => {
-    const cell = state.coverage.supported && event.target.closest('[data-day]');
-    if (cell) showTip(event, cell.dataset.day);
+  const yearLayout = $('#year-layout');
+  const yearCell = event => event.target.closest('[data-day]');
+  const cellLayout = cell => cell && yearGrids.get(cell.closest('.year-grid'));
+  yearLayout.addEventListener('mouseover', event => {
+    const cell = yearCell(event);
+    const layout = cellLayout(cell);
+    if (layout && !cell.contains(event.relatedTarget)) showTip(event, cell, layout);
   });
-  gridEl.addEventListener('mousemove', event => { if (state.coverage.supported && !tipEl.classList.contains('hidden')) moveTip(event); });
-  gridEl.addEventListener('mouseout', event => { if (state.coverage.supported && !event.relatedTarget?.closest?.('[data-day]')) hideTip(); });
-  gridEl.addEventListener('click', event => {
-    const cell = state.coverage.supported && event.target.closest('[data-day]');
-    if (cell) queryDay(cell.dataset.day);
-  });
-  gridEl.addEventListener('keydown', event => {
-    const cell = state.coverage.supported && event.target.closest('[data-day]');
-    if (cell && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); queryDay(cell.dataset.day); }
+  yearLayout.addEventListener('mousemove', event => { if (!tipEl.classList.contains('hidden')) moveTip(event); });
+  yearLayout.addEventListener('mouseout', event => { if (!event.relatedTarget?.closest?.('[data-day]')) hideTip(); });
+  const openYearCell = event => {
+    const cell = yearCell(event);
+    const layout = cellLayout(cell);
+    if (!layout) return;
+    if (event.type === 'keydown') event.preventDefault();
+    hideTip();
+    layout.open(cell.dataset.day);
+  };
+  yearLayout.addEventListener('click', openYearCell);
+  yearLayout.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') openYearCell(event);
   });
   $('#month-grid').addEventListener('click', event => {
     const day = event.target.closest('[data-day]')?.dataset.day;
@@ -4863,7 +5121,7 @@ function bind() {
     showCoverageFiles(cell.dataset.indices ? cell.dataset.indices.split(',').map(Number) : [], Number(cell.dataset.band));
   });
   $('#close-detail').addEventListener('click', closeDetail);
-  $('#refresh-sources').addEventListener('click', loadSources);
+  $('#refresh-sources').addEventListener('click', () => loadSources());
   $('#era5-form').addEventListener('submit', submitERA5);
   $('#era5-refresh').addEventListener('click', refreshERA5);
   $('#era5-dataset').addEventListener('change', selectERA5Dataset);
@@ -5039,7 +5297,7 @@ function bind() {
         setLiveBadge('monitor-live-pill', 'monitor-live-text', 'paused', '已暂停');
         return;
       }
-      if ($('#calendar-view')?.classList.contains('active') && state.selected) ensureIndexStream(state.selected.id, Number(yearEl.value || defaultYear()));
+      if ($('#calendar-view')?.classList.contains('active')) loadYear(true);
       if ($('#downloads-view')?.classList.contains('active')) loadDownloads(true);
       if ($('#monitor-view')?.classList.contains('active')) { ensureMonitorStream(true); loadMonitor(true); }
       if ($('#access-view')?.classList.contains('active') && state.access.section === 'egress') ensureAccessEgressStream();
@@ -5123,6 +5381,7 @@ async function boot() {
   syncDownloadTimezones();
   fillYears();
   fillMonths();
+  fitYearCalendar();
   bind();
   // The health indicator is not a prerequisite for drawing the calendar.
   // Waiting for /healthz used to delay navigation even when year data was ready.
@@ -5136,7 +5395,7 @@ async function boot() {
   $('#portal-user').textContent = session.user.username;
   document.querySelectorAll('[data-admin-only]').forEach(node => node.classList.toggle('hidden', session.user.role !== 'admin'));
   await sourcesPromise;
-  navigateView(initialView, 'none');
+  if (initialView !== 'calendar-view' && viewFromPath() === initialView) loadViewContent(initialView);
 }
 
 boot();

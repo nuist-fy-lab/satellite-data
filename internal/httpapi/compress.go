@@ -13,6 +13,8 @@ type gzipResponseWriter struct {
 	wroteHeader bool
 }
 
+func (w *gzipResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func (w *gzipResponseWriter) WriteHeader(status int) {
 	if w.wroteHeader {
 		return
@@ -52,6 +54,7 @@ func (w *gzipResponseWriter) Flush() {
 func compressibleContentType(contentType string) bool {
 	return strings.HasPrefix(contentType, "text/") ||
 		strings.HasPrefix(contentType, "application/json") ||
+		strings.HasPrefix(contentType, "application/x-ndjson") ||
 		strings.HasPrefix(contentType, "application/javascript") ||
 		strings.HasPrefix(contentType, "image/svg+xml")
 }
@@ -69,10 +72,12 @@ func appendVary(header http.Header, value string) {
 
 func withCompression(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/stream") {
+		stream := strings.HasSuffix(r.URL.Path, "/stream")
+		calendar := r.URL.Path == "/api/v1/index/stream" && r.URL.Query().Get("progressive") == "1"
+		if !stream || calendar {
 			appendVary(w.Header(), "Accept-Encoding")
 		}
-		if r.Method == http.MethodHead || r.Header.Get("Range") != "" || !strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip") || strings.HasSuffix(r.URL.Path, "/stream") {
+		if r.Method == http.MethodHead || r.Header.Get("Range") != "" || !strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip") || (stream && !calendar) {
 			next.ServeHTTP(w, r)
 			return
 		}

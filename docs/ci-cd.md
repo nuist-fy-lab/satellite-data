@@ -41,6 +41,24 @@ can introduce additional consumers, so the table describes the current graph.
 The workflow summary lists the actual selection for each run. Configure branch
 protection against the always-running `test` check.
 
+GitHub-hosted Ubuntu runs the complete race suites for the selected packages
+with cgo enabled and runs the desktop and mobile layouts in Firefox ESR. The
+jobs have wall-clock limits that also cover process shutdown. A failed browser
+run uploads the geckodriver log and screenshots captured before the failure.
+
+To reproduce the calendar and HTTP checks in a disposable Linux workspace,
+use the workflow's versions of Go, Node.js and Selenium, a C compiler, and the
+Firefox ESR and geckodriver versions printed by the workflow:
+
+```sh
+npm install --prefix /tmp/satellite-visual --no-save --ignore-scripts selenium-webdriver@4.35.0
+FIREFOX_BIN=/path/to/firefox GECKODRIVER=/path/to/geckodriver \
+  GECKODRIVER_LOG=/tmp/satellite-geckodriver.log NODE_PATH=/tmp/satellite-visual/node_modules \
+  timeout --kill-after=15s 4m node web/visual-check.mjs
+CGO_ENABLED=1 timeout --kill-after=15s 8m \
+  go test -race -count=1 -timeout=5m ./internal/state ./internal/httpapi
+```
+
 ## Releases / 发布
 
 PRs compare their head against the merge base with the target branch. Pushes

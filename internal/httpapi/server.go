@@ -113,6 +113,7 @@ func newHandler(registry *provider.Registry, store *state.Store, downloaderClien
 	mux.HandleFunc("DELETE /api/v1/access/central/{kind}/{id}", s.centralDelete)
 	mux.HandleFunc("GET /api/products", s.products)
 	mux.HandleFunc("GET /api/year", s.year)
+	mux.HandleFunc("GET /api/calendar/archive", s.archiveCalendar)
 	mux.HandleFunc("GET /api/day", s.day)
 	mux.HandleFunc("GET /api/coverage/year", s.coverageYear)
 	mux.HandleFunc("GET /api/coverage/month", s.coverageMonth)
@@ -718,8 +719,17 @@ func (s *Server) downloaderProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) products(w http.ResponseWriter, r *http.Request) {
-	sourceID := strings.TrimSpace(r.URL.Query().Get("source"))
-	sourceList := strings.TrimSpace(r.URL.Query().Get("sources"))
+	query := r.URL.Query()
+	sourceID := strings.TrimSpace(query.Get("source"))
+	sourceList := strings.TrimSpace(query.Get("sources"))
+	if query.Get("bootstrap") == "1" && query.Get("stream") == "1" {
+		if sourceID != "" || sourceList != "" {
+			writeError(w, http.StatusBadRequest, errors.New("bootstrap uses a family instead of sources"))
+			return
+		}
+		s.calendarCatalog(w, r, query.Get("family"))
+		return
+	}
 	if sourceID != "" && sourceList != "" {
 		writeError(w, http.StatusBadRequest, errors.New("source and sources are mutually exclusive"))
 		return
@@ -733,29 +743,28 @@ func (s *Server) products(w http.ResponseWriter, r *http.Request) {
 		}
 		products = items
 	} else {
-		seen := make(map[string]bool)
-		for _, raw := range strings.Split(sourceList, ",") {
-			id := strings.TrimSpace(raw)
-			if id == "" || seen[id] {
-				continue
-			}
-			if len(seen) >= 32 {
-				writeError(w, http.StatusBadRequest, errors.New("too many sources"))
-				return
-			}
-			seen[id] = true
-			items, err := s.store.Products(r.Context(), id)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			products = append(products, items...)
+		sources, err := calendarSourceIDs(sourceList)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		items, err := s.store.ProductsBySources(r.Context(), sources)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		bySource := make(map[string][]model.Product, len(sources))
+		for _, item := range items {
+			bySource[item.SourceID] = append(bySource[item.SourceID], item)
+		}
+		for _, source := range sources {
+			products = append(products, bySource[source]...)
 		}
 	}
 	for i := range products {
 		products[i] = provider.NormalizeProduct(products[i])
 	}
-	if r.URL.Query().Get("stream") == "1" {
+	if query.Get("stream") == "1" {
 		writeNDJSONChunks(w, products, 24)
 		return
 	}
@@ -779,6 +788,12 @@ func (s *Server) year(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.queueCalendarYear(product, year, len(payload.Days))
+	w.Header().Set("Server-Timing", fmt.Sprintf("calendar;dur=%.1f", float64(time.Since(started))/float64(time.Millisecond)))
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) queueCalendarYear(product string, year, represented int) {
 	// Calendar reads must not wait for the single SQLite writer. Already
 	// represented years do not need enqueue work at all.
 	start := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -786,11 +801,9 @@ func (s *Server) year(w http.ResponseWriter, r *http.Request) {
 	if ceiling := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 1); end.After(ceiling) {
 		end = ceiling
 	}
-	if start.Before(end) && len(payload.Days) < int(end.Sub(start)/(24*time.Hour)) {
+	if start.Before(end) && represented < int(end.Sub(start)/(24*time.Hour)) {
 		s.store.QueueMissingCalendarYear(product, year)
 	}
-	w.Header().Set("Server-Timing", fmt.Sprintf("calendar;dur=%.1f", float64(time.Since(started))/float64(time.Millisecond)))
-	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) day(w http.ResponseWriter, r *http.Request) {
